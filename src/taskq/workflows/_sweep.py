@@ -622,20 +622,47 @@ async def sweep_hold_stamps(
     the answer replay, the typed timeout face, or a fresh hold). Nothing
     wedges; every path lands in a named state.
 
-    Bounded once (LIMIT $1) and self-consuming (a cleared row loses the
-    stamp — the predicate empties behind the arm), so one pass never
-    unbounds and a deeper backlog drains over passes. Returns the CLEARED
-    count (a held-standing row is no work — it is the contract holding)."""
+    Bounded once (LIMIT $1 on the rows cleared) and self-consuming (a cleared
+    row loses the stamp — the predicate empties behind the arm; a live hold
+    never takes a batch slot), so one pass never unbounds and a deeper backlog
+    drains over passes. The read is one pass over the stamped ``jobs`` rows
+    plus one pass over ``wf_signals`` (the anti-join's hash side, filtered
+    ``status = 'held'``), so its cost tracks the signal table's population,
+    not just the open holds. Returns the CLEARED count (a held-standing row is
+    no work — it is the contract holding).
+
+    ***Rate — the production ceiling.*** One pass clears at most
+    ``batch_size`` rows, and the leader's ``wf_hold_stamp_reconcile`` spec is
+    ``drain=True``: the sweep loop re-invokes this arm up to
+    ``sweep_drain_batches`` times per tick, and it passes
+    ``batch_size = settings.event_writer_batch_size``. At the defaults that is
+    **100 x 8 = 800 rows cleared per 30 s tick**; a wider backlog drains over
+    further ticks. The batch knob is the event-writer family's (this arm
+    writes no ``job_events`` rows but borrows the same committed-batch bound),
+    so an operator who lowers ``TASKQ_EVENT_WRITER_BATCH_SIZE`` for its own
+    documented reason also lowers this repair's throughput by the same factor.
+    Every pin that calls this function directly uses its own default (200);
+    the leader's 100 is pinned at the wiring in
+    ``tests/test_audit_sweep_registry_differential.py``."""
     async with pool.acquire() as conn:
         rows = await conn.fetch(wsql.hold_stamp_reconcile, batch_size)
     cleared_count = len(rows)
     if cleared_count:
         # a wedge the arm healed is a named event, not a silent fix — the
         # operator can correlate it with the process death that stamped it.
+        # The identifiers ride capped (the `_stranded_jobs_loop` idiom): the
+        # clear strips `metadata.hold`, so the row cannot be found afterwards
+        # by the stamp either.
+        job_ids = [str(row["id"]) for row in rows][:50]
+        flow_ids = list(
+            dict.fromkeys(str(row["flow_id"]) for row in rows if row["flow_id"] is not None)
+        )[:50]
         logger.warning(
             "wf-hold-stamp-reclaimed",
             kind="wf_hold_stamp_reconcile",
             cleared=cleared_count,
+            job_ids=job_ids,
+            flow_ids=flow_ids,
         )
     return cleared_count
 

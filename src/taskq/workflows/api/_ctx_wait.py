@@ -123,6 +123,8 @@ class WaitHost(Protocol):
     job_id: JobId
     node_key: str
     attempt: int
+    #: The claim's epoch: a re-entered wait re-parks its row fenced on it.
+    claim_epoch: int
     #: The per-attempt wait-call counter (the wait site's deterministic
     #: call identity — see ``CtxWaitOps.wait_signal``): the body replays
     #: the same call order within an attempt, so the Nth ``wait_signal``
@@ -249,6 +251,7 @@ class CtxWaitOps(WaitHost):
         signal_name = names[0] if len(names) == 1 else "|".join(names)
         from taskq.workflows.api._hitl import (
             mark_awaited,
+            reassert_hold,
             refuse_reserved_timer_name,
             register_hold,
             register_signal_models,
@@ -414,7 +417,7 @@ class CtxWaitOps(WaitHost):
             # never raise NodeHeldError for a later call's standing hold.
             held_row = await conn.fetchrow(
                 render_sql(
-                    "SELECT id FROM {schema}.wf_signals "
+                    "SELECT id, signal_name, expires_at FROM {schema}.wf_signals "
                     "WHERE workflow_id = $1 AND node_key = $2 AND signal_name = ANY($3) "
                     "AND map_index IS NOT DISTINCT FROM $4::bigint "
                     "AND (call_id = ANY($5) OR call_id NOT LIKE 'call:%:%') "
@@ -428,6 +431,18 @@ class CtxWaitOps(WaitHost):
                 site_call_ids,
             )
             if held_row is not None:
+                # this claim re-entered onto the standing hold: park the row
+                # onto it (the stamp names the row that stands, which may be
+                # one of the names rather than the joined one).
+                await reassert_hold(
+                    conn,
+                    schema=self._wsql.schema,
+                    node_id=self.job_id,
+                    hold_id=held_row["id"],
+                    signal_name=str(held_row["signal_name"]),
+                    expires_at=held_row["expires_at"],
+                    claim_epoch=self.claim_epoch,
+                )
                 raise NodeHeldError(hold_id=str(held_row["id"]), signal_names=names)
                 # the sweep marked this wait site's hold 'abandoned' and no held
             # row stands — the wait site returns the union's ``Expired`` member

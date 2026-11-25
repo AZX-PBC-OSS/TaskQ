@@ -571,6 +571,7 @@ def test_the_progress_emission_unwired_is_the_noop() -> None:
         job_id=JobId("018f1c7e-5a2b-7c3d-8e4f-9a0b1c2d3e4e"),
         node_key="solo",
         attempt=1,
+        claim_epoch=1,
         input={"doc_id": "d"},
         _pool=None,  # type: ignore[arg-type]  # Why: the unwired construction — the no-op arm must not touch it.
         _wsql=WorkflowSql.build("attack4_unwired"),
@@ -632,6 +633,7 @@ def _make_wait_ctx(pool: Any, schema: str, flow_id: Any, node_id: Any, node_key:
         job_id=JobId(str(node_id)),
         node_key=node_key,
         attempt=1,
+        claim_epoch=1,
         input={"doc_id": "d"},
         _pool=pool,
         _wsql=WorkflowSql.build(schema),

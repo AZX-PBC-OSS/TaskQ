@@ -925,6 +925,8 @@ async def test_stranded_jobs_loop_warns_for_pending_without_actor_config() -> No
             "unserved_queues": [],
             "workflow_root_missing_cnt": 0,
             "root_missing_flow_ids": [],
+            "stamp_unresolved_cnt": 0,
+            "stamp_unresolved_flow_ids": [],
         }
     ]
     conn = FakeConn(fetch_rows=rows)
@@ -991,6 +993,8 @@ async def test_stranded_jobs_loop_skips_when_not_leader(monkeypatch: Any) -> Non
                 "unserved_queues": [],
                 "workflow_root_missing_cnt": 0,
                 "root_missing_flow_ids": [],
+                "stamp_unresolved_cnt": 0,
+                "stamp_unresolved_flow_ids": [],
             }
         ]
     )
@@ -1228,6 +1232,8 @@ def _stranded_row(
         # root-missing zero by default.
         "workflow_root_missing_cnt": 0,
         "root_missing_flow_ids": [],
+        "stamp_unresolved_cnt": 0,
+        "stamp_unresolved_flow_ids": [],
     }
 
 

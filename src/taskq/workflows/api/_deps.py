@@ -29,7 +29,11 @@ zero-false-positive doctrine already owns).
 LANDMINE (named, test-scope): the InMemoryBackend has no workflow
 execution surface — the seam's test face is the REAL ``FlowRunner`` (the
 deps pins carry the name, so a future in-memory workflow runner inherits
-the law, not a second mechanism).
+the law, not a second mechanism). That runner also inherits PG's
+admission law: ``capped_running`` subtracts ``wf``'s live flow roots
+since #747, while the twin's running count (``testing/_dispatch.py``)
+cannot — ``JobRow`` carries no ``step_key``; the twin's count is the
+divergence, not the model.
 """
 
 from __future__ import annotations

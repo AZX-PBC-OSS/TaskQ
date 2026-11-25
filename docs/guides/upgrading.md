@@ -1251,6 +1251,73 @@ raises, so nothing points you at the call site; audit for them explicitly.
   and it reports the dropped remainder count. The bound follows
   `TASKQ_EXCEPTION_MESSAGE_MAX_CHARS` when raised.
 
+* **The dispatch fence refuses every row stamped `metadata.hold`, and that
+  refusal costs a heap visit per standing held row per dispatch round.** A
+  stamped row is the held representation (the in-process claim CAS already
+  refused it; the fleet now agrees), so a dead stamp can no longer be
+  re-claimed. The predicate is not indexable (`jobs`' only GIN index serves
+  `@>`, not `?`), so on a HITL-heavy queue with deep standing untimed holds
+  both dispatch statements' row work grows linearly with the held rows ahead
+  of the first routable one, on every round, for as long as those holds
+  stand — measured in `perf-evidence-dispatch.md` (repo root)
+  and pinned by `tests/test_dispatch_fence_hold_backlog_depth.py`. The old
+  depth-flat contract still holds for vanilla and routable rows.
+  **The trade-off:** a queue whose pending population is mostly parked on
+  human holds now pays a proportional read at the dispatch poll cadence.
+  Keep standing untimed holds bounded where you can (timed waits expire; the
+  reconcile clears dead stamps), and size a HITL-heavy fleet from the
+  measured held-backlog numbers, not the vanilla depth curve. An indexable
+  marker (a partial index on the pending population, or the stamp mirrored
+  into a column) is the future migration that restores the old bound.
+
+* **An unkeyed `ctx.spawn_flow` in a loop body gets a per-iteration run key,
+  and a map item's unkeyed spawn gets a per-item run key.** The default run
+  key's node segment is now `<key>.iter<i>` in a loop body, so a re-run of
+  iteration k adopts k's own children; on a map item it is `<key>.item<m>`
+  (map items share one `step_key`, so without the index every sibling adopted
+  item 0's child). A loop run or a map in flight across the upgrade that
+  spawned unkeyed under the old release mints that iteration's / item's
+  unkeyed children once more when it runs again, and during a rolling deploy
+  it can happen in either direction (old and new workers derive different
+  keys). Keyed spawns and spawns outside a loop and outside a map item keep
+  their keys.
+
+  **Your action:** either drain in-flight runs before rolling (let them reach
+  terminal on the old release), or cancel-and-restart the ones you cannot
+  drain — §6 of [Workflows](workflows.md) is the in-flight versioning
+  contract and the cancel-then-restart path. Accepting the default means a
+  duplicated child execution for each loop iteration or map item that
+  re-runs across the deploy (its side effects run twice; the parent adopts
+  the new child and leaves the old one's result unread). **Detection:** the
+  old release's cursor family is the marker of a row it spawned on —
+
+  ```sql
+  -- rows the previous release left mid-spawn (the old cursor key family)
+  SELECT id, step_key, status, metadata->>'flow_id' AS flow_id
+  FROM jobs
+  WHERE step_key <> '__flow__'
+    AND status IN ('pending', 'scheduled', 'running')
+    AND EXISTS (
+      SELECT 1 FROM jsonb_object_keys(metadata) AS k
+      WHERE starts_with(k, 'spawn_cursor_')
+    );
+  ```
+
+  A count of zero means no in-flight row carries the old derivation.
+  See the spawn's atomicity face in [Workflows](workflows.md) §3b.
+
+* **A bare-decimal `ctx.spawn_flow(key=...)` is refused.** `key="0"`,
+  `key=str(i)` and any all-digit key reproduced the default run key's slot
+  segment byte for byte, so a numeric key silently aliased the node's first
+  unkeyed spawn (a plain node with two spawn sites handed one caller the
+  other's child). The spawn now raises `SpawnKeyReservedError` (a
+  `ValueError` subclass, so callers that guarded the older shape keep
+  working) naming the fix; every non-decimal key keeps its byte-identical run
+  key, so only a caller that was already colliding observes the change. The
+  refusal is DETERMINISTIC — an uncaught one terminal-fails the node on
+  attempt 1 without burning the retry budget. Rename the key
+  (`f"item-{i}"`) or drop `key=` to use the slot.
+
 ### Terminal outcome writes raise on drift instead of falling through silently
 
 > **Unreleased.** Backend implementors and test-twin drivers see a new

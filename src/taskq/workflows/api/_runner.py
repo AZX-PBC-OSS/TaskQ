@@ -839,10 +839,12 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
         """One dispatch pass: claim + run + finalize every claimable node
         (``execute=True`` — the dev-loop driver); then the sweep arms
         (the crash-window heal + the outbox drain + the DURABLE TIMER's
-        fire — the dev loop's timer arm mirrors the leader's, so a
-        timer flow completes in-process exactly as it completes on the
-        fleet). With ``execute=False`` the sweep arms only — the
-        orchestration-only pass. Returns whether any node ran."""
+        fire + the hold-stamp reconcile — the dev loop's arms mirror the
+        leader's, so a timer flow completes in-process exactly as it
+        completes on the fleet, and the dead stamp a re-entered wait can
+        leave is healed in-process instead of stranding the run). With
+        ``execute=False`` the sweep arms only — the orchestration-only
+        pass. Returns whether any node ran."""
         ran = False
         if execute and not _capability_checked:
             await self._refuse_guarded_direct_run(flow_id)
@@ -871,6 +873,14 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
         from taskq.workflows.api._hitl import sweep_expired_signals
 
         await sweep_expired_signals(self.pool, schema=self.schema)
+        # the hold-stamp reconcile mirrors the leader's arm: the re-entry
+        # re-park can leave a dead stamp whose delivery landed inside the
+        # read-then-park window, and the stamp makes the row unclaimable
+        # forever. Without this arm the dev drive stalls at ``max_ticks``
+        # with nothing naming the wedge.
+        from taskq.workflows._sweep import sweep_hold_stamps
+
+        await sweep_hold_stamps(self.pool, self.wsql)
         await drain_outbox(self.pool, self.wsql)
         from taskq.workflows.api._hitl import sweep_due_timers
 
