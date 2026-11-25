@@ -91,8 +91,11 @@ from taskq._ids import new_uuid
 from taskq._json import dumps_jsonb_str
 from taskq.backend._protocol import ConnLike, JobId
 from taskq.workflows.api._ctx_wait import Expired, NodeHeldError
-from taskq.workflows.api._runner_codec import decode_result
-from taskq.workflows.api._runner_errors import WorkflowRunError
+from taskq.workflows.api._runner_codec import decode_result_with_detail
+from taskq.workflows.api._runner_errors import (
+    WorkflowResultDetailUnavailableError,
+    WorkflowRunError,
+)
 from taskq.workflows.api._sql_runner import render_sql
 
 if TYPE_CHECKING:
@@ -420,18 +423,49 @@ class ChildHandle[G: BaseModel]:
     async def _ok_result(self, conn: ConnLike) -> ChildOk[G]:
         """The child's typed result read: the terminal node's decoded
         row result re-validated into the declared model (the decode
-        once, typed end to end — the R3 face at the flow boundary)."""
+        once, typed end to end — the R3 face at the flow boundary).
+
+        A terminal that is a JOIN reads through THE one detail re-read
+        (:func:`taskq.workflows.api._runner_codec.decode_result_with_detail`)
+        — the same function ``FlowRunner.result()`` uses — so a bounded
+        collect's truncated summary row hands back the FULL collect, and a
+        truncated ``gather`` flattens exactly as its own packer did (the
+        durable ``wf_node_kind`` stamp on the row, not a registry this
+        reader does not have). Missing detail rows raise
+        :class:`~taskq.workflows.api._runner_errors.WorkflowResultDetailUnavailableError`
+        — the join fails LOUDLY instead of returning a 64 KiB prefix."""
         if self._terminal_key is None:  # pragma: no cover - the spawn refuses a terminal-less child
             raise ChildWorkflowUnknownError(
                 f"the child flow {self.flow_id} names no terminal — the spawn "
                 "refuses a terminal-less child (the join could never read a result)"
             )
-        raw = await conn.fetchval(
+        row = await conn.fetchrow(
             render_sql(_CHILD_TERMINAL_RESULT_SQL, self._site.wsql.schema),
             self._terminal_key,
             self.flow_id,
         )
-        decoded = decode_result(raw)  # the envelope's unwrap — the runner's own codec seam
+        if row is None:
+            # The child's root said ``succeeded`` and its terminal row is
+            # gone: the result face has no source. Deterministic corruption
+            # (no re-run restores the row) — the same fail-closed class the
+            # detail re-read raises, so the ladder does not burn retries on a
+            # read that can never succeed.
+            raise WorkflowResultDetailUnavailableError(
+                node_id=self.flow_id,
+                step_key=self._terminal_key,
+                reason=(
+                    f"the child flow {self.flow_id} reads as succeeded but its "
+                    "terminal row is missing (purged or never written)"
+                ),
+            )
+        decoded = await decode_result_with_detail(
+            conn,
+            self._site.wsql.schema,
+            node_id=row["id"],  # pyright: ignore[reportUnknownArgumentType]  # Why: the asyncpg Record's members are Unknown; the statement's SELECT names the columns.
+            raw=row["result"],  # pyright: ignore[reportUnknownArgumentType]  # Why: same walk.
+            metadata=row["metadata"],  # pyright: ignore[reportUnknownArgumentType]  # Why: same walk.
+            step_key=str(row["step_key"]),  # pyright: ignore[reportUnknownArgumentType]  # Why: same walk.
+        )
         result = self._result_model.model_validate(decoded)
         return ChildOk(flow_id=str(self.flow_id), result=result)
 
@@ -768,7 +802,7 @@ SELECT status FROM {schema}.jobs WHERE id = $1 AND step_key = '__flow__'
 """
 
 _CHILD_TERMINAL_RESULT_SQL = """
-SELECT result FROM {schema}.jobs WHERE step_key = $1
+SELECT id, step_key, result, metadata FROM {schema}.jobs WHERE step_key = $1
   AND (metadata->>'flow_id')::uuid = $2
 """
 

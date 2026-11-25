@@ -222,8 +222,16 @@ UNION ALL
 SELECT 'cancel_fenced'::text AS verdict, id FROM cancel_fenced
 """
 
+# The detail re-read's PARENT ROWS (the bounded collect's ``detail_home``):
+# ``metadata`` rides every level so the recursive re-read knows each parent's
+# own node kind from the durable ``wf_node_kind`` stamp
+# (``_runner_codec.WF_NODE_KIND_KEY``) rather than from a workflow registry a
+# runner-less reader does not have. A null result with a past expiry must not
+# masquerade as a collected None: after its TTL the row offers no durable value
+# for the rebuild, so the reader fails closed instead of passing the count check.
 PARENT_RESULTS_BY_KEY_SQL_TEMPLATE = """
-SELECT p.id, p.step_key, p.result
+SELECT p.id, p.step_key, p.result, p.metadata,
+       (p.result IS NULL AND p.result_expires_at < clock_timestamp()) AS result_expired
 FROM {schema}.wf_edge e
 JOIN {schema}.jobs p ON p.id = e.parent_id
 WHERE e.child_id = $1
@@ -359,8 +367,13 @@ SELECT error_class, error_message FROM {schema}.jobs
 WHERE id = $1 AND status = 'cancelled'
 """
 
+# The skip-predicate's view: every succeeded row's identity + result, with
+# its ``metadata`` — the detail re-read
+# (``_runner_codec.decode_result_with_detail``) needs the row id and the
+# durable node-kind stamp when the entry is a bounded collect's truncated
+# summary.
 SUCCEEDED_RESULTS_SQL_TEMPLATE = """
-SELECT step_key, result FROM {schema}.jobs
+SELECT id, step_key, result, metadata FROM {schema}.jobs
 WHERE (metadata->>'flow_id')::uuid = $1 AND status = 'succeeded'
 """
 
@@ -534,7 +547,7 @@ SELECT count(*) FROM flipped
 TERMINAL_RESULT_SQL_TEMPLATE = """
 SELECT r.status AS run_status,
        n.id AS node_id, n.step_key AS node_key, n.result AS node_result,
-       n.status AS node_status
+       n.metadata AS node_metadata, n.status AS node_status
 FROM {schema}.jobs r
 LEFT JOIN {schema}.jobs n
   ON (n.metadata->>'flow_id')::uuid = r.id AND n.step_key = $1

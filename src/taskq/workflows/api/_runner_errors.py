@@ -8,6 +8,7 @@ from __future__ import annotations
 
 __all__ = [
     "VanishedNodeError",
+    "WorkflowResultDetailUnavailableError",
     "WorkflowRootMissingError",
     "WorkflowRunCancelledError",
     "WorkflowRunError",
@@ -62,6 +63,56 @@ class VanishedNodeError(WorkflowRunError):
     truth — never an eternal zombie (a ``running`` root over a
     forever-pending node, parked budget-free, surfaced only in a
     detector's log)."""
+
+
+class WorkflowResultDetailUnavailableError(WorkflowRunError):
+    """A row's value cannot be REBUILT from the durable detail rows the
+    bounded collect's ``detail_home`` contract names: the join row is a
+    bounded summary, and its parent rows (the only home of the full
+    collect) are missing, purged, or short of the recorded count.
+
+    THE FAIL-CLOSED FACE OF THE DETAIL RE-READ. Every reader that
+    decodes a workflow row either rebuilds the whole declared value or
+    raises THIS class — never a truncated prefix and never ``[]``. A
+    silent prefix is the defect family this class closes: the caller's
+    declared ``list[...]`` decoded fine over 64 KiB of a 106 KiB collect,
+    and nobody could tell.
+
+    DETERMINISTIC BY CONSTRUCTION (registered in
+    :func:`_deterministic_classes`): the detail rows are the record, and
+    no re-run, retry, or later tick can restore rows a purge removed —
+    the ladder's retry budget is never spent on it.
+
+    ``expected``/``rebuilt`` are the item counts when the failure is a
+    count mismatch (``None`` when the row itself is gone); ``reason``
+    names the concrete missing face. ``node_id``/``step_key`` locate the
+    row the operator must inspect."""
+
+    def __init__(
+        self,
+        *,
+        node_id: object,
+        step_key: str,
+        reason: str,
+        expected: int | None = None,
+        rebuilt: int | None = None,
+    ) -> None:
+        self.node_id = node_id
+        self.step_key = step_key
+        self.reason = reason
+        self.expected = expected
+        self.rebuilt = rebuilt
+        counts = (
+            ""
+            if expected is None
+            else f" (expected {expected} items, rebuilt {0 if rebuilt is None else rebuilt})"
+        )
+        super().__init__(
+            f"the value of node {step_key!r} (row {node_id}) cannot be read{counts}: "
+            f"{reason}. A bounded collect's row carries only the summary — the full "
+            "value lives on the parent rows — and the read fails closed rather than "
+            "handing back a truncated prefix"
+        )
 
 
 class WorkflowRootMissingError(WorkflowRunError):

@@ -116,16 +116,18 @@ from taskq.workflows.api._graph import (
 )
 from taskq.workflows.api._runner_chain import ChainOps
 from taskq.workflows.api._runner_codec import (
+    WF_NODE_KIND_KEY,
     FlowEntryShim,
     decode_result,
+    decode_result_with_detail,
     encode_data_arg,
     encode_result,
     next_data,
-    result_truncation,
 )
 from taskq.workflows.api._runner_defer import DeferOps
 from taskq.workflows.api._runner_errors import (
     VanishedNodeError,
+    WorkflowResultDetailUnavailableError,
     WorkflowRunCancelledError,
     WorkflowRunError,
 )
@@ -705,6 +707,22 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
                 # first claim. Park/wake preserve it; only P0's genuine source
                 # failure disposition advances it.
                 row_meta["wf_source_logical_attempt"] = 1
+            if node.kind == "gather" and node.body is None:
+                # THE DURABLE FLATTEN MARKER (born with the row, the
+                # create transaction's own write): a bodyless ``gather``
+                # barrier is the one kind whose collect flattens its
+                # parents' lists one level, and every reader that rebuilds
+                # a truncated collect must apply the SAME rule — including
+                # ``ChildHandle._ok_result``, which holds no
+                # ``CompiledWorkflow`` and may run in a process where the
+                # child workflow was never imported. Stamping it here (not
+                # on the result envelope, whose key set is the decode's wire
+                # contract) keeps every non-gather row's metadata
+                # byte-identical and gives every gather row its marker from
+                # birth. A multi-parent ``step()`` is ``kind="gather"``
+                # too, but it has a body and never enters the bounded
+                # collect, so its row stays unstamped.
+                row_meta[WF_NODE_KIND_KEY] = "gather"
             await conn.execute(
                 render_sql(NODE_INSERT_SQL, self.schema),
                 new_uuid(),
@@ -1384,20 +1402,48 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
         )
 
         # decided now, against the flow's state — never at create time.
-        if (
-            node is not None
-            and node.skip is not None
-            and node.skip(await self._flow_state(flow_id))
-        ):
-            await self._finalize_skipped(
-                flow_id,
-                row,
-                node,
-                claim_epoch=claim_epoch,
-                ledger_id=ledger_id,
-                ledger_claimed_at=ledger_claimed_at,
-            )
-            return "skipped"
+        if node is not None and node.skip is not None:
+            # The state read sits ABOVE the ladder ``try``: a truncation
+            # whose parent detail rows are gone raises the deterministic
+            # :class:`WorkflowResultDetailUnavailableError` here, and an
+            # escaping raise would strand the just-claimed node ``running``
+            # until its lease expired (the `possibly-forever` wedge). Route
+            # it through the ladder's deterministic arm — the identical
+            # sequence the tail's body-failure catch and
+            # ``_route_finalize_refusal`` use, minus the emitter (none exists
+            # yet at this gate), so the node terminal-fails on attempt 1 with
+            # the class on the record and the tail's outcome vocabulary
+            # (``laddered`` / ``deferred`` / ``cancelled`` / ``fenced``) keeps
+            # its census meaning.
+            try:
+                should_skip = node.skip(await self._flow_state(flow_id))
+            except WorkflowResultDetailUnavailableError as exc:
+                route = await self._ladder_or_fail(
+                    flow_id,
+                    row,
+                    attempt,
+                    node,
+                    exc,
+                    claim_epoch=claim_epoch,
+                    ledger_id=ledger_id,
+                    ledger_claimed_at=ledger_claimed_at,
+                )
+                if route == "deferred":
+                    return "deferred"
+                record_step_laddered(trace.get_current_span(), exc, retried=route == "retried")
+                if route in ("cancelled", "fenced"):
+                    return route
+                return "laddered"
+            if should_skip:
+                await self._finalize_skipped(
+                    flow_id,
+                    row,
+                    node,
+                    claim_epoch=claim_epoch,
+                    ledger_id=ledger_id,
+                    ledger_claimed_at=ledger_claimed_at,
+                )
+                return "skipped"
 
             # the emission op's buffer: the attempt's own emitter — the declared
         # progress schema rides the node's decl (a map child inherits its
@@ -2101,42 +2147,55 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
             for r in rows:
                 key: str = r["step_key"]  # pyright: ignore[reportUnknownVariableType]  # Why: the asyncpg Record's members are Unknown; the statement's SELECT names the columns.
                 ordered.append(
-                    (key, await self._decode_with_detail(conn, key, r["id"], r["result"]))  # pyright: ignore[reportUnknownArgumentType]  # Why: same walk.
+                    (
+                        key,
+                        await self._decode_with_detail(
+                            conn,
+                            key,
+                            r["id"],  # pyright: ignore[reportUnknownArgumentType]  # Why: same walk.
+                            r["result"],  # pyright: ignore[reportUnknownArgumentType]  # Why: same walk.
+                            r["metadata"],  # pyright: ignore[reportUnknownArgumentType]  # Why: same walk.
+                            r["result_expired"],  # pyright: ignore[reportUnknownArgumentType]  # Why: same walk.
+                        ),
+                    )
                 )
         return ordered, dict(ordered)
 
     async def _decode_with_detail(
-        self, conn: ConnLike, step_key: str, node_id: Any, raw: object
+        self,
+        conn: ConnLike,
+        step_key: str,
+        node_id: Any,
+        raw: object,
+        metadata: object,
+        result_expired: bool = False,
     ) -> object:
         """the BOUNDED COLLECT'S DETAIL RE-READ (the read-side
-        reconciliation): a parent whose result row is the TRUNCATED
-        envelope (the bounded summary — the cap kept the row honest)
-        re-reads the FULL collect from the detail_home face the marker
-        names — the children's own result rows, through the same
-        ordered parent read the join packed (edge order, map children
-        distinct). The consumer's typed decode sees the declared
-        ``list[...]`` with every item — the summary row bounded, the
-        detail never lost. Non-truncated rows decode directly (the
-        common case pays one marker check)."""
-        decoded = decode_result(raw)
-        if result_truncation(raw) is None:
-            return decoded
-        rows = await conn.fetch(
-            render_sql(PARENT_RESULTS_BY_KEY_SQL_TEMPLATE, self.schema), node_id
+        reconciliation): the ONE shared implementation lives in
+        :func:`taskq.workflows.api._runner_codec.decode_result_with_detail`
+        (the same contract ``ChildHandle._ok_result`` reads with, so the
+        runner and the runner-less join reader cannot drift). This seat
+        supplies what only the runner has: the schema and the compiled
+        graph's node-kind fallback for rows created before the durable
+        ``wf_node_kind`` stamp existed. Non-truncated rows decode directly
+        (the common case pays one marker check)."""
+        return await decode_result_with_detail(
+            conn,
+            self.schema,
+            node_id=node_id,
+            raw=raw,
+            metadata=metadata,
+            step_key=step_key,
+            result_expired=result_expired,
+            resolve_node_kind=self._compiled_node_kind,
         )
-        values: list[object] = [decode_result(r["result"]) for r in rows]  # pyright: ignore[reportUnknownVariableType,reportUnknownArgumentType]  # Why: the Record walk's boundary.
+
+    def _compiled_node_kind(self, step_key: str) -> str | None:
+        """The compiled graph's node kind — the pre-stamp fallback for a
+        gather row created before ``wf_node_kind`` existed (``None`` for
+        the fork-spawned keys, which have no compiled decl of their own)."""
         node = self.compiled.nodes.get(step_key)
-        if (
-            node is not None
-            and node.kind == "gather"
-            and values
-            and all(isinstance(v, list) for v in values)
-        ):
-            # the gather's flatten, mirrored (the identity packer's own
-            # rule — the join row's pre-truncation value was the flat
-            # list; the re-read must hand the body the same shape).
-            values = [item for v in values for item in cast("list[object]", v)]
-        return values
+        return None if node is None else cast("str", node.kind)
 
     def _resolve_args(
         self,
@@ -3005,6 +3064,7 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
                     str(state_row["node_key"]),  # pyright: ignore[reportUnknownArgumentType,reportAny]  # Why: the Record walk's boundary.
                     state_row["node_id"],  # pyright: ignore[reportUnknownArgumentType]  # Why: same walk.
                     state_row["node_result"],  # pyright: ignore[reportUnknownArgumentType]  # Why: same walk.
+                    state_row["node_metadata"],  # pyright: ignore[reportUnknownArgumentType]  # Why: same walk.
                 )
 
         if run_status == "succeeded" and state is not None and state["node_status"] == "succeeded":
@@ -3085,18 +3145,33 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
     async def _flow_state(self, flow_id: JobId) -> dict[str, object]:
         """The dispatch-time predicate's view: the input + the
         completed results so far — the state a sibling-reading guard
-        needs."""
+        needs.
+
+        Each succeeded row decodes through THE one detail re-read
+        (:meth:`_decode_with_detail`) while this connection is held — a
+        truncated ``map_join`` / ``gather`` entry is the FULL collect, the
+        same value the step body on that node receives, so a ``skip=``
+        predicate never decides against a 64 KiB prefix. A truncated
+        entry whose parent detail rows are gone raises
+        :class:`WorkflowResultDetailUnavailableError` (the caller at the
+        ``skip=`` gate routes it to the ladder as a deterministic
+        refusal). The input read is taken after the connection is
+        released, so only one connection is ever held."""
         async with self.pool.acquire() as conn:
             rows = await conn.fetch(
                 render_sql(SUCCEEDED_RESULTS_SQL_TEMPLATE, self.schema), flow_id
             )
-        return {
-            "input": await self._flow_input(flow_id),
-            "results": {
-                r["step_key"]: decode_result(r["result"])  # pyright: ignore[reportUnknownArgumentType]  # Why: the asyncpg Record's members are Unknown; the statement's SELECT names the columns.
-                for r in rows
-            },
-        }
+            results: dict[str, object] = {}
+            for r in rows:
+                key = str(r["step_key"])  # pyright: ignore[reportUnknownArgumentType]  # Why: the asyncpg Record's members are Unknown; the statement's SELECT names the columns.
+                results[key] = await self._decode_with_detail(
+                    conn,
+                    key,
+                    r["id"],  # pyright: ignore[reportUnknownArgumentType]  # Why: same walk.
+                    r["result"],  # pyright: ignore[reportUnknownArgumentType]  # Why: same walk.
+                    r["metadata"],  # pyright: ignore[reportUnknownArgumentType]  # Why: same walk.
+                )
+        return {"input": await self._flow_input(flow_id), "results": results}
 
     async def _any_held(self, flow_id: JobId) -> bool:
         async with self.pool.acquire() as conn:
