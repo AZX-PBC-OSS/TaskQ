@@ -31,6 +31,7 @@ from __future__ import annotations
 import ast
 import re
 import shlex
+import subprocess
 from pathlib import Path
 from typing import Any, cast
 
@@ -717,4 +718,277 @@ def test_the_private_broker_pause_module_is_serial_only() -> None:
     assert all(" -n " not in run and "--dist" not in run for run in load_runs), (
         "the load-sensitive job's marker selection is no longer serial; the module's "
         "lane premise is a single worker"
+    )
+
+
+def test_every_sharded_pytest_branch_populates_its_shard_file_list() -> None:
+    """Every sharded CI job that passes ``"${files[@]}"`` to pytest must
+    populate ``files`` from ``scripts/ci_shard.py`` on EVERY control-flow
+    branch that executes pytest.
+
+    Putting ``mapfile -t files < <(... scripts/ci_shard.py ...)`` inside the
+    ``if`` branch of an ``if ... else ... fi`` while passing ``"${files[@]}"``
+    in the ``else`` branch silently expands to zero arguments under bash 5
+    even with ``set -u``, causing every smoke shard to run the entire
+    non-integration suite instead of its assigned shard."""
+    ci = next(wf for wf in _WORKFLOWS if wf.name == "ci.yaml")
+    checked_invocations = 0
+    offenders: list[str] = []
+
+    for job_name, job in _jobs(ci).items():
+        strategy = cast(_YamlMap, job.get("strategy") or {})
+        matrix = cast(_YamlMap, strategy.get("matrix") or {})
+        if not matrix.get("shard"):
+            continue
+        for step in _steps(job):
+            script = str(step.get("run", ""))
+            if "ci_shard.py" not in script and "${files[@]}" not in script:
+                continue
+            step_name = str(step.get("name", "<unnamed>"))
+            # Track whether `files` was populated unconditionally at top level
+            # versus only inside a conditional branch (`if`/`elif`/`else`).
+            in_conditional = False
+            top_level_populated = False
+            branch_populated = False
+            branch_label = "top-level"
+            for lineno, raw in enumerate(script.splitlines(), start=1):
+                code = raw.split("#", 1)[0].strip()
+                if not code:
+                    continue
+                if re.match(r"^if\b", code):
+                    in_conditional = True
+                    branch_populated = False
+                    branch_label = f"if (line {lineno})"
+                elif re.match(r"^elif\b", code):
+                    branch_populated = False
+                    branch_label = f"elif (line {lineno})"
+                elif re.match(r"^else\b", code):
+                    branch_populated = False
+                    branch_label = f"else (line {lineno})"
+                elif re.match(r"^fi\b", code):
+                    in_conditional = False
+                    branch_populated = False
+                    branch_label = "top-level"
+
+                if "scripts/ci_shard.py" in code and (
+                    "mapfile" in code or re.search(r"\bfiles\s*=", code)
+                ):
+                    if in_conditional:
+                        branch_populated = True
+                    else:
+                        top_level_populated = True
+
+                if re.search(r"\bpytest\b", code):
+                    checked_invocations += 1
+                    if '"${files[@]}"' not in code:
+                        offenders.append(
+                            f"ci.yaml:{job_name}/{step_name} {branch_label}: "
+                            "sharded pytest invocation does not pass '\"${files[@]}\"'"
+                        )
+                    elif not (top_level_populated or branch_populated):
+                        offenders.append(
+                            f"ci.yaml:{job_name}/{step_name} {branch_label}: "
+                            'passes "${files[@]}" to pytest, but `files` was never '
+                            "populated from scripts/ci_shard.py on this branch"
+                        )
+
+    assert checked_invocations >= 4, (
+        f"expected at least 4 sharded pytest invocations in ci.yaml (full, smoke, "
+        f"load-sensitive, coverage-shard), saw {checked_invocations}"
+    )
+    assert not offenders, (
+        "sharded pytest branch runs without its shard file list populated:\n" + "\n".join(offenders)
+    )
+
+
+def test_every_sharded_job_uses_only_a_successful_nonempty_shard_list(tmp_path: Path) -> None:
+    """A shard-generator failure must stop the job, not turn pytest loose on
+    the whole suite. Process substitution hides the generator's exit status,
+    and a successful generator that prints nothing is just as unusable. The
+    success control proves the generated paths reach pytest as separate args."""
+    ci = next(wf for wf in _WORKFLOWS if wf.name == "ci.yaml")
+    jobs = _jobs(ci)
+    for job_name in ("test", "load-sensitive", "coverage-shard"):
+        script = next(
+            str(step.get("run", ""))
+            for step in _steps(jobs[job_name])
+            if "scripts/ci_shard.py" in str(step.get("run", ""))
+        )
+        script = (
+            script.replace("${{ matrix.shard }}", "1")
+            .replace("${{ matrix.scope }}", "smoke")
+            .replace("${{ matrix.python-version }}", "3.12")
+        )
+
+        for mode in ("fail", "empty", "success"):
+            pytest_log = tmp_path / f"pytest-{job_name}-{mode}.log"
+            harness = f"""
+uv() {{
+  if [ "${{3:-}}" = "python" ] && [ "${{4:-}}" = "scripts/ci_shard.py" ]; then
+    if [ "{mode}" = "fail" ]; then
+      echo "synthetic shard failure" >&2
+      return 42
+    fi
+    if [ "{mode}" = "success" ]; then
+      printf 'tests/test_ci_workflow.py\\ntests/test_fv_redlog_guard.py\\n'
+    fi
+    return 0
+  fi
+  if [ "${{3:-}}" = "pytest" ]; then
+    printf '%s\\n' "$*" > {shlex.quote(str(pytest_log))}
+    return 0
+  fi
+  return 99
+}}
+{script}
+"""
+            proc = subprocess.run(  # noqa: S603  # Why: run the reviewed CI script with a fixed uv stub.
+                ["bash", "-c", harness],  # noqa: S607  # Why: CI and the test host resolve bash on PATH.
+                cwd=_REPO_ROOT,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            if mode == "success":
+                assert proc.returncode == 0, proc.stdout + proc.stderr
+                invocation = shlex.split(pytest_log.read_text(encoding="utf-8"))
+                assert invocation[:5] == [
+                    "run",
+                    "--no-sync",
+                    "pytest",
+                    "tests/test_ci_workflow.py",
+                    "tests/test_fv_redlog_guard.py",
+                ], f"{job_name}: pytest received {invocation!r}"
+                continue
+            assert proc.returncode != 0, (
+                f"{job_name}: a {mode} shard generator let the CI step succeed; "
+                "pytest would run without its shard boundary. "
+                f"stdout={proc.stdout!r} stderr={proc.stderr!r}"
+            )
+            assert not pytest_log.exists(), (
+                f"{job_name}: a {mode} shard generator still invoked pytest"
+            )
+
+
+def test_nested_modules_kept_out_of_marker_lanes_still_have_a_ci_assignment() -> None:
+    """The smoke legs used to collect every unmarked nested module as a side
+    effect of their missing file list. Sharding must not silently erase those
+    modules from CI: each needs a shard, an explicit workflow path, or a marker
+    lane."""
+    from scripts.ci_shard import _partition
+
+    sharded = {path for shard in _partition(4) for path in shard}
+    workflow_text = "\n".join(path.read_text(encoding="utf-8") for path in _WORKFLOWS)
+    nested = [
+        path
+        for directory in ("compat", "web_admin", "web_progress")
+        for path in (_REPO_ROOT / "tests" / directory).glob("test_*.py")
+    ]
+    unassigned = []
+    for path in nested:
+        relative = path.relative_to(_REPO_ROOT).as_posix()
+        if path in sharded or relative in workflow_text:
+            continue
+        if "pytestmark" in path.read_text(encoding="utf-8"):
+            continue
+        unassigned.append(relative)
+
+    assert not unassigned, (
+        "these previously whole-suite smoke modules have no shard, explicit "
+        f"workflow path, or module marker lane: {unassigned}"
+    )
+
+
+def test_load_sensitive_system_modules_are_assigned_to_the_serial_shards() -> None:
+    """The system-e2e job excludes ``load_sensitive`` because the serial
+    load-sensitive job owns those tests. That ownership is real only when the
+    shard generator hands their modules to that job, which passes
+    ``--system-e2e``; excluding the whole directory strands them in no lane."""
+    from scripts.ci_shard import _partition
+
+    marked = []
+    for path in (_REPO_ROOT / "tests" / "system_e2e").glob("test_*.py"):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        if any(
+            isinstance(node, ast.Attribute) and node.attr == "load_sensitive"
+            for node in ast.walk(tree)
+        ):
+            marked.append(path)
+    assert marked, "no load-sensitive system-e2e modules found; this assignment pin is vacuous"
+
+    sharded = {path for shard in _partition(4) for path in shard}
+    missing = sorted(
+        path.relative_to(_REPO_ROOT).as_posix() for path in marked if path not in sharded
+    )
+    assert not missing, (
+        "these load-sensitive system-e2e modules are excluded from the system-e2e "
+        "job and absent from the serial job's shard lists, so no CI lane runs them: "
+        f"{missing}"
+    )
+
+    ci = next(workflow for workflow in _WORKFLOWS if workflow.name == "ci.yaml")
+    jobs = _jobs(ci)
+    system_scripts = [str(step.get("run", "")) for step in _steps(jobs["system-e2e"])]
+    assert any(
+        "--system-e2e" in script and '-m "system and not load_sensitive"' in script
+        for script in system_scripts
+    ), "the system-e2e job must retain the marker exclusion that transfers ownership"
+
+    load_script = next(
+        str(step.get("run", ""))
+        for step in _steps(jobs["load-sensitive"])
+        if "scripts/ci_shard.py" in str(step.get("run", ""))
+    )
+    assert "--system-e2e" in load_script, (
+        "the serial shard list names system modules, but without --system-e2e pytest "
+        "deselects every one of them"
+    )
+    assert '-m "load_sensitive and not timescale"' in load_script
+    for job_name in ("test", "coverage-shard"):
+        script = next(
+            str(step.get("run", ""))
+            for step in _steps(jobs[job_name])
+            if "scripts/ci_shard.py" in str(step.get("run", ""))
+        )
+        assert "--system-e2e" not in script, (
+            f"{job_name} would run the load-sensitive system tier in parallel rather "
+            "than leaving it to the serial lane"
+        )
+
+
+def test_the_shard_partition_covers_the_default_tier_but_not_the_optin_lanes() -> None:
+    """The shard list IS the file list the sharded legs hand to pytest, so
+    discovery decides what CI executes: a module it omits runs nowhere, and a
+    module from an exclusively opt-in lane (which needs ``--e2e`` or
+    ``--otel-validation``, flags the sharded legs never pass) would be collected
+    by a leg that cannot run it. System-e2e's load-sensitive subset is the
+    deliberate exception pinned immediately above: the serial leg passes its
+    flag. The remaining boundary is pinned in both directions."""
+    from scripts.ci_shard import _DEDICATED_LANE_DIRS, _modules
+
+    tests_root = _REPO_ROOT / "tests"
+    discovered = {path.relative_to(_REPO_ROOT).as_posix() for path in _modules()}
+    leaked = sorted(
+        relative
+        for relative in discovered
+        if _DEDICATED_LANE_DIRS.intersection(Path(relative).relative_to("tests").parts[:-1])
+    )
+    assert not leaked, (
+        "the shard partition pulls opt-in-lane modules into legs that cannot run "
+        f"them (their own jobs pass the opt-in flag): {leaked}"
+    )
+    expected = set()
+    for path in tests_root.rglob("test_*.py"):
+        relative = path.relative_to(tests_root)
+        if _DEDICATED_LANE_DIRS.intersection(relative.parts[:-1]):
+            continue
+        if relative.parts[0] == "system_e2e" and "pytest.mark.load_sensitive" not in path.read_text(
+            encoding="utf-8"
+        ):
+            continue
+        expected.add(path.relative_to(_REPO_ROOT).as_posix())
+    assert discovered == expected, (
+        "the shard partition no longer covers exactly the default tier plus the "
+        "serial load-sensitive system modules: "
+        f"missing={sorted(expected - discovered)}, unexpected={sorted(discovered - expected)}"
     )

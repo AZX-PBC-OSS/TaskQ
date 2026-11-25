@@ -251,12 +251,17 @@ jobs:
         # pytest-timeout's graceful per-test failure into a lost worker.
         run: |
           set -euo pipefail
+          files="$(uv run --no-sync python scripts/ci_shard.py --shard ${{ matrix.shard }} --total 4)"
+          if [ -z "$files" ]; then
+            echo "::error::ci_shard.py returned no modules for shard ${{ matrix.shard }}/4"
+            exit 1
+          fi
+          mapfile -t files <<< "$files"
           if [ "${{ matrix.scope }}" = "full" ]; then
-            mapfile -t files < <(uv run --no-sync python scripts/ci_shard.py --shard ${{ matrix.shard }} --total 4)
             echo "full shard ${{ matrix.shard }}/4: ${#files[@]} modules"
             uv run --no-sync pytest "${files[@]}" -n 2 -m "not slow and not load_sensitive and not timescale" -o faulthandler_timeout=300
           else
-            echo "smoke shard ${{ matrix.shard }}/4 on ${{ matrix.python-version }}: the non-integration tier"
+            echo "smoke shard ${{ matrix.shard }}/4 on ${{ matrix.python-version }}: ${#files[@]} modules of the non-integration tier"
             uv run --no-sync pytest "${files[@]}" -n 2 -m "not integration and not slow and not load_sensitive and not timescale" -o faulthandler_timeout=300
           fi
 
@@ -550,7 +555,12 @@ jobs:
       - name: Run the load-sensitive suite serially
         run: |
           set -euo pipefail
-          mapfile -t files < <(uv run --no-sync python scripts/ci_shard.py --shard ${{ matrix.shard }} --total 4)
+          files="$(uv run --no-sync python scripts/ci_shard.py --shard ${{ matrix.shard }} --total 4)"
+          if [ -z "$files" ]; then
+            echo "::error::ci_shard.py returned no modules for shard ${{ matrix.shard }}/4"
+            exit 1
+          fi
+          mapfile -t files <<< "$files"
           echo "load shard ${{ matrix.shard }}/4: ${#files[@]} modules"
           uv run --no-sync pytest "${files[@]}" --system-e2e -m "load_sensitive and not timescale" --timeout=900
 
@@ -679,7 +689,12 @@ jobs:
         # can trip the timer).
         run: |
           set -euo pipefail
-          mapfile -t files < <(uv run --no-sync python scripts/ci_shard.py --shard ${{ matrix.shard }} --total 4)
+          files="$(uv run --no-sync python scripts/ci_shard.py --shard ${{ matrix.shard }} --total 4)"
+          if [ -z "$files" ]; then
+            echo "::error::ci_shard.py returned no modules for shard ${{ matrix.shard }}/4"
+            exit 1
+          fi
+          mapfile -t files <<< "$files"
           echo "coverage shard ${{ matrix.shard }}/4: ${#files[@]} modules"
           uv run --no-sync pytest "${files[@]}" -n 2 -m "not slow and not load_sensitive and not timescale" --cov=taskq --cov-report=term-missing -o faulthandler_timeout=300
       - name: Upload this shard's coverage data

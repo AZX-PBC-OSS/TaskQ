@@ -13,6 +13,13 @@ a module that provisions a real database pays a fixed ~4 s
 cost per PG-using module and greedily packing the heaviest first (LPT) keeps
 the shards within a small factor of each other.
 
+The partition covers the whole DEFAULT collection tier — nested suites
+included, because a shard list that silently omits a directory removes those
+modules from CI entirely. It also covers the system-e2e modules marked
+``load_sensitive``: their own job deselects them and the serial sharded job
+passes ``--system-e2e`` to collect them. Directories belonging exclusively to
+other opt-in lanes stay out.
+
 Usage: ``python scripts/ci_shard.py --shard 1 --total 4`` → the paths, one per
 line, for that shard. ``--verify`` prints the per-shard weight totals.
 """
@@ -31,6 +38,10 @@ _DB_FIXTURES = re.compile(
     r"\b(pg_dsn|pg_pool|pg_conn|clean_pg_conn|module_pg_schema|wf_schema|wf_pool|load_sensitive|system)\b"
 )
 _TEST_DEF = re.compile(r"^\s*(?:async\s+)?def test_", re.M)
+#: Nested directories owned exclusively by opt-in lanes (``--e2e`` and
+#: ``--otel-validation``) and the perf tier. System-e2e is different: its
+#: load-sensitive subset belongs to the serial shards, which pass its flag.
+_DEDICATED_LANE_DIRS = frozenset({"e2e", "otel_validation", "perf"})
 #: The fixed cost of a module that provisions its own database, in test-equivalents.
 _DB_SETUP_WEIGHT = 20
 
@@ -41,8 +52,23 @@ def _weight(path: Path) -> int:
     return max(1, tests) + (_DB_SETUP_WEIGHT if _DB_FIXTURES.search(text) else 0)
 
 
+def _modules() -> list[Path]:
+    """The default tier plus system-e2e's serial load-sensitive modules."""
+    modules: list[Path] = []
+    for path in TESTS.rglob("test_*.py"):
+        relative = path.relative_to(TESTS)
+        if _DEDICATED_LANE_DIRS.intersection(relative.parts[:-1]):
+            continue
+        if relative.parts[0] == "system_e2e" and "pytest.mark.load_sensitive" not in path.read_text(
+            encoding="utf-8", errors="ignore"
+        ):
+            continue
+        modules.append(path)
+    return sorted(modules)
+
+
 def _partition(total: int) -> list[list[Path]]:
-    files = sorted(TESTS.glob("test_*.py"))
+    files = _modules()
     if not files:
         raise SystemExit(f"no test modules under {TESTS}")
     weighted = sorted(((p, _weight(p)) for p in files), key=lambda item: (-item[1], item[0].name))

@@ -129,7 +129,9 @@ def source_changes_since(
     docs-only merge stalifies the claim exactly as a src/ merge would.
 
     An unresolvable claimed head (not an ancestor) = stale by
-    definition.
+    definition: ``git merge-base --is-ancestor`` decides that first
+    (the same shape as the verifier's ``_off_by_one_fresh``), and only
+    an ancestor's tree is diffed.
 
     the PER-RUN MEMO (the estate's scale — 18k+ sink records across
     ~100 distinct claimed heads): the verdict is a pure function of the
@@ -155,6 +157,22 @@ def source_changes_since(
         exclusions = OFF_BY_ONE_NARROW_EXCLUSIONS
     else:
         exclusions = OFF_BY_ONE_DIFF_EXCLUSIONS
+    ancestor = subprocess.run(
+        ["git", "merge-base", "--is-ancestor", head_sha_value, anchor or "HEAD"],
+        cwd=Path(__file__).parent.parent,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if ancestor.returncode != 0:
+        # The claimed head resolves nowhere, or exists in the object store as
+        # no part of the anchor's history. A two-dot diff would answer here
+        # (it compares two snapshots, ancestry irrelevant), and two unrelated
+        # lineages that happen to carry the same source tree would read as
+        # fresh — the frozen estate branch against the main commit it was
+        # synced to is exactly that shape.
+        _SOURCE_CHANGES_MEMO[memo_key] = True
+        return True
     proc = subprocess.run(
         [
             "git",
