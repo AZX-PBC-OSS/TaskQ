@@ -261,7 +261,7 @@ jobs:
             echo "full shard ${{ matrix.shard }}/4: ${#files[@]} modules"
             uv run --no-sync pytest "${files[@]}" -n 2 -m "not slow and not load_sensitive and not timescale" -o faulthandler_timeout=300
           else
-            echo "smoke shard ${{ matrix.shard }}/4 on ${{ matrix.python-version }}: ${#files[@]} modules of the non-integration tier"
+            echo "smoke shard ${{ matrix.shard }}/4 on ${{ matrix.python-version }}: ${#files[@]} modules (before the marker filter)"
             uv run --no-sync pytest "${files[@]}" -n 2 -m "not integration and not slow and not load_sensitive and not timescale" -o faulthandler_timeout=300
           fi
 

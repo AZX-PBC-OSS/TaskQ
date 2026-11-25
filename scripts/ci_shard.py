@@ -17,8 +17,15 @@ The partition covers the whole DEFAULT collection tier — nested suites
 included, because a shard list that silently omits a directory removes those
 modules from CI entirely. It also covers the system-e2e modules marked
 ``load_sensitive``: their own job deselects them and the serial sharded job
-passes ``--system-e2e`` to collect them. Directories belonging exclusively to
-other opt-in lanes stay out.
+passes ``--system-e2e`` to collect them.
+
+Directories belonging exclusively to other lanes stay out: the OPT-IN lanes
+(``tests/e2e`` behind ``--e2e``, ``tests/otel_validation`` behind
+``--otel-validation`` — flags the sharded legs never pass) and the ``perf``
+tier. ``perf`` is not an opt-in lane: no flag gates ``tests/perf``, and its
+tests carry ``load_sensitive`` so they are marker-eligible in the serial lane —
+but no CI lane owns the directory today (whether and where ``perf`` gets one is
+a CI-owner decision). This constant is what keeps it out, not a flag.
 
 Usage: ``python scripts/ci_shard.py --shard 1 --total 4`` → the paths, one per
 line, for that shard. ``--verify`` prints the per-shard weight totals.
@@ -68,10 +75,21 @@ def _modules() -> list[Path]:
 
 
 def _partition(total: int) -> list[list[Path]]:
+    """Cost-balanced LPT packing.
+
+    The tie-break is the module's FULL path, not its basename: recursive
+    discovery makes duplicate basenames reachable (``tests/web_admin`` and
+    ``tests/web_progress`` both carry ``test_insights.py``, and two of them can
+    tie on weight), and twenty runner-isolated legs each invoke this script and
+    must agree. ``(-weight, posix path)`` is a total order over the module set,
+    so the partition does not depend on discovery order.
+    """
     files = _modules()
     if not files:
         raise SystemExit(f"no test modules under {TESTS}")
-    weighted = sorted(((p, _weight(p)) for p in files), key=lambda item: (-item[1], item[0].name))
+    weighted = sorted(
+        ((p, _weight(p)) for p in files), key=lambda item: (-item[1], item[0].as_posix())
+    )
     bins: list[list[Path]] = [[] for _ in range(total)]
     loads = [0] * total
     for path, weight in weighted:
