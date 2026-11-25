@@ -708,7 +708,14 @@ class NodeDecl:
     #: projected literal on every boot. The projection carries it into the
     #: cohort's ``ActorConfig``.
     capacity_owner: str = "operator"
-    kind: str = "step"  # "step" | "map_source" | "gather" | "map_join"
+    #: The compile's node discriminator. Exactly five values are assigned:
+    #: ``"step"`` (the default), ``"gather"``, ``"map_join"``,
+    #: ``"chain_source"`` and ``"loop"``. ``"map_source"`` is NOT one of
+    #: them: ``map_item is not None`` is the map-source marker (the
+    #: runner's fork decision reads it). ``is_fork_spawned_join`` below is
+    #: the single predicate for the ``"map_join"`` row the static insert
+    #: skips and the fork builders refuse to name as a consumer.
+    kind: str = "step"
     # a pydantic model the node's ``ctx.progress`` data emissions must satisfy.
     # On a map source the declaration reaches the children (the ``<src>.item``
     # keys resolve it through their source).
@@ -764,6 +771,20 @@ class NodeDecl:
     # wiring face refuses a TTL without the opt-in and a non-positive TTL.
     cache: bool = False
     cache_ttl: float | None = None
+
+    @property
+    def is_fork_spawned_join(self) -> bool:
+        """True when this node's row is written by its SOURCE's fork, not by
+        the static insert: the one spelling of the question the static node
+        pass (both loops) and both fork builders ask.
+
+        The static pass must not pre-insert such a node (its source's fork
+        writes the row) and the fork's consumer list must not name it (its
+        own fork writes the nested one) — two behaviours, one fact. Today
+        exactly ``kind == "map_join"``; a future derived-join kind decides
+        here, once, instead of drifting across four call sites.
+        """
+        return self.kind == "map_join"
 
 
 class Promise[T_co]:
