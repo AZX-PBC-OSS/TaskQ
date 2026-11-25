@@ -254,6 +254,15 @@ class Chain:
                     f"chain {self.name!r} queue={self.queue!r} contradicts "
                     f"default_policy.queue={default_queue!r}"
                 )
+        for key in self.steps:
+            if key == "__flow__":
+                raise ValueError(
+                    f"chain {self.name!r} uses the engine's reserved run-root "
+                    "marker '__flow__' as a step key: a node sharing it is never "
+                    "claimed and is invisible to the nodeless-root reap, so the "
+                    "record wedges and then fails under a false cause; rename "
+                    "the step"
+                )
         if self.start not in self.steps:
             raise ValueError(f"chain {self.name!r}: start {self.start!r} is not a step")
         for key, step in self.steps.items():

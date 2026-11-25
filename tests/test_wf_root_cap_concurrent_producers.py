@@ -114,11 +114,10 @@ async def _dispatch(conn: asyncpg.Connection, schema: str, worker_id: UUID) -> l
     )
 
 
-async def _wf_running(conn: asyncpg.Connection, schema: str, *, steps_only: bool) -> int:
-    predicate = "step_key <> '__flow__'" if steps_only else "TRUE"
+async def _wf_running(conn: asyncpg.Connection, schema: str) -> int:
     value = await conn.fetchval(
         f'SELECT count(*) FROM "{schema}".jobs '
-        f"WHERE actor = 'wf' AND status = 'running' AND {predicate}"
+        "WHERE actor = 'wf' AND status = 'running' AND step_key <> '__flow__'"
     )
     return int(value)
 
@@ -138,7 +137,7 @@ async def test_two_overlapping_producers_against_a_root_saturated_wf(
     assert all(r["actor"] == "wf" and r["status"] == "running" for r in roots), (
         f"the defect's precondition is missing: the runs' roots are {roots!r}"
     )
-    assert await _wf_running(wf_conn, wf_schema, steps_only=True) == 0, (
+    assert await _wf_running(wf_conn, wf_schema) == 0, (
         "no step of any run is running yet, so the cap is filled by roots alone"
     )
 
@@ -173,7 +172,7 @@ async def test_two_overlapping_producers_against_a_root_saturated_wf(
         "in one round, past the documented (producers * max_concurrent) bound"
     )
 
-    running_steps = await _wf_running(wf_conn, wf_schema, steps_only=True)
+    running_steps = await _wf_running(wf_conn, wf_schema)
     assert running_steps == len(ids_a | ids_b), running_steps
     assert running_steps <= 2 * _CAP, running_steps
 

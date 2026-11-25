@@ -509,10 +509,12 @@ price:
   '__flow__'`.
 
 Both were considered and declined for this change. Each is a migration on
-the hottest table, and the partial index would add write-path maintenance
-to every claim/terminalization for a count that is ~1 % of the statement's
-estimate. If the live-root population grows, revisit this entry before
-widening the subtraction again.
+the hottest table. The partial index's predicate is evaluated on writes and
+its entries are maintained on root transitions (root insert, `ROOT_START`,
+terminalization), not on every claim or terminalization of ordinary steps —
+still write-path work on the hottest table for a count that is ~1 % of the
+statement's estimate. If the live-root population grows, revisit this entry
+before widening the subtraction again.
 
 ---
 

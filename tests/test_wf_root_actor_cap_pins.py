@@ -47,7 +47,7 @@ FIFO with a claim-cursor bound, and round robin.
 
 from __future__ import annotations
 
-# ruff: noqa: S608  # Why: the schema is a fixture-derived test identifier, not user input; the catalog-derived double-quoted {col_list} column identifiers come from this schema's own information_schema.columns; every value is $-bound.
+# ruff: noqa: S608  # Why: the only interpolations are {schema} (a fixture-derived identifier, not user input), the catalog-derived double-quoted {col_list}/{filler_list} column identifiers from this schema's own information_schema.columns, and the filler dict's five constant SQL literals ('wf_root_cap_filler', 'wf_root_cap_filler_q', 'pending', NULL, '{}'::jsonb); every caller value is $-bound.
 import asyncio
 import json
 from datetime import UTC, datetime, timedelta
