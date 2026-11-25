@@ -793,11 +793,11 @@ Do not fix this by raising `TASKQ_LOCK_LEASE` alone when the cause is a blocked 
 
 ## TaskQStrandedJobs
 
-**What fired.** `taskq_jobs_stranded > 0` for 5 minutes: pending/scheduled jobs that cannot make progress, with the reason on the label. `reason="no_actor_config"`: the actor has no `actor_config` row (deregistered with `taskq actor-config deregister`, or never registered by any worker), so the dispatch CTE, which derives its candidates from `actor_config`, never sees the rows. `reason="unserved_queue"`: the queue dispatch routes the actor on (the actor's current assignment for a re-pended row, the row's own queue otherwise) has no live worker subscribed. These two reasons are dispatch-invisible: neither dispatch nor the deadline sweep will ever touch such rows. `reason="workflow_root_missing"` is a different class of fault — control-plane data corruption, not a routing condition: the rows are workflow nodes whose own run has lost its `__flow__` root row. Such a row CAN dispatch and be bounded-consumed when its actor config and effective routing queue are otherwise served; what can never progress is the RUN — every surviving node of a root-less flow is stranded work, and no worker knob repairs it.
+**What fired.** `taskq_jobs_stranded > 0` for 5 minutes: pending/scheduled jobs that cannot make progress, with the reason on the label. `reason="no_actor_config"`: the actor has no `actor_config` row (deregistered with `taskq actor-config deregister`, or never registered by any worker), so the dispatch CTE, which derives its candidates from `actor_config`, never sees the rows. `reason="unserved_queue"`: the queue dispatch routes the actor on (the actor's current assignment for a re-pended row, the row's own queue otherwise) has no live worker subscribed. `reason="stamp_unresolved"`: the row carries a `metadata.hold` stamp — the held representation's marker — whose `wf_signals` hold is no longer `held` (delivered, abandoned, cancelled, or absent). These three reasons are dispatch-invisible: neither dispatch nor the deadline sweep will ever touch such rows (the fleet's dispatch fence refuses every stamped row). `reason="workflow_root_missing"` is a different class of fault — control-plane data corruption, not a routing condition: the rows are workflow nodes whose own run has lost its `__flow__` root row. Such a row CAN dispatch and be bounded-consumed when its actor config and effective routing queue are otherwise served; what can never progress is the RUN — every surviving node of a root-less flow is stranded work, and no worker knob repairs it.
 
 **How to confirm.**
 
-- Metric: `taskq_jobs_stranded` by `actor, reason`; sampled by the leader every `TASKQ_STRANDED_JOBS_INTERVAL`; the `stranded-jobs-no-actor-config` / `stranded-jobs-unserved-queue` / `stranded-jobs-workflow-root-missing` log events carry the same counts — the second names the queues, the third names up to 10 affected run ids (lexicographic, bounded).
+- Metric: `taskq_jobs_stranded` by `actor, reason`; sampled by the leader every `TASKQ_STRANDED_JOBS_INTERVAL`; the `stranded-jobs-no-actor-config` / `stranded-jobs-unserved-queue` / `stranded-jobs-stamp-unresolved` / `stranded-jobs-workflow-root-missing` log events carry the same counts — the second names the queues, the third and fourth name up to 10 affected run ids (lexicographic, bounded). The heal's own `event=wf-hold-stamp-reclaimed` carries the cleared batch's `job_ids` and `flow_ids` (up to 50), so a stamp row's recovery correlates with its detection.
 - Database:
 
   ```sql
@@ -806,6 +806,17 @@ Do not fix this by raising `TASKQ_LOCK_LEASE` alone when the cause is a blocked 
   WHERE j.status IN ('pending', 'scheduled')
     AND NOT EXISTS (SELECT 1 FROM taskq.actor_config ac WHERE ac.actor = j.actor)
   GROUP BY j.actor;
+
+  -- stamp_unresolved: rows stamped metadata.hold whose hold is no longer held
+  SELECT (j.metadata->>'flow_id') AS flow_id, count(*)
+  FROM taskq.jobs j
+  WHERE j.status IN ('pending', 'scheduled')
+    AND j.step_key IS NOT NULL AND j.step_key <> '__flow__'
+    AND j.metadata ? 'hold'
+    AND NOT EXISTS (
+      SELECT 1 FROM taskq.wf_signals live
+      WHERE live.id::text = j.metadata->>'hold' AND live.status = 'held')
+  GROUP BY 1;
 
   -- workflow_root_missing: workflow nodes whose run's own __flow__ root row is gone
   SELECT (j.metadata->>'flow_id') AS flow_id, count(*)
@@ -939,7 +950,8 @@ Do not fix this by raising `TASKQ_LOCK_LEASE` alone when the cause is a blocked 
     This SQL remedy does not implement the product's cooperative phase-1 cancellation: it hard-terminalises a selected `running` row, whereas shipped cancellation leaves that row `running`. That is safe **only because every writer for the run is stopped**. A body still executing under a missed stop can commit external effects after its row is cancelled, and its own ledger terminal write will then refuse against the fenced claim. Lease columns, `attempt`, and the park marker keys remain as forensic evidence; the residue is inert because every lease-consuming maintenance arm is `status='running'`-gated and exact-park identity is `status='scheduled'`-gated.
 
     Actor registration, `TASKQ_QUEUES`, and queue moves do not repair the run. Per-run cancellation is NOT the cleanup mechanism here: `taskq flows cancel <run_id>` flips the root row first and then refuses loudly with a non-zero exit when the root is missing — it never touches the surviving nodes.
-4. Confirm recovery: the series clears on the next detector tick (an empty reading is published, not a frozen last value) and the `stranded-jobs-cleared` event logs. A row released from the root-missing class may still carry a latent dispatch-invisible condition — the same detector's next tick reports any remaining `no_actor_config`/`unserved_queue` reason.
+4. `stamp_unresolved` (no operator SQL — the leader's arm owns it): the row is `pending`, due and unclaimable until `wf_hold_stamp_reconcile` clears the dead stamp. That arm is `drain=True` and re-invoked up to `sweep_drain_batches` times per `sweep_interval`, at `batch_size = event_writer_batch_size`, so it clears up to `event_writer_batch_size x sweep_drain_batches` rows per tick (100 x 8 = 800 at the defaults) and a wider backlog drains over further ticks. Its `event=wf-hold-stamp-reclaimed` WARNING names the cleared `job_ids`/`flow_ids`; if the reason persists, check the arm's own `sweep_wf_hold_stamp_reconcile_failed` warning and `TaskQSweepTimeouts` — the arm is failing, not the stamp.
+5. Confirm recovery: the series clears on the next detector tick (an empty reading is published, not a frozen last value) and the `stranded-jobs-cleared` event logs. The reasons interact in one direction only: a row reported as `stamp_unresolved` is ALREADY routable (its actor config exists and a live worker serves its routing queue — otherwise a routing reason would have won), while repairing `workflow_root_missing`, `no_actor_config` or `unserved_queue` can expose a latent `stamp_unresolved` row on the next tick. The detector re-reports it under the new reason and the reconcile tick clears it.
 
 ---
 

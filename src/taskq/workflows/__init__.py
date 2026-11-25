@@ -52,6 +52,7 @@ from taskq.workflows._childflow import (
     ChildOutcome,
     ChildWorkflowUnknownError,
     SpawnDepthExceededError,
+    SpawnKeyReservedError,
 )
 from taskq.workflows._emit import EmitBackpressure, EmitReservationExceededError
 from taskq.workflows._policy import (
@@ -168,6 +169,7 @@ __all__ = [
     "RouterNotTotal",
     "RunClaim",
     "SpawnDepthExceededError",
+    "SpawnKeyReservedError",
     "Step",
     "StepContext",
     "TerminalEffect",

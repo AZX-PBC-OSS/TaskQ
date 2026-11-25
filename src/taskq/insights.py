@@ -555,14 +555,20 @@ async def fetch_actor_backlog(
 
     * ``backlog`` — the actor's pending + scheduled rows (the
       ``max_pending`` backpressure counter's own population).
-    * ``running`` — the actor's in-flight rows.
+    * ``running`` — the actor's in-flight rows. On ``wf`` this includes
+      each live workflow run's root row, which the dispatch cap does not
+      count, so ``wf`` can read saturated while its steps are admitted.
     * ``max_concurrent`` — the actor's cached ceiling.
     * ``saturation`` — running ÷ max_concurrent; NULL when the actor
       has no cap (unbounded).
     * ``unservable_backlog`` — backlog beyond the actor's free
       capacity right now: rows that will still be waiting after the
       next full wave of claims.  Zero or negative means one claim
-      wave can absorb the backlog.
+      wave can absorb the backlog.  On ``wf`` this overstates what
+      the next wave leaves, because ``running`` includes the live
+      flow roots the dispatch cap does not count (the root rows are
+      not units of the cap, so dispatch can still admit steps while
+      this reads positive).
 
     The queue column is the actor's ROUTED queue
     (``actor_config.queue``), not the enqueued row's label: capacity

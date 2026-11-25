@@ -880,8 +880,19 @@ async def test_an_adopted_join_carries_the_stamp_and_feeds_depth_3(
     marker) must leave the adoption UPDATE shaped EXACTLY like the
     non-adopted join: the join-wait marker ON, the run's cohort ON. A
     THIRD map over that join then reads the stamp and its children ride
-    the run's cap — the depth-3 face."""
+    the run's cap — the depth-3 face.
+
+    The in-flight compatibility pin (#745). New code never names a
+    nested map's join among the outer join's consumers, so only a run
+    whose outer fork ran under the old code reaches adoption: its join
+    row carries the old binding, the fire puts it on the outbox, and the
+    drain pre-creates the nested join before the nested fork. The test
+    writes that old stamp on ``src.join`` itself; it models the
+    drain-first, unclaimed order (adoption of a pending row) only."""
     from taskq.ratelimit.refs import KeyedReservationRef
+    from taskq.workflows._types import ConsumerBinding, _consumer_binding_doc
+    from taskq.workflows.api._graph import rate_limit_names, reservation_names
+    from taskq.workflows.api._runner import _node_retry_spec
 
     class Nested(BaseModel):
         tenant_id: str
@@ -918,11 +929,48 @@ async def test_an_adopted_join_carries_the_stamp_and_feeds_depth_3(
     runner = FlowRunner(app.get("wf_keyed_adopted_join"), wf_pool, wf_schema)
     flow_id = (await runner.create_flow()).flow_id
 
-    # the nested map's join node ('src.join.join', kind map_join) is skipped by
-    # the static insert, so the fired depth-1 join's outbox drain pre-creates
-    # it (the consumer row: the flow link + the cohort stamp, no join-wait
-    # marker, the static-shape idempotency key). The depth-2 fork's adoption
-    # probe finds that row and adopts it.
+    # the first tick runs 'src' (the depth-1 fork). Before any 'src.item'
+    # child finalizes (the last one's fire reads the join's consumers),
+    # stamp the binding the old fork wrote for the nested map's join
+    # ('src.join.join', kind map_join — skipped by the static insert). The
+    # fired join's outbox drain then pre-creates it (the consumer row: the
+    # flow link + the cohort stamp, no join-wait marker, the static-shape
+    # idempotency key), and the depth-2 fork's adoption probe adopts it.
+    await runner.tick(flow_id)
+    children = await wf_pool.fetch(
+        f"""SELECT status FROM "{wf_schema}".jobs
+            WHERE (metadata->>'flow_id')::uuid = $1::uuid
+              AND metadata ? 'flow_id' AND step_key = 'src.item'""",  # Why: the schema is the module fixture's validated identifier; every value is $-bound.
+        flow_id,
+    )
+    assert [r["status"] for r in children] == ["pending", "pending"], (
+        f"the stamp lands before any depth-1 child runs; got {children}"
+    )
+    decl = runner.compiled.nodes["src.join.join"]
+    old_binding = _consumer_binding_doc(
+        ConsumerBinding(
+            step_key="src.join.join",
+            actor=decl.actor,
+            queue=decl.queue,
+            payload={},
+            failure_policy=decl.on_failure,
+            start_to_close=decl.start_to_close,
+            rate_limits=rate_limit_names(decl.rate_limits, what="the old binding"),
+            reservations=reservation_names(decl.reservations, what="the old binding"),
+            priority=decl.priority,
+            retry=_node_retry_spec(decl),
+        )
+    )
+    stamped = await wf_pool.execute(
+        f"""UPDATE "{wf_schema}".jobs
+            SET metadata = jsonb_set(metadata, '{{consumers}}', $2::jsonb, true)
+            WHERE (metadata->>'flow_id')::uuid = $1::uuid
+              AND metadata ? 'flow_id' AND step_key = 'src.join'""",  # Why: the schema is the module fixture's validated identifier; every value is $-bound.
+        flow_id,
+        json.dumps([old_binding]),
+    )
+    assert stamped == "UPDATE 1", stamped
+
     level3 = 0
     for _ in range(12):
         await runner.tick(flow_id)
@@ -941,14 +989,20 @@ async def test_an_adopted_join_carries_the_stamp_and_feeds_depth_3(
 
     # exactly the non-adopted join's — the join-wait marker and the run's
     # cohort, on the adopted row.
-    adopted = await wf_pool.fetchrow(
-        f"""SELECT metadata->'reservations' AS res, metadata->>'blocking_reason' AS reason
+    nested_rows = await wf_pool.fetch(
+        f"""SELECT metadata->'reservations' AS res, metadata->>'blocking_reason' AS reason,
+                   idempotency_key
             FROM "{wf_schema}".jobs
             WHERE (metadata->>'flow_id')::uuid = $1::uuid
               AND metadata ? 'flow_id' AND step_key = 'src.join.join'""",  # Why: the schema is the module fixture's validated identifier; every value is $-bound.
         flow_id,
     )
-    assert adopted is not None
+    # adopted, not inserted: one row, under the drain's key (the fork's own
+    # insert would key it wf:{flow}:src.join:src.join.join).
+    assert [r["idempotency_key"] for r in nested_rows] == ["wf:src.join.join"], (
+        f"the depth-2 fork adopts the drain-precreated row; got {[dict(r) for r in nested_rows]}"
+    )
+    adopted = nested_rows[0]
     names = _loads(adopted["res"]) if adopted["res"] is not None else None
     assert names == ["run-guard:deep-9"], (
         f"the ADOPTED join row carries the run's cohort; got {names}"

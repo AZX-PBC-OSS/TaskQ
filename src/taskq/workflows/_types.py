@@ -803,7 +803,7 @@ def _consumer_bindings(raw: object) -> tuple[ConsumerBinding, ...]:
     # asyncpg returns jsonb as ``str`` on un-coded connections — parse
     # before indexing (the estate's _json seam, never the stdlib import).
     decoded: Any = _json_loads(raw) if isinstance(raw, str) else raw
-    return tuple(_consumer_binding(c) for c in decoded)  # pyright: ignore[reportUnknownArgumentType]  # Why: the Any-contract walk — decoded's members are Unknown; _consumer_binding's asserts guard the runtime shape.
+    return tuple(_consumer_binding(c) for c in decoded)  # pyright: ignore[reportUnknownArgumentType]  # Why: the Any-contract walk — decoded's members are Unknown; _consumer_binding validates the required keys and the structured sub-docs (KeyError/ValueError on a malformed stamp) rather than asserting the shape away.
 
 
 def _seconds_or_none(raw: object) -> timedelta | None:
@@ -862,16 +862,39 @@ def _retry_from_doc(raw: object) -> RetrySpec | None:
     )
 
 
+def _required_str(raw: dict[str, Any], key: str) -> str:
+    """One REQUIRED binding field: a stamp that lacks the key raises
+    ``KeyError``, and a present-but-wrong-typed value raises ``ValueError``
+    — the persisted shape is validated at this boundary, never degraded."""
+    value = raw[key]
+    if not isinstance(value, str):
+        raise ValueError(f"workflow consumer binding {key!r} must be a string")
+    return value
+
+
 def _consumer_binding(raw: dict[str, Any]) -> ConsumerBinding:
     """one metadata ``consumers`` entry → the typed binding (the walk's
-    own arm): the declared deadline parses back from the binding's
-    SECONDS (the jsonb wire form — :func:`_consumer_binding_doc`'s own
-    serialization); a malformed value degrades to None (the binding is
-    a declaration, never a correctness input worth a sweep death)."""
+    own arm).
+
+    The three REQUIRED keys — ``step_key``, ``actor``, ``queue`` — are read
+    directly (:func:`_required_str`): a stamp missing one raises
+    ``KeyError`` and a wrong-typed one raises ``ValueError``. The
+    structured sub-docs validate through their own readers
+    (``rate_limits``/``reservations`` via :func:`_string_tuple`, ``retry``
+    via :func:`_retry_from_doc`), so a malformed entry raises there too.
+    ONLY the declared deadline degrades: ``start_to_close_s`` is a duration
+    hint parsed back from the jsonb wire form
+    (:func:`_consumer_binding_doc`'s serialization), so a malformed value
+    becomes ``None`` (:func:`_seconds_or_none`) rather than a raise.
+
+    This is a CROSS-RELEASE parse — since #745 a ``map_join``-naming
+    ``consumers`` stamp can only be written by an older release into the
+    same database — so the raise is a loud refusal at a real boundary, not
+    a sweep death the reader is promised cannot happen."""
     return ConsumerBinding(
-        step_key=raw["step_key"],  # pyright: ignore[reportUnknownArgumentType,reportIndexType]  # Why: the Any-contract walk (the ledger wrote the shape).
-        actor=raw["actor"],  # pyright: ignore[reportUnknownArgumentType,reportIndexType]
-        queue=raw["queue"],  # pyright: ignore[reportUnknownArgumentType,reportIndexType]
+        step_key=_required_str(raw, "step_key"),
+        actor=_required_str(raw, "actor"),
+        queue=_required_str(raw, "queue"),
         payload=raw.get("payload"),
         map_index=raw.get("map_index"),
         start_to_close=_seconds_or_none(raw.get("start_to_close_s")),

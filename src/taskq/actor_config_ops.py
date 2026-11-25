@@ -420,7 +420,9 @@ class ActorQueueMoveResult:
     target's consumers; a re-run after an aborted move counts only the
     remainder it moved itself). ``running_jobs_left`` counts the actor's
     running rows, which are deliberately untouched, each finishes on the
-    worker that claimed it, and a row that instead re-pends (a failure
+    worker that claimed it — except a ``wf`` flow root, which is never
+    claimed and finishes when its run terminalizes — and a row that
+    instead re-pends (a failure
     retry, a lease/heartbeat reclaim, an operator retry) keeps its
     original queue label as an audit trail but is ROUTED, at dispatch, by
     the actor's current stored assignment: the tail drains through the

@@ -42,6 +42,7 @@ def build_step_context(
     job_id: JobId,
     node_key: str,
     attempt: int,
+    claim_epoch: int,
     pool: asyncpg.Pool,
     wsql: WorkflowSql,
     input: object,
@@ -52,7 +53,6 @@ def build_step_context(
     redact: Callable[[str], str] | None = None,
     worker_id: JobId | None = None,
     progress: ProgressEmitter | None = None,
-    claim_epoch: int = 0,
     max_in_flight: int | None = None,
     flow_name: str | None = None,
     queue: str | None = None,
@@ -60,6 +60,7 @@ def build_step_context(
     budget_remaining_ms: int | None = None,
     physical_attempt: int | None = None,
     run_priority: int | None = None,
+    loop_iteration: int | None = None,
 ) -> StepContext:
     """The one context construction (the claim seam's factory): the
     runner's step path and the loop driver's iteration path build the
@@ -74,6 +75,7 @@ def build_step_context(
         _wsql=wsql,
         _map_index=map_index,
         _is_loop=is_loop,
+        _loop_iteration=loop_iteration,
         _ledger_id=ledger_id,
         _workflow_name=workflow_name,
         _redact=redact,
@@ -114,8 +116,26 @@ class StepContext(CtxSpawnOps, CtxWaitOps, CtxTimerOps):
     input: object
     _pool: asyncpg.Pool
     _wsql: WorkflowSql
+    #: This attempt's claim epoch (the emit's cursor-fence's value, the
+    #: hold fence's value, and the spawn slot's reset key — the claim CAS
+    #: granted it). REQUIRED: both claim doors grant at least 1
+    #: (``_sql_runner.NODE_CLAIM_SQL_TEMPLATE`` and the terminal claim
+    #: UPDATE both write ``claim_epoch + 1``), and an unsupplied epoch used
+    #: to default to 0, where the hold fence matches nothing and the spawn
+    #: cursor never resets — two silent failures. The consumers refuse a
+    #: non-positive epoch loudly instead (``reassert_hold``,
+    #: ``spawn_flow``'s slot claim).
+    #: The direct driver's own claim grants the NEXT epoch atomically with
+    #: its attempt; a fleet-claimed row carries its dispatch claim's granted
+    #: epoch — the emit's cursor checkpoint fences on the epoch beside the
+    #: worker and the attempt (the fence must match the row, or the
+    #: checkpoint updates nothing and the emit refuses).
+    claim_epoch: int
     _map_index: int | None = None
     _is_loop: bool = False
+    #: The loop body's iteration (``None`` outside a loop body): an unkeyed
+    #: spawn's slot cursor and run key are scoped to it.
+    _loop_iteration: int | None = None
     _ledger_id: JobId | None = None
     #: The registered workflow's name (D1 — the signal-model catalog's
     #: key; the hold-context redact hook's resolution).
@@ -136,15 +156,6 @@ class StepContext(CtxSpawnOps, CtxWaitOps, CtxTimerOps):
     # contract) and drops the emission (the deliberate no-op — the jobs ctx's
     # unwired pattern), never a crash.
     _progress: ProgressEmitter | None = None
-    #: This attempt's claim epoch (the emit's cursor-fence's value — the
-    #: claim CAS granted it; the emit's checkpoint fences on the pair).
-    #: The direct driver's own claim grants the NEXT epoch atomically with
-    #: its attempt (NODE_CLAIM_SQL_TEMPLATE's ``claim_epoch + 1``); a
-    #: fleet-claimed row carries its dispatch claim's granted epoch — the
-    #: emit's cursor checkpoint fences on the epoch beside the worker and
-    #: the attempt (the fence must match the row, or the checkpoint
-    #: updates nothing and the emit refuses).
-    claim_epoch: int = 0
     #: The physical jobs.attempt this context's claim granted (the fence's
     #: ordinal), kept beside the public logical ``attempt``: a source's
     #: public ordinal is the durable carrier's value, the physical claim's

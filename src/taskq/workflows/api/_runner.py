@@ -633,7 +633,7 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
     ) -> None:
         for key in sorted(self.compiled.nodes):
             node = self.compiled.nodes[key]
-            if node.kind == "map_join":
+            if node.is_fork_spawned_join:
                 continue  # spawned by the source's fork
             # The map-join's downstream is a static row: every
             # non-join node is inserted upfront — a node whose parent is
@@ -735,7 +735,7 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
         # The edges in a second pass (both endpoints exist).
         for key in sorted(self.compiled.nodes):
             node = self.compiled.nodes[key]
-            if node.kind == "map_join":
+            if node.is_fork_spawned_join:
                 continue
             for parent_key in node.parents:
                 parent_node = self.compiled.nodes.get(parent_key)
@@ -748,7 +748,7 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
                 if child_row is None:
                     continue  # the fork's outbox writes these edges at fire
                 if parent_row is None:
-                    if parent_node is not None and parent_node.kind == "map_join":
+                    if parent_node is not None and parent_node.is_fork_spawned_join:
                         # the map JOIN'S edge — the fork writes the edge row at
                         # the source's finalize . The counter is reserved now:
                         # the consumer can never dispatch before the join's
@@ -854,10 +854,12 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
         """One dispatch pass: claim + run + finalize every claimable node
         (``execute=True`` — the dev-loop driver); then the sweep arms
         (the crash-window heal + the outbox drain + the DURABLE TIMER's
-        fire — the dev loop's timer arm mirrors the leader's, so a
-        timer flow completes in-process exactly as it completes on the
-        fleet). With ``execute=False`` the sweep arms only — the
-        orchestration-only pass. Returns whether any node ran."""
+        fire + the hold-stamp reconcile — the dev loop's arms mirror the
+        leader's, so a timer flow completes in-process exactly as it
+        completes on the fleet, and the dead stamp a re-entered wait can
+        leave is healed in-process instead of stranding the run). With
+        ``execute=False`` the sweep arms only — the orchestration-only
+        pass. Returns whether any node ran."""
         ran = False
         if execute and not _capability_checked:
             await self._refuse_guarded_direct_run(flow_id)
@@ -886,6 +888,14 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
         from taskq.workflows.api._hitl import sweep_expired_signals
 
         await sweep_expired_signals(self.pool, schema=self.schema)
+        # the hold-stamp reconcile mirrors the leader's arm: the re-entry
+        # re-park can leave a dead stamp whose delivery landed inside the
+        # read-then-park window, and the stamp makes the row unclaimable
+        # forever. Without this arm the dev drive stalls at ``max_ticks``
+        # with nothing naming the wedge.
+        from taskq.workflows._sweep import sweep_hold_stamps
+
+        await sweep_hold_stamps(self.pool, self.wsql)
         await drain_outbox(self.pool, self.wsql)
         from taskq.workflows.api._hitl import sweep_due_timers
 
@@ -2489,7 +2499,8 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
         one per list element — fresh jobs, per-item ledger identity) +
         the join whose consumers are the wiring's downstream nodes (the
         outbox carries the consumer bindings — the cascade
-        fix). ``None`` when the body returned no list (the map over
+        fix), except a nested map's join, which its own fork writes
+        (#745). ``None`` when the body returned no list (the map over
         nothing — the join fires empty, the collect states it).
 
         ``run_priority`` is the RUN's per-call override (the wf-priority
@@ -2579,6 +2590,8 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
             )
             for downstream in sorted(self.compiled.nodes)
             if join_key in self.compiled.nodes[downstream].parents
+            # a map on this join: its join is the nested fork's own row (#745)
+            and not self.compiled.nodes[downstream].is_fork_spawned_join
         )
         return ForkSpec(
             children=tuple(
@@ -2658,6 +2671,13 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
         row NAMES its arm), the arm's placement (R4: the per-arm
         actor/queue), and the element's jsonb under the item key (the
         arm body's declared param type is the decode's target — R3).
+
+        The join's consumers are the wiring's downstream nodes (the outbox
+        carries the consumer bindings — the cascade fix), EXCEPT a nested
+        map's join, which its own fork writes (#745): naming it here would
+        put a binding for the nested join on the outer join's fire, and the
+        drain would mint a second row for one step key. ``_map_fork``'s
+        comprehension carries the same exclusion — change both or neither.
 
         LOUD DOOR (R1 — the skip-silent shape is DEAD): an element
         whose type has no arm raises :class:`RouterNotTotal` before any
@@ -2759,6 +2779,8 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
             )
             for downstream in sorted(self.compiled.nodes)
             if join_key in self.compiled.nodes[downstream].parents
+            # a map on this join: its join is the nested fork's own row (#745)
+            and not self.compiled.nodes[downstream].is_fork_spawned_join
         )
         children: list[ChildSpec] = []
         for i, element in enumerate(items):

@@ -86,7 +86,7 @@ import shutil
 import subprocess  # Why: the verifier's verdict is its exit code — the script is the subject (the pin's own shape).
 import sys
 from pathlib import Path
-from typing import cast
+from typing import Any, cast
 
 import pytest
 
@@ -483,4 +483,102 @@ def test_a_nested_md_readme_or_docs_change_still_stalifies(tmp_path: Path, touch
         "claim — the docs exemption is root-anchored: a nested md/README/"
         "docs path is outside it and must stalify (the anchoring claims in "
         "the law's comments are law, not prose). The output:\n" + proc.stdout + proc.stderr
+    )
+
+
+# ── the ancestry half of the law's two faces ───────────────────────
+
+
+def _load_verifier() -> Any:
+    """The verifier as a module (its top level is constants and function
+    definitions — no work happens until ``main()``), so the pins can drive its
+    two halves directly."""
+    spec = importlib.util.spec_from_file_location("_verify_evidence_heads_ancestry", _VERIFIER)
+    assert spec is not None and spec.loader is not None, "the verifier must load as a module"
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+@pytest.fixture
+def two_lineages(tmp_path: Path) -> tuple[Path, str, str]:
+    """``(repo, base_head, unrelated_head)`` — an unrelated lineage carrying the
+    SAME source tree, so the semantic diff between the two heads is empty while
+    neither is the other's ancestor. The checkout is left on the unrelated head
+    (the tree a verifier's ``HEAD`` names)."""
+    repo = tmp_path / "repo"
+    (repo / "src").mkdir(parents=True)
+    (repo / ".measurements").mkdir()
+    (repo / "src" / "app.py").write_text("X = 1\n", encoding="utf-8")
+    _git(repo, "init", "-q")
+    _git(repo, "checkout", "-q", "-b", "main-lineage")  # a fixed name: no init.defaultBranch
+    _git(repo, "config", "user.name", "pins")
+    _git(repo, "config", "user.email", "pins@localhost")
+    _git(repo, "config", "commit.gpgsign", "false")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "the base the claim was recorded on")
+    base_head = _git(repo, "rev-parse", "HEAD")
+
+    # The unrelated lineage: an orphan commit carrying the identical source
+    # tree, differing only inside the excluded measurements estate.
+    _git(repo, "checkout", "--orphan", "evidence-lineage", "-q")
+    (repo / ".measurements" / "note.txt").write_text("estate\n", encoding="utf-8")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "the estate's own lineage")
+    unrelated_head = _git(repo, "rev-parse", "HEAD")
+    return repo, base_head, unrelated_head
+
+
+def test_the_verifiers_diff_half_enforces_ancestry_as_the_mirror_does(
+    two_lineages: tuple[Path, str, str], monkeypatch: Any
+) -> None:
+    """``_source_changes_since``'s docstring states the rule directly: "An
+    unresolvable claimed head (not an ancestor) = stale."
+
+    The in-suite mirror enforces it in its own body; the verifier must too, or
+    the two functions that are meant to be the same function answer differently
+    and only the ``_off_by_one_fresh`` wrapper supplies the ancestry half — any
+    caller of the diff half gets the pre-repair verdict."""
+    repo, base_head, unrelated_head = two_lineages
+    verifier = _load_verifier()
+    monkeypatch.setattr(verifier, "REPO", repo)
+
+    verdict = verifier._source_changes_since(base_head)
+    assert verdict is True, (
+        f"the verifier's diff half answered {verdict!r} ('no behavioural change since "
+        f'{base_head[:12]}" = FRESH) for a claimed head that is NOT an ancestor of the '
+        f"checked-out tree {unrelated_head[:12]}, contradicting its own docstring and "
+        "the in-suite mirror's answer for the same input"
+    )
+    assert verifier._source_changes_since("-h") is True, (
+        "a claimed head that looks like an option must fail closed: the "
+        "`git merge-base --is-ancestor --` separator keeps git from parsing it"
+    )
+
+
+def test_the_two_faces_agree_that_a_non_ancestor_head_is_stale(
+    two_lineages: tuple[Path, str, str], monkeypatch: Any
+) -> None:
+    """The constant half of the law is pinned above; this is the ancestry half.
+
+    The verifier's COMPOSED verdict and the in-suite mirror must answer the same
+    thing for the same claimed head: it exists, carries the same source tree, and
+    is NOT an ancestor of the tree it is judged against — stale on both faces."""
+    from tests._wf_fixtures import source_changes_since
+
+    repo, base_head, unrelated_head = two_lineages
+    verifier = _load_verifier()
+    monkeypatch.setattr(verifier, "REPO", repo)
+    # The mirror resolves its repo from its own __file__; the memo stores the
+    # verdict per (head, stem, anchor), so the redirect must clear it.
+    monkeypatch.setattr("tests._wf_fixtures.__file__", str(repo / "tests" / "_wf_fixtures.py"))
+    monkeypatch.setattr("tests._wf_fixtures._SOURCE_CHANGES_MEMO", {})
+
+    assert source_changes_since(base_head, anchor=unrelated_head) is True, (
+        "the in-suite mirror called a non-ancestor claimed head FRESH — the semantic "
+        "diff is empty, but the claimed head is no part of the judged tree's history, "
+        "so no receipt it cites was ever measured against that tree"
+    )
+    assert verifier._off_by_one_fresh(base_head) is False, (
+        "the verifier called a non-ancestor claimed head FRESH — one law is reading two ways"
     )

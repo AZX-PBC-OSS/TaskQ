@@ -536,8 +536,10 @@ sweep's two dispatch-invisible legs (a row whose actor has no
 `actor_config` row; a row whose routing queue no live worker serves) —
 the same computation for those two legs, issued here on demand: `doctor`
 is the surface an operator reaches for mid-incident, and it cannot wait
-on a leader tick. The sweep's third, run-scoped `workflow_root_missing`
-leg is not mirrored here; the leader's tick owns it. The result is per actor, bounded by the distinct-actor count,
+on a leader tick. The sweep's dead-stamp leg (`stamp_unresolved` — repaired
+by the hold-stamp reconcile, not a routing condition) and its run-scoped
+`workflow_root_missing` leg are not mirrored here; the leader's tick owns
+them. The result is per actor, bounded by the distinct-actor count,
 never by backlog depth.
 
 When a live worker's `workers` row metadata carries a non-empty event-loop

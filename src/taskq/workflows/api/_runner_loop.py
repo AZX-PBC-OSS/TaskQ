@@ -558,6 +558,7 @@ class LoopOps(_LoopHost):
                     claimed_at=datetime.now(UTC),
                     budget_remaining_ms=remaining,
                     claim_epoch=claim_epoch,
+                    loop_iteration=iteration,
                 )
                 # the carry's typed contract, at the one point a carry reaches
                 # a body: re-hydrated through the declared type's validator —

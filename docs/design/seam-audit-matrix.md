@@ -102,6 +102,7 @@ separate phases).
 | deadline sweep (heartbeat arm) | a slow-but-live worker near the deadline | the phantom-cancel window: a failed tick retries promptly so the recovery beat lands inside the 2x floor | `test_heartbeat.py::test_one_fast_transient_failure_is_one_miss_retried_promptly` |
 | archive / retention sweeps | retention bounds vs live readers | bounded batches, event TTL carve-out for reclaim events | `test_attack_rt_retention_integration.py`, `test_sweepaudit_bounded_writes.py` |
 | sweep liveness under long batches | a sweep batch outlasts the staleness budget | `_drain_bounded` renews the detector stamp mid-sweep | `test_drain_liveness.py`, `test_rt_worker_sweep_telemetry.py` |
+| the fork/drain consumer-binding seam (the fork's join `consumers` → the fire's outbox → `drain_outbox`), callers: `_map_fork`, `_route_fork` | the outbox drain lands before or after a nested map's fork on the outer join (#745) | a join row has one writer, its own source's fork: no binding names a `map_join` node, so the drain never mints a join row | `test_wf_map_on_join_pins.py` |
 
 ## 6. State machines
 
@@ -166,7 +167,13 @@ above.
 | lease and sweep deadlines | worker clock skew | the comparisons are server-side (`clock_timestamp()`); the same clock that stamped the lease judges it | `test_heartbeat.py` (the gated statement's server-side threshold), `test_rt_sweeps_*` |
 | harness seed aging | timing-sensitive choreography | seeds anchor to the PG clock instead of wall-clock sleeps | the sweep pins' seeding discipline |
 
-## 11. Workflow join collects
+## 11. Dispatch admission
+
+| seam / caller | interleaving | invariant | pin |
+|---|---|---|---|
+| `capped_running.in_flight` (`backend/_dispatch_sql.py`), read by `per_actor_capacity`, `repend_capacity` and the `eligible` re-limit | a root written on a capped non-`wf` actor through the exported `insert_flow_run` (its `entry.actor` is caller-chosen): the subtraction's literal `'wf'` never sees it, so that actor's pending step is not admitted while a row that is not work holds the unit. Diagnostic shape: an actor at `saturation = 1` whose running rows include `__flow__` roots is an actor whose cap is held by rows that are not work. | a **running** flow root never holds a unit of `wf`'s cap; running steps and vanilla running rows do. The subtraction is the literal `'wf'`, so it relies on every root being written on `wf` (`FlowEntryShim.actor`). That scope is documented on `FlowEntry`/`insert_flow_run` but not enforced at the exported write. | `tests/test_wf_root_actor_cap_pins.py` (including the terminal-root and placement pins) and `tests/test_wf_root_cap_subtraction_gate.py` |
+
+## 12. Workflow join collects
 
 | seam / caller | interleaving | invariant | pin |
 |---|---|---|---|
@@ -179,9 +186,9 @@ Five rows read "no pin": the `resolve_claim`/`mark_claimed` bare-id intent
 mutation (section 1.1), the cancel ladder's detach-delivery shape
 (section 4), the reconcile's claim-time attempt refund (section 6.1),
 the tx-path SystemExit task boundary (section 6.1), and the join-row
-readers that still decode a truncated envelope's prefix (section 11).
+readers that still decode a truncated envelope's prefix (section 12).
 Each row states the invariant and the pin's shape; a PR touching those
-seams owes the pin. The section 11 row is a known loss as well as a
+seams owes the pin. The section 12 row is a known loss as well as a
 missing pin: its readers need the fix before the pin can go green.
 The matrix's pinned verdicts are grep-and-read verdicts over the named
 test files, not re-runs of every cited suite.

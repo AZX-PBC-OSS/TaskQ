@@ -1276,6 +1276,73 @@ raises, so nothing points you at the call site; audit for them explicitly.
   and it reports the dropped remainder count. The bound follows
   `TASKQ_EXCEPTION_MESSAGE_MAX_CHARS` when raised.
 
+* **The dispatch fence refuses every row stamped `metadata.hold`, and that
+  refusal costs a heap visit per standing held row per dispatch round.** A
+  stamped row is the held representation (the in-process claim CAS already
+  refused it; the fleet now agrees), so a dead stamp can no longer be
+  re-claimed. The predicate is not indexable (`jobs`' only GIN index serves
+  `@>`, not `?`), so on a HITL-heavy queue with deep standing untimed holds
+  both dispatch statements' row work grows linearly with the held rows ahead
+  of the first routable one, on every round, for as long as those holds
+  stand — measured in `perf-evidence-dispatch.md` (repo root)
+  and pinned by `tests/test_dispatch_fence_hold_backlog_depth.py`. The old
+  depth-flat contract still holds for vanilla and routable rows.
+  **The trade-off:** a queue whose pending population is mostly parked on
+  human holds now pays a proportional read at the dispatch poll cadence.
+  Keep standing untimed holds bounded where you can (timed waits expire; the
+  reconcile clears dead stamps), and size a HITL-heavy fleet from the
+  measured held-backlog numbers, not the vanilla depth curve. An indexable
+  marker (a partial index on the pending population, or the stamp mirrored
+  into a column) is the future migration that restores the old bound.
+
+* **An unkeyed `ctx.spawn_flow` in a loop body gets a per-iteration run key,
+  and a map item's unkeyed spawn gets a per-item run key.** The default run
+  key's node segment is now `<key>.iter<i>` in a loop body, so a re-run of
+  iteration k adopts k's own children; on a map item it is `<key>.item<m>`
+  (map items share one `step_key`, so without the index every sibling adopted
+  item 0's child). A loop run or a map in flight across the upgrade that
+  spawned unkeyed under the old release mints that iteration's / item's
+  unkeyed children once more when it runs again, and during a rolling deploy
+  it can happen in either direction (old and new workers derive different
+  keys). Keyed spawns and spawns outside a loop and outside a map item keep
+  their keys.
+
+  **Your action:** either drain in-flight runs before rolling (let them reach
+  terminal on the old release), or cancel-and-restart the ones you cannot
+  drain — §6 of [Workflows](workflows.md) is the in-flight versioning
+  contract and the cancel-then-restart path. Accepting the default means a
+  duplicated child execution for each loop iteration or map item that
+  re-runs across the deploy (its side effects run twice; the parent adopts
+  the new child and leaves the old one's result unread). **Detection:** the
+  old release's cursor family is the marker of a row it spawned on —
+
+  ```sql
+  -- rows the previous release left mid-spawn (the old cursor key family)
+  SELECT id, step_key, status, metadata->>'flow_id' AS flow_id
+  FROM jobs
+  WHERE step_key <> '__flow__'
+    AND status IN ('pending', 'scheduled', 'running')
+    AND EXISTS (
+      SELECT 1 FROM jsonb_object_keys(metadata) AS k
+      WHERE starts_with(k, 'spawn_cursor_')
+    );
+  ```
+
+  A count of zero means no in-flight row carries the old derivation.
+  See the spawn's atomicity face in [Workflows](workflows.md) §3b.
+
+* **A bare-decimal `ctx.spawn_flow(key=...)` is refused.** `key="0"`,
+  `key=str(i)` and any all-digit key reproduced the default run key's slot
+  segment byte for byte, so a numeric key silently aliased the node's first
+  unkeyed spawn (a plain node with two spawn sites handed one caller the
+  other's child). The spawn now raises `SpawnKeyReservedError` (a
+  `ValueError` subclass, so callers that guarded the older shape keep
+  working) naming the fix; every non-decimal key keeps its byte-identical run
+  key, so only a caller that was already colliding observes the change. The
+  refusal is DETERMINISTIC — an uncaught one terminal-fails the node on
+  attempt 1 without burning the retry budget. Rename the key
+  (`f"item-{i}"`) or drop `key=` to use the slot.
+
 ### Terminal outcome writes raise on drift instead of falling through silently
 
 > **Unreleased.** Backend implementors and test-twin drivers see a new
@@ -2004,6 +2071,155 @@ names exactly whose `TASKQ_QUEUES` coverage to check. `taskq_queue_depth`
 is still emitted, so dashboards and any rules you wrote against it keep
 working, but if you overrode the bundled alert's threshold, re-express
 the override in seconds of oldest-pending age.
+
+### A map on another fan-out's join: the nested join has one row
+
+> **Unreleased.** Silent; runs whose outer fork ran on an earlier release
+> can still show the old behaviour.
+
+A `map_source` placed on another map's or route's join used to get two
+`<join>.join` rows: the nested fork's own, and a second one the outbox
+drain inserted under `idempotency_key = 'wf:<step_key>'`. Depending on
+which landed first, the second row stayed `pending` on a finished run
+(`taskq flows list` showed `pending root=succeeded`), ran the join work a
+second time, or ran before the nested fork existed. In that last case the
+run either wedged `running` forever, or the step after the nested map ran
+on an empty join and the run succeeded with a wrong result. The outer
+fork no longer lists the nested join as a consumer, so the nested fork
+writes the only row.
+
+The fix covers runs whose outer fork runs on the new release. A run whose
+outer fork ran on an earlier release, including on an old worker during a
+rolling deploy, keeps the old binding and can still show any of the
+behaviours above. Nothing repairs those rows automatically. Three read-only
+queries find them. The first finds second rows left `pending` on a
+finished or pruned run:
+
+```sql
+SELECT n.id, n.metadata->>'flow_id' AS run_id, n.step_key, r.status AS root_status
+FROM jobs n
+LEFT JOIN jobs r
+  ON r.id = (n.metadata->>'flow_id')::uuid AND r.step_key = '__flow__'
+WHERE n.metadata ? 'flow_id'
+  AND n.step_key LIKE '%.join.join'
+  AND n.idempotency_key = 'wf:' || n.step_key
+  AND n.status = 'pending'
+  AND (r.id IS NULL OR r.status NOT IN ('pending', 'scheduled', 'running'));
+```
+
+`taskq job cancel <id>` is the record-only repair, and its cost has to be
+stated plainly: the row goes to `cancelled`, the root keeps its status and
+the run's result does not change, but every surface that derives the run's
+status from its rows — `taskq flows list`, the headline of `taskq flows
+status`, the admin run page — then reports the successful run as
+`cancelled`, permanently. The maintenance leg only re-derives a root that
+is still `running`, so nothing ever reconciles a terminal root from its
+rows again, and the estate's status-truth check (a `succeeded` root must
+derive `complete`) keeps flagging the run.
+
+Remove the row instead. A second row is a pure orphan: no edge row names
+it as child or parent, no step-ledger row records a claim for it, and no
+consumer belongs to it. The statement below deletes one only when every
+one of those facts holds, the row is still `pending` under the drain's own
+key, and the run it belongs to is finished or pruned — never a live run's
+fresh drain row. A real join row has its source's edge and a claim
+history, so it can never match:
+
+```sql
+DELETE FROM jobs n
+WHERE n.metadata ? 'flow_id'
+  AND n.step_key LIKE '%.join.join'
+  AND n.idempotency_key = 'wf:' || n.step_key
+  AND n.status = 'pending'
+  AND NOT EXISTS (
+    SELECT 1 FROM jobs r
+    WHERE r.id = (n.metadata->>'flow_id')::uuid
+      AND r.step_key = '__flow__'
+      AND r.status IN ('pending', 'scheduled', 'running')
+  )
+  AND NOT EXISTS (
+    SELECT 1 FROM wf_edge e
+    WHERE e.child_id = n.id OR e.parent_id = n.id
+  )
+  AND NOT EXISTS (
+    SELECT 1 FROM wf_step_ledger l
+    WHERE l.job_id = n.id
+  );
+```
+
+The run's rows then derive `complete` under its `succeeded` root, so the
+root's status, the run's result and every rows-derived surface agree.
+Re-run the first query to confirm it no longer selects the run.
+
+The second finds second rows that ran before the nested fork and were then
+adopted by it:
+
+```sql
+SELECT n.id, n.metadata->>'flow_id' AS run_id, n.step_key, n.deps_pending,
+       r.status AS root_status
+FROM jobs n
+LEFT JOIN jobs r
+  ON r.id = (n.metadata->>'flow_id')::uuid AND r.step_key = '__flow__'
+WHERE n.metadata ? 'flow_id'
+  AND n.step_key LIKE '%.join.join'
+  AND n.idempotency_key = 'wf:' || n.step_key
+  AND n.status = 'succeeded'
+  AND n.deps_pending > 0;
+```
+
+The row is `succeeded` with `deps_pending > 0` because the nested fork
+adopted it after it had already run, so its children's count never drains.
+If `root_status` is `running`, the run is wedged: stop it with
+`taskq flows cancel <run_id>`. If it is `succeeded`, the step after the
+nested map ran on an empty join, so treat that run's result as suspect and
+re-run it. If it is `failed` or `cancelled` (a run you stopped with
+`taskq flows cancel` stays on the list), the run ended without a result;
+re-run it if you still need one.
+
+A second row that ran while the nested fork's children were still running
+is harmless when the nested map is the last fan-out: the run ends with two
+`succeeded` rows and the right result, and nothing needs repair. It is not
+harmless when another map sits on the nested map's join (three levels or
+more). The second row forks that map again with no items, so the step after
+it can run on an empty join, and the real nested join's own fork then fails
+on a duplicate `wf_edge` row. The third query finds these runs:
+
+```sql
+SELECT n.id, n.metadata->>'flow_id' AS run_id, n.step_key, n.status,
+       r.status AS root_status
+FROM jobs n
+LEFT JOIN jobs r
+  ON r.id = (n.metadata->>'flow_id')::uuid AND r.step_key = '__flow__'
+WHERE n.metadata ? 'flow_id'
+  AND n.step_key LIKE '%.join.join'
+  AND n.idempotency_key = 'wf:' || n.step_key
+  AND n.status NOT IN ('pending', 'cancelled')
+  AND EXISTS (
+    SELECT 1 FROM jobs f
+    WHERE f.metadata->>'flow_id' = n.metadata->>'flow_id'
+      AND f.step_key = n.step_key
+      AND f.id <> n.id
+  )
+  AND EXISTS (
+    SELECT 1 FROM jobs m
+    WHERE m.metadata->>'flow_id' = n.metadata->>'flow_id'
+      AND m.step_key = n.step_key || '.join'
+  );
+```
+
+If `root_status` is `running`, stop the run with
+`taskq flows cancel <run_id>` (it stays on the list). Whatever its status,
+treat the run's result as suspect and re-run it.
+
+A fourth shape is not a repair case, so none of the queries selects it. If
+the drain's second row had already run (or was still running) when the
+nested fork reached it, the fork now refuses to adopt it and writes its own
+row: the run completes with the right result, and the leftover row sits
+`succeeded` with `deps_pending = 0` — debris, not a wrong answer, and
+invisible to the three queries above because a never-adopted row keeps
+`deps_pending = 0`. The refusal is recorded as a
+`wf-fork-join-adoption-skipped` log event naming the run, the step key and
+the leftover row.
 
 ---
 
