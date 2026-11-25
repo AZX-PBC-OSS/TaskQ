@@ -294,7 +294,16 @@ class ChildHandle[G: BaseModel]:
         returns the :class:`Expired` member once per abandoned row per
         attempt (the face-marker pattern). ``None`` waits as long as the
         child lives — safe by the cascade (a cancelled parent cancels
-        its children, so no join outlives its flow)."""
+        its children, so no join outlives its flow).
+
+        A succeeded child whose terminal value cannot be read raises
+        :class:`~taskq.workflows.api._runner_errors.WorkflowResultDetailUnavailableError`
+        — the terminal row is missing, or a truncated join's parent
+        detail rows have aged out or been purged. The raise lands inside
+        the calling node's body (so the failure is recorded against the
+        consumer's row, not the child's) and is deterministic: a retry
+        cannot restore the rows, so the ladder does not spend its budget
+        on it."""
         site = self._site
         signal_name = f"{CHILD_JOIN_SIGNAL_PREFIX}{self.flow_id}"
         async with site.pool.acquire() as conn:
@@ -429,11 +438,25 @@ class ChildHandle[G: BaseModel]:
         (:func:`taskq.workflows.api._runner_codec.decode_result_with_detail`)
         — the same function ``FlowRunner.result()`` uses — so a bounded
         collect's truncated summary row hands back the FULL collect, and a
-        truncated ``gather`` flattens exactly as its own packer did (the
-        durable ``wf_node_kind`` stamp on the row, not a registry this
-        reader does not have). Missing detail rows raise
-        :class:`~taskq.workflows.api._runner_errors.WorkflowResultDetailUnavailableError`
-        — the join fails LOUDLY instead of returning a 64 KiB prefix."""
+        truncated ``gather`` flattens exactly as its own packer did.
+
+        The flatten authority differs by row age, and this seat has to be
+        honest about it: a row born after this deploy carries the durable
+        ``wf_node_kind`` stamp in its ``metadata``, which is this reader's
+        authority (it holds no ``CompiledWorkflow`` to ask). A row born
+        before the stamp existed carries no kind here, so the re-read
+        falls back to a COUNT-VERIFIED reconciliation: when the rebuilt
+        parent values do not match the recorded item count and every one
+        of them is a list, it tries the one-level gather flatten and
+        accepts it only if the flattened length equals the recorded count.
+        If neither shape reconciles the read refuses.
+
+        A row with no durable value at all — a swept or re-pended terminal,
+        or a truncated join whose parent detail rows were purged — raises
+        :class:`~taskq.workflows.api._runner_errors.WorkflowResultDetailUnavailableError`,
+        the same fail-closed class the runner seats raise, so the join
+        fails LOUDLY instead of returning a 64 KiB prefix or validating a
+        ``None`` into a pydantic ``ValidationError``."""
         if self._terminal_key is None:  # pragma: no cover - the spawn refuses a terminal-less child
             raise ChildWorkflowUnknownError(
                 f"the child flow {self.flow_id} names no terminal — the spawn "
@@ -465,6 +488,7 @@ class ChildHandle[G: BaseModel]:
             raw=row["result"],  # pyright: ignore[reportUnknownArgumentType]  # Why: same walk.
             metadata=row["metadata"],  # pyright: ignore[reportUnknownArgumentType]  # Why: same walk.
             step_key=str(row["step_key"]),  # pyright: ignore[reportUnknownArgumentType]  # Why: same walk.
+            result_expired=bool(row["result_expired"]),  # pyright: ignore[reportUnknownArgumentType]  # Why: same walk.
         )
         result = self._result_model.model_validate(decoded)
         return ChildOk(flow_id=str(self.flow_id), result=result)
@@ -802,7 +826,8 @@ SELECT status FROM {schema}.jobs WHERE id = $1 AND step_key = '__flow__'
 """
 
 _CHILD_TERMINAL_RESULT_SQL = """
-SELECT id, step_key, result, metadata FROM {schema}.jobs WHERE step_key = $1
+SELECT id, step_key, result, metadata, (result IS NULL) AS result_expired
+FROM {schema}.jobs WHERE step_key = $1
   AND (metadata->>'flow_id')::uuid = $2
 """
 

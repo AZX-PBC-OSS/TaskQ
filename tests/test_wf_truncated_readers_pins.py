@@ -7,6 +7,13 @@ elements remain on the parent rows. Every join-row reader must detect
 ``result_truncation`` and rebuild the complete list from parent rows (flattening
 for ``gather`` and failing closed if parent detail rows are missing), rather
 than silently handing callers the 64 KiB prefix.
+
+The same fail-closed contract covers rows with no durable value at all — a
+result the retention sweep nulled, or one an operator retry re-pended — the
+codec's malformed-row doors (a non-list prefix, a marker that is not a positive
+int, a non-object result, an over-count), the one-level flatten's empty-list
+boundary, and the per-read memo that keeps a shared truncated subtree to one
+fetch per node.
 """
 
 from __future__ import annotations
@@ -19,6 +26,7 @@ import pytest
 from pydantic import BaseModel, RootModel
 
 from taskq.backend._protocol import JobId
+from taskq.backend._sql_templates import render as render_backend_sql
 from taskq.backend.postgres import PostgresBackend
 from taskq.workflows import (
     ChildCancelled,
@@ -37,8 +45,9 @@ from taskq.workflows import (
 )
 from taskq.workflows._childflow import JoinSite
 from taskq.workflows._sql import WorkflowSql
+from taskq.workflows.api._runner_codec import decode_result_with_detail
 from taskq.workflows.api._runner_errors import WorkflowResultDetailUnavailableError
-from taskq.workflows.api._sql_runner import render_sql
+from taskq.workflows.api._sql_runner import PARENT_RESULTS_BY_KEY_SQL_TEMPLATE, render_sql
 
 # Each serialized item is ~530 bytes: 100 items (~53 KiB) fit inside a single
 # parent step row (< 64 KiB), while 200 items (~106 KiB) exceed the 64 KiB
@@ -314,6 +323,7 @@ async def test_child_ok_result_rebuilds_truncated_gather(
             job_id=claim.flow_id,
             node_key="standalone",
             attempt=1,
+            claim_epoch=1,
             ledger_id=None,
         ),
         flow_id=child_flow_id,
@@ -476,6 +486,7 @@ async def test_truncated_join_missing_detail_rows_fails_closed(
             job_id=claim.flow_id,
             node_key="parent_node",
             attempt=1,
+            claim_epoch=1,
             ledger_id=None,
         ),
         flow_id=claim.flow_id,
@@ -571,6 +582,7 @@ async def test_nested_truncated_gather_over_truncated_map_join_rebuilds_all_item
             job_id=claim.flow_id,
             node_key="standalone",
             attempt=1,
+            claim_epoch=1,
             ledger_id=None,
         ),
         flow_id=claim.flow_id,
@@ -591,8 +603,11 @@ async def test_truncated_map_join_over_list_items_is_never_flattened(
     detail re-read must NOT flatten it (the gather-only rule), at any reader —
     ``ChildHandle._ok_result``, ``FlowRunner.result()``, ``_flow_state()``.
 
-    This is what makes the durable ``wf_node_kind`` stamp load-bearing: a
-    runner-less reader has no ``CompiledWorkflow`` to ask, and a naive
+    The runner seats resolve the kind from the compiled graph, so the shape is
+    stamp-independent there. At the runner-less seat a ``map_join`` row carries
+    no ``wf_node_kind`` stamp either, and the count gate is what keeps it
+    correct: the un-flattened parent count already equals the recorded count,
+    so the pre-stamp count-verified reconciliation never fires. A naive
     ``all(isinstance(v, list) for v in parents)`` heuristic would flatten here
     and hand back 400 items where the declared contract is 200 batches.
     """
@@ -779,6 +794,7 @@ async def test_truncated_collect_with_absorbed_failure_rebuilds_only_successes(
             job_id=claim.flow_id,
             node_key="standalone",
             attempt=1,
+            claim_epoch=1,
             ledger_id=None,
         ),
         flow_id=claim.flow_id,
@@ -829,6 +845,7 @@ async def test_truncated_mixed_gather_preserves_nested_list_and_empty_prefix(
             job_id=claim.flow_id,
             node_key="standalone",
             attempt=1,
+            claim_epoch=1,
             ledger_id=None,
         ),
         flow_id=claim.flow_id,
@@ -920,3 +937,1010 @@ async def test_prestamp_truncated_gather_uses_compiled_kind_fallback(
     gathered = results["gather"]
     assert isinstance(gathered, list)
     assert [item["idx"] for item in gathered] == list(range(_TOTAL_ITEMS))
+
+
+# ── the result-expiry contract: a row with no durable value refuses ──────
+
+
+async def _row_full(
+    wf_pool: asyncpg.Pool, wf_schema: str, flow_id: JobId, step_key: str
+) -> dict[str, Any] | None:
+    """One row's value face: status + the result/TTL pair + the error record."""
+    sql = render_sql(
+        "SELECT id, status, result, result_expires_at, error_class, attempt "
+        "FROM {schema}.jobs WHERE (metadata->>'flow_id')::uuid = $1 AND step_key = $2",
+        wf_schema,
+    )
+    async with wf_pool.acquire() as conn:
+        row = await conn.fetchrow(sql, flow_id, step_key)
+    return None if row is None else dict(row)
+
+
+async def _child_handle(
+    wf_pool: asyncpg.Pool, wf_schema: str, flow_id: JobId, terminal_key: str
+) -> ChildHandle[_FatItemList]:
+    return ChildHandle[_FatItemList](
+        site=JoinSite(
+            pool=wf_pool,
+            wsql=WorkflowSql.build(wf_schema),
+            flow_id=flow_id,
+            job_id=flow_id,
+            node_key="standalone",
+            attempt=1,
+            claim_epoch=1,
+            ledger_id=None,
+        ),
+        flow_id=flow_id,
+        result_model=_FatItemList,
+        terminal_key=terminal_key,
+    )
+
+
+async def _re_pend_first_item(wf_pool: asyncpg.Pool, wf_schema: str, flow_id: JobId) -> None:
+    """The row shape ``Backend.retry_job`` writes for an operator re-run:
+    ``status='pending'``, ``result=NULL``, ``result_expires_at=NULL``."""
+    async with wf_pool.acquire() as conn:
+        await conn.execute(
+            render_sql(
+                "UPDATE {schema}.jobs SET status = 'pending', result = NULL, "
+                "result_expires_at = NULL, finished_at = NULL, error_class = NULL, "
+                "error_message = NULL, error_traceback = NULL, "
+                "locked_by_worker = NULL, lock_expires_at = NULL "
+                "WHERE (metadata->>'flow_id')::uuid = $1 "
+                "AND step_key = 'src.item' AND map_index = 0",
+                wf_schema,
+            ),
+            flow_id,
+        )
+
+
+async def _un_re_pend_first_item(wf_pool: asyncpg.Pool, wf_schema: str, flow_id: JobId) -> None:
+    """Restore the pin's own out-of-band row so the module teardown's
+    status-truth check reads the row set the engine actually left. The
+    parent's ``result`` stays NULL: the value is what the pin is about."""
+    async with wf_pool.acquire() as conn:
+        await conn.execute(
+            render_sql(
+                "UPDATE {schema}.jobs SET status = 'succeeded' "
+                "WHERE (metadata->>'flow_id')::uuid = $1 "
+                "AND step_key = 'src.item' AND map_index = 0",
+                wf_schema,
+            ),
+            flow_id,
+        )
+
+
+async def _truncated_map_join_run(
+    wf_pool: asyncpg.Pool, wf_schema: str
+) -> tuple[FlowRunner, JobId]:
+    """A terminal flow whose ``map_join`` row really is a bounded summary."""
+    app = WorkflowApp()
+
+    @app.workflow("pin_expiry_map_join")
+    def wf_def() -> Promise[object]:
+        return build(map_source(step(_emit_indices, _RangeIn(), key="src"), _expand_item))
+
+    runner = FlowRunner(app.get("pin_expiry_map_join"), wf_pool, wf_schema)
+    claim = await runner.create_flow()
+    assert await runner.drive(claim.flow_id, until="terminal", max_ticks=4000) == "terminal"
+    await _assert_row_truncated(wf_pool, wf_schema, claim.flow_id, "src.join", _TOTAL_ITEMS)
+    return runner, claim.flow_id
+
+
+@pytest.mark.integration
+async def test_re_pended_parent_row_does_not_decode_as_a_collected_none(
+    wf_pool: asyncpg.Pool,
+    wf_schema: str,
+) -> None:
+    """A re-pended parent row has no durable value left: the truncated join's
+    rebuild must refuse, never fabricate a ``None`` item and pass its count
+    check on row presence alone.
+
+    ``result_expired`` is the statement's two-valued ``p.result IS NULL``. The
+    TTL comparison alone would be SQL NULL for a re-pended row (no expiry
+    stamp at all), read as "not expired", and the row's lost value would be
+    counted as a collected item.
+    """
+    runner, flow_id = await _truncated_map_join_run(wf_pool, wf_schema)
+    await _re_pend_first_item(wf_pool, wf_schema, flow_id)
+    try:
+        with pytest.raises(WorkflowResultDetailUnavailableError, match="result TTL has expired"):
+            await runner.result(flow_id)
+    finally:
+        await _un_re_pend_first_item(wf_pool, wf_schema, flow_id)
+
+
+@pytest.mark.integration
+async def test_parent_result_expired_flag_is_never_null(
+    wf_pool: asyncpg.Pool,
+    wf_schema: str,
+) -> None:
+    """``result_expired`` is read through ``bool(...)``, so the statement must
+    return a two-valued boolean for every parent shape."""
+    _runner, flow_id = await _truncated_map_join_run(wf_pool, wf_schema)
+    await _re_pend_first_item(wf_pool, wf_schema, flow_id)
+    try:
+        async with wf_pool.acquire() as conn:
+            join_id = await conn.fetchval(
+                render_sql(
+                    "SELECT id FROM {schema}.jobs "
+                    "WHERE (metadata->>'flow_id')::uuid = $1 AND step_key = 'src.join'",
+                    wf_schema,
+                ),
+                flow_id,
+            )
+            rows = await conn.fetch(
+                render_sql(PARENT_RESULTS_BY_KEY_SQL_TEMPLATE, wf_schema), join_id
+            )
+        assert rows, "test precondition failed: the join row has no parent edges"
+        for row in rows:
+            assert row["result_expired"] is not None, (
+                f"parent {row['step_key']!r} has result NULL and result_expires_at NULL, "
+                f"and the statement returned a three-valued {row['result_expired']!r} — "
+                "bool() then reads it as 'not expired'"
+            )
+    finally:
+        await _un_re_pend_first_item(wf_pool, wf_schema, flow_id)
+
+
+@pytest.mark.integration
+async def test_re_pended_parent_through_the_retry_verb_fails_closed(
+    wf_pool: asyncpg.Pool,
+    wf_schema: str,
+) -> None:
+    """The same shape through the production writer: ``Backend.retry_job``.
+
+    The retry verb is a documented operator action with no workflow-row
+    exclusion, so its row shape must fail closed at the read rather than
+    fabricate an item in a declared ``list[...]``.
+    """
+    app = WorkflowApp()
+
+    @app.workflow("pin_retry_verb_map_join")
+    def wf_def() -> Promise[object]:
+        return build(map_source(step(_emit_indices, _RangeIn(), key="src"), _expand_item))
+
+    runner = FlowRunner(app.get("pin_retry_verb_map_join"), wf_pool, wf_schema)
+    claim = await runner.create_flow()
+    assert await runner.drive(claim.flow_id, until="terminal", max_ticks=4000) == "terminal"
+    await _assert_row_truncated(wf_pool, wf_schema, claim.flow_id, "src.join", _TOTAL_ITEMS)
+
+    item_sql = render_sql(
+        "SELECT id FROM {schema}.jobs WHERE (metadata->>'flow_id')::uuid = $1 "
+        "AND step_key = 'src.item' AND map_index = 0",
+        wf_schema,
+    )
+    async with wf_pool.acquire() as conn:
+        item_id = await conn.fetchval(item_sql, claim.flow_id)
+    assert item_id is not None, "the map item row is missing"
+
+    async with wf_pool.acquire() as conn:
+        retried = await conn.fetchrow(render_backend_sql(wf_schema).retry_job, item_id)
+    assert retried is not None, "retry_job refused the terminal item row"
+    try:
+        async with wf_pool.acquire() as conn:
+            repended = await conn.fetchrow(
+                render_sql(
+                    "SELECT id, status, result, result_expires_at FROM {schema}.jobs WHERE id = $1",
+                    wf_schema,
+                ),
+                item_id,
+            )
+        assert repended is not None
+        assert repended["status"] == "pending", dict(repended)
+        assert repended["result"] is None and repended["result_expires_at"] is None, dict(repended)
+        with pytest.raises(WorkflowResultDetailUnavailableError, match="result TTL has expired"):
+            await runner.result(claim.flow_id)
+    finally:
+        # The re-pended row is this pin's own staged state; the shared
+        # fixture's status-truth teardown owns the invariant that a flow
+        # reporting 'succeeded' holds no live row.
+        async with wf_pool.acquire() as conn:
+            await conn.execute(
+                render_sql("DELETE FROM {schema}.wf_edge WHERE parent_id = $1", wf_schema),
+                item_id,
+            )
+            await conn.execute(
+                render_sql("DELETE FROM {schema}.jobs WHERE id = $1", wf_schema), item_id
+            )
+
+
+@pytest.mark.integration
+async def test_swept_terminal_row_expiry_refuses_at_both_seats(
+    wf_pool: asyncpg.Pool,
+    wf_schema: str,
+) -> None:
+    """The terminal row's OWN result TTL is consulted at both seats.
+
+    ``TERMINAL_RESULT_SQL_TEMPLATE`` and ``_CHILD_TERMINAL_RESULT_SQL`` select
+    the row's own ``result_expired``, so a swept terminal refuses through
+    ``FlowRunner.result()`` and through ``ChildHandle.wait()`` alike.
+    """
+    runner, flow_id = await _truncated_map_join_run(wf_pool, wf_schema)
+    async with wf_pool.acquire() as conn:
+        await conn.execute(
+            render_sql(
+                "UPDATE {schema}.jobs SET result_expires_at = now() - interval '1 second' "
+                "WHERE (metadata->>'flow_id')::uuid = $1 AND step_key = 'src.join'",
+                wf_schema,
+            ),
+            flow_id,
+        )
+    assert await PostgresBackend.sweep_expired_results(wf_pool, schema=wf_schema) == 1
+    expired = await _row_full(wf_pool, wf_schema, flow_id, "src.join")
+    assert expired is not None and expired["result"] is None
+    assert expired["status"] == "succeeded"
+
+    with pytest.raises(WorkflowResultDetailUnavailableError):
+        await runner.result(flow_id)
+    handle = await _child_handle(wf_pool, wf_schema, flow_id, "src.join")
+    with pytest.raises(WorkflowResultDetailUnavailableError):
+        await handle.wait()
+
+
+@pytest.mark.integration
+async def test_skip_gate_flow_state_refuses_a_swept_parent(
+    wf_pool: asyncpg.Pool,
+    wf_schema: str,
+) -> None:
+    """The ``skip=`` gate's state read must not decide against a truncated
+    collect whose parent result the retention sweep nulled: ``_flow_state``
+    raises the typed refusal, and the gate terminal-fails the just-claimed node
+    deterministically instead of stranding it."""
+    app = WorkflowApp()
+    seen_in_skip: list[list[Any]] = []
+
+    def skip_if_incomplete(state: dict[str, object]) -> bool:
+        results = state["results"]
+        assert isinstance(results, dict)
+        joined = results["src.join"]
+        assert isinstance(joined, list)
+        seen_in_skip.append(list(joined))
+        return len(joined) < _TOTAL_ITEMS
+
+    @app.workflow("pin_skip_swept_parent")
+    def wf_def() -> Promise[object]:
+        items = map_source(step(_emit_indices, _RangeIn(), key="src"), _expand_item)
+        return build(step(_consume_items, items, key="consume", skip=skip_if_incomplete))
+
+    runner = FlowRunner(app.get("pin_skip_swept_parent"), wf_pool, wf_schema)
+    claim = await runner.create_flow()
+
+    # Advance until the join has collected; the downstream node is then
+    # claimable but not yet claimed.
+    for _ in range(300):
+        join = await _row_full(wf_pool, wf_schema, claim.flow_id, "src.join")
+        if join is not None and join["status"] == "succeeded":
+            break
+        await runner.tick(claim.flow_id)
+    else:  # pragma: no cover - a broken fork/join fires here
+        pytest.fail("the map join never succeeded within 300 ticks")
+    await _assert_row_truncated(wf_pool, wf_schema, claim.flow_id, "src.join", _TOTAL_ITEMS)
+
+    async with wf_pool.acquire() as conn:
+        await conn.execute(
+            render_sql(
+                "UPDATE {schema}.jobs SET result_expires_at = now() - interval '1 second' "
+                "WHERE (metadata->>'flow_id')::uuid = $1 "
+                "AND step_key = 'src.item' AND map_index = 0",
+                wf_schema,
+            ),
+            claim.flow_id,
+        )
+    assert await PostgresBackend.sweep_expired_results(wf_pool, schema=wf_schema) == 1
+
+    with pytest.raises(WorkflowResultDetailUnavailableError, match="result TTL has expired"):
+        await runner._flow_state(claim.flow_id)
+
+    assert await runner.drive(claim.flow_id, until="terminal", max_ticks=200) == "terminal"
+    assert not seen_in_skip, "the skip predicate ran over the hole instead of refusing"
+    consume = await _step_row(wf_pool, wf_schema, claim.flow_id, "consume")
+    assert consume is not None, "the consume row vanished"
+    assert consume["status"] == "failed", consume
+    assert consume["error_class"] == "WorkflowResultDetailUnavailableError", consume
+
+
+# ── a raising skip predicate gets a disposition ─────────────────────────
+
+
+@pytest.mark.integration
+async def test_raising_skip_predicate_terminal_fails_the_node(
+    wf_pool: asyncpg.Pool,
+    wf_schema: str,
+) -> None:
+    """A ``skip=`` predicate that raises must not strand the claimed node.
+
+    The gate's state read sits above the body-failure boundary, so every raise
+    from the predicate is routed through the ladder by the gate itself: the
+    node gets a disposition (here, the retry budget is spent and the terminal
+    failure records the raised class) instead of being left ``running`` until
+    its lease expires.
+    """
+
+    def bad_predicate(state: dict[str, object]) -> bool:
+        results = state["results"]
+        assert isinstance(results, dict)
+        # A plain authoring bug: the key a predicate guessed wrongly.
+        return bool(results["src.items"])
+
+    app = WorkflowApp()
+
+    @app.workflow("pin_skip_predicate_raises")
+    def wf_def() -> Promise[object]:
+        src = step(_emit_indices, _RangeIn(), key="src")
+        return build(step(_consume_items, src, key="consume", skip=bad_predicate))
+
+    runner = FlowRunner(app.get("pin_skip_predicate_raises"), wf_pool, wf_schema)
+    claim = await runner.create_flow()
+    assert await runner.drive(claim.flow_id, until="terminal", max_ticks=200) == "terminal"
+
+    consume = await _step_row(wf_pool, wf_schema, claim.flow_id, "consume")
+    assert consume is not None, "the consume row vanished"
+    assert consume["status"] == "failed", (
+        f"the skip predicate's raise left the claimed node {consume['status']!r} "
+        f"(attempt {consume['attempt']}/{consume['max_attempts']}, "
+        f"error_class={consume['error_class']!r}) — a raise at the gate has no disposition"
+    )
+    assert consume["error_class"] == "KeyError", consume
+
+
+# ── the count gate's honesty and direction ──────────────────────────────
+
+
+@pytest.mark.integration
+async def test_count_mismatch_reason_does_not_blame_purged_rows(
+    wf_pool: asyncpg.Pool,
+    wf_schema: str,
+) -> None:
+    """When the parent rows are present but their values do not reconcile with
+    the summary, the refusal must say so — the purge diagnosis is for the
+    case where the rows are actually gone."""
+    runner, flow_id = await _truncated_map_join_run(wf_pool, wf_schema)
+    async with wf_pool.acquire() as conn:
+        deleted = await conn.execute(
+            render_sql(
+                "DELETE FROM {schema}.jobs WHERE (metadata->>'flow_id')::uuid = $1 "
+                "AND step_key = 'src.item' AND map_index = 0",
+                wf_schema,
+            ),
+            flow_id,
+        )
+    assert deleted == "DELETE 1"
+    with pytest.raises(WorkflowResultDetailUnavailableError) as refused:
+        await runner.result(flow_id)
+    message = str(refused.value)
+    assert "does not reconcile" in message, message
+    assert "purged" not in message, message
+    assert refused.value.expected == _TOTAL_ITEMS, refused.value.expected
+    assert refused.value.rebuilt == _TOTAL_ITEMS - 1, refused.value.rebuilt
+
+
+# ── the pre-stamp gather (no durable node-kind stamp) ───────────────────
+
+
+@pytest.mark.integration
+async def test_prestamp_truncated_gather_reads_through_the_runnerless_seat(
+    wf_pool: asyncpg.Pool,
+    wf_schema: str,
+) -> None:
+    """A truncated ``gather`` row written before the ``wf_node_kind`` stamp
+    existed (the rolling-upgrade shape) must still read through the
+    runner-less ``ChildHandle`` seat.
+
+    That seat has no compiled graph, so the kind is unknown. The re-read
+    reconciles the shape by count: the un-flattened parent values are two
+    lists, the recorded count is their 200 items, so the one-level gather
+    flatten is accepted.
+    """
+    app = WorkflowApp()
+
+    @app.workflow("pin_prestamp_gather")
+    def wf_def() -> Promise[object]:
+        half_a = step(_emit_half, _RangeIn(start=0, count=_HALF_ITEMS), key="half_a")
+        half_b = step(_emit_half, _RangeIn(start=_HALF_ITEMS, count=_HALF_ITEMS), key="half_b")
+        return build(gather([half_a, half_b]))
+
+    runner = FlowRunner(app.get("pin_prestamp_gather"), wf_pool, wf_schema)
+    claim = await runner.create_flow()
+    assert await runner.drive(claim.flow_id, until="terminal", max_ticks=4000) == "terminal"
+    await _assert_row_truncated(wf_pool, wf_schema, claim.flow_id, "gather", _TOTAL_ITEMS)
+
+    # The pre-stamp row: the previous deploy's create path wrote no stamp.
+    async with wf_pool.acquire() as conn:
+        await conn.execute(
+            render_sql(
+                "UPDATE {schema}.jobs SET metadata = metadata - 'wf_node_kind' "
+                "WHERE (metadata->>'flow_id')::uuid = $1 AND step_key = 'gather'",
+                wf_schema,
+            ),
+            claim.flow_id,
+        )
+
+    handle = await _child_handle(wf_pool, wf_schema, claim.flow_id, "gather")
+    outcome = await handle.wait()
+    assert isinstance(outcome, ChildOk)
+    assert [item.idx for item in outcome.result.root] == list(range(_TOTAL_ITEMS))
+
+
+# ── a forged node-kind stamp cannot change the runner's shape ───────────
+
+
+async def _expand_singleton(ctx: StepContext, idx: int) -> list[_FatItem]:
+    """One item returning a ONE-element list: 200 batches exceed the cap, and
+    flattening them preserves the item count."""
+    return [_FatItem(idx=idx, pad=_ITEM_PAD)]
+
+
+@pytest.mark.integration
+async def test_forged_gather_stamp_cannot_change_a_map_joins_shape(
+    wf_pool: asyncpg.Pool,
+    wf_schema: str,
+) -> None:
+    """A metadata write claiming ``wf_node_kind: "gather"`` on a truncated
+    ``map_join`` row must not flatten its rebuild at a runner seat: the
+    compiled graph is the write path's own authority, so it outranks the
+    stamp."""
+    app = WorkflowApp()
+
+    @app.workflow("pin_singleton_batches")
+    def wf_def() -> Promise[object]:
+        return build(map_source(step(_emit_indices, _RangeIn(), key="src"), _expand_singleton))
+
+    runner = FlowRunner(app.get("pin_singleton_batches"), wf_pool, wf_schema)
+    claim = await runner.create_flow()
+    assert await runner.drive(claim.flow_id, until="terminal", max_ticks=4000) == "terminal"
+    await _assert_row_truncated(wf_pool, wf_schema, claim.flow_id, "src.join", _TOTAL_ITEMS)
+
+    async with wf_pool.acquire() as conn:
+        row = await conn.fetchrow(
+            render_sql(
+                "SELECT id FROM {schema}.jobs WHERE (metadata->>'flow_id')::uuid = $1 "
+                "AND step_key = 'src.join'",
+                wf_schema,
+            ),
+            claim.flow_id,
+        )
+    assert row is not None
+    assert runner._compiled_node_kind("src.join") == "map_join"
+    honest = await runner.result(claim.flow_id)
+    assert isinstance(honest, list) and all(isinstance(batch, list) for batch in honest)
+
+    async with wf_pool.acquire() as conn:
+        await conn.execute(
+            render_sql(
+                "UPDATE {schema}.jobs SET metadata = metadata || "
+                '\'{"wf_node_kind": "gather"}\'::jsonb WHERE id = $1',
+                wf_schema,
+            ),
+            row["id"],
+        )
+    forged = await runner.result(claim.flow_id)
+    assert forged == honest, (
+        "a metadata write claiming wf_node_kind='gather' flattened a truncated "
+        f"map_join: read back {type(forged[0]) if isinstance(forged, list) and forged else forged!r}"
+    )
+
+
+# ── a retried absorbed parent must not skew a packed join ───────────────
+
+
+@pytest.mark.integration
+async def test_packed_join_keeps_its_answer_after_an_absorbed_parent_is_retried(
+    wf_pool: asyncpg.Pool,
+    wf_schema: str,
+) -> None:
+    """The rebuild's absorbed-parent filter must match the pack's succeeded
+    set, not a parent's LIVE status.
+
+    A failed-and-absorbed parent was excluded when the join packed its 199
+    items. The per-node retry then re-pends that row; the filter excludes any
+    non-succeeded parent on an absorbing edge, so the packed collect stays
+    readable with its original 199 items.
+    """
+    app = WorkflowApp()
+
+    @app.workflow("pin_absorbed_retry")
+    def wf_def() -> Promise[object]:
+        return build(
+            map_source(
+                step(_emit_indices, _RangeIn(), key="src"),
+                _expand_item_or_fail,
+                on_failure="collect",
+                max_attempts=1,
+            )
+        )
+
+    runner = FlowRunner(app.get("pin_absorbed_retry"), wf_pool, wf_schema)
+    claim = await runner.create_flow()
+    assert await runner.drive(claim.flow_id, until="terminal", max_ticks=4000) == "terminal"
+    expected_indices = list(range(_TOTAL_ITEMS - 1))
+
+    async with wf_pool.acquire() as conn:
+        absorbed = await conn.fetchrow(
+            render_sql(
+                "SELECT id, status, error_class, error_message FROM {schema}.jobs "
+                "WHERE (metadata->>'flow_id')::uuid = $1 "
+                "AND step_key = 'src.item' AND status = 'failed'",
+                wf_schema,
+            ),
+            claim.flow_id,
+        )
+    assert absorbed is not None, "test precondition failed: no absorbed failed parent"
+
+    restore_sql = render_sql(
+        "UPDATE {schema}.jobs SET status = $2, error_class = $3, error_message = $4 WHERE id = $1",
+        wf_schema,
+    )
+    async with wf_pool.acquire() as conn:
+        await conn.execute(
+            render_sql(
+                "UPDATE {schema}.jobs SET status = 'pending', error_class = NULL, "
+                "error_message = NULL WHERE id = $1",
+                wf_schema,
+            ),
+            absorbed["id"],
+        )
+    try:
+        full = await runner.result(claim.flow_id)
+        assert isinstance(full, list)
+        assert [item["idx"] for item in full] == expected_indices, (
+            f"the terminal read changed its answer after the retry: {len(full)} items"
+        )
+    finally:
+        async with wf_pool.acquire() as conn:
+            await conn.execute(
+                restore_sql,
+                absorbed["id"],
+                absorbed["status"],
+                absorbed["error_class"],
+                absorbed["error_message"],
+            )
+
+
+# ── the codec's own shape doors (contrived rows, no database) ────────────
+
+_TRUNCATED_RAW = json.dumps({"value": [1], "__truncated__": 1, "detail_home": "pin"})
+_LEAF_RAW = json.dumps({"value": 2})
+
+
+class _ExplodingConn:
+    """A ``ConnLike`` stand-in that fails if the re-read reaches the parent query.
+
+    The malformed-row refusals all fire before any fetch, so reaching the
+    database would mean the door let the bad shape through.
+    """
+
+    async def fetch(self, sql: str, node_id: object) -> list[dict[str, object]]:
+        raise AssertionError(f"the re-read fetched parents for a malformed row ({node_id!r})")
+
+
+class _FixedParentsConn:
+    """A ``ConnLike`` stand-in over a fixed parent set, counting its reads."""
+
+    def __init__(self, rows: list[dict[str, object]]) -> None:
+        self.rows = rows
+        self.fetches = 0
+
+    async def fetch(self, sql: str, node_id: object) -> list[dict[str, object]]:
+        self.fetches += 1
+        return self.rows
+
+
+def _leaf_row(parent: object) -> dict[str, object]:
+    return {
+        "id": parent,
+        "step_key": f"n{parent}",
+        "result": _LEAF_RAW,
+        "metadata": None,
+        "result_expired": False,
+    }
+
+
+@pytest.mark.parametrize("marker", ["200", 0, -1, True, None])
+async def test_truncated_marker_that_is_not_a_positive_int_refuses(marker: object) -> None:
+    """The unwrap door keys on the marker's PRESENCE, so the truncation door
+    must not accept a marker it cannot read: a string, a bool, ``None``, zero
+    or a negative count is corruption, not "not truncated"."""
+    raw = json.dumps({"value": [1], "__truncated__": marker, "detail_home": "pin"})
+    with pytest.raises(WorkflowResultDetailUnavailableError, match="not a positive integer"):
+        await decode_result_with_detail(
+            _ExplodingConn(),  # pyright: ignore[reportArgumentType]  # Why: the stand-in exposes only the fetch the re-read uses.
+            "pin",
+            node_id=1,
+            raw=raw,
+            metadata=None,
+            step_key="n1",
+        )
+
+
+async def test_truncated_envelope_with_a_non_list_prefix_refuses() -> None:
+    raw = json.dumps({"value": {"not": "a list"}, "__truncated__": 2, "detail_home": "pin"})
+    with pytest.raises(WorkflowResultDetailUnavailableError, match="prefix is not a list"):
+        await decode_result_with_detail(
+            _ExplodingConn(),  # pyright: ignore[reportArgumentType]  # Why: the stand-in exposes only the fetch the re-read uses.
+            "pin",
+            node_id=1,
+            raw=raw,
+            metadata=None,
+            step_key="n1",
+        )
+
+
+async def test_non_dict_result_refuses_with_the_typed_class() -> None:
+    """A row whose ``result`` is not a JSON object has no envelope: the typed
+    class, never a bare ``AssertionError`` (which ``python -O`` strips)."""
+    with pytest.raises(WorkflowResultDetailUnavailableError, match="not a JSON object"):
+        await decode_result_with_detail(
+            _ExplodingConn(),  # pyright: ignore[reportArgumentType]  # Why: the stand-in exposes only the fetch the re-read uses.
+            "pin",
+            node_id=1,
+            raw="[1, 2]",
+            metadata=None,
+            step_key="n1",
+        )
+
+
+async def test_count_gate_refuses_an_over_count() -> None:
+    """The gate compares counts for EQUALITY: more rebuilt values than the
+    summary recorded is as wrong as fewer, and must refuse."""
+    conn = _FixedParentsConn([_leaf_row(11), _leaf_row(12), _leaf_row(13)])
+    with pytest.raises(WorkflowResultDetailUnavailableError) as refused:
+        await decode_result_with_detail(
+            conn,  # pyright: ignore[reportArgumentType]  # Why: the stand-in exposes only the fetch the re-read uses.
+            "pin",
+            node_id=1,
+            raw=_TRUNCATED_RAW,
+            metadata=None,
+            step_key="n1",
+        )
+    assert refused.value.expected == 2
+    assert refused.value.rebuilt == 3
+    assert conn.fetches == 1
+
+
+# ── a shared truncated subtree is rebuilt once per read ─────────────────
+
+
+class _CountingConn:
+    """A ``ConnLike`` over a fixed parent graph: ``node_id -> [parent ids]``."""
+
+    def __init__(self, graph: dict[int, list[int]], leaf_ids: set[int]) -> None:
+        self.graph = graph
+        self.leaf_ids = leaf_ids
+        self.reads: dict[int, int] = {}
+
+    async def fetch(self, sql: str, node_id: object) -> list[dict[str, object]]:
+        n = int(str(node_id))
+        self.reads[n] = self.reads.get(n, 0) + 1
+        return [
+            {
+                "id": parent,
+                "step_key": f"n{parent}",
+                "result": _LEAF_RAW if parent in self.leaf_ids else _TRUNCATED_RAW,
+                "metadata": None,
+                "result_expired": False,
+            }
+            for parent in self.graph.get(n, [])
+        ]
+
+
+def _diamond(layers: int) -> tuple[dict[int, list[int]], set[int]]:
+    """A shared-subtree DAG: two truncated joins over the SAME truncated parents."""
+    graph: dict[int, list[int]] = {}
+    leaf_ids: set[int] = set()
+    node = 1
+    layer_nodes: list[int] = [1]
+    for _ in range(layers):
+        below = [node + 1, node + 2]
+        node += 2
+        for parent in layer_nodes:
+            graph[parent] = list(below)
+        layer_nodes = below
+    for leaf in layer_nodes:
+        graph[leaf] = [-(leaf), -(leaf + 100)]
+        leaf_ids.update(graph[leaf])
+    return graph, leaf_ids
+
+
+async def test_shared_truncated_subtree_is_rebuilt_once_per_read() -> None:
+    """A truncated subtree shared by two sibling joins must be read once.
+
+    The parent set is immutable inside one read, so the per-read memo makes
+    the repeat visits free: one fetch per distinct node, not one per path.
+    """
+    graph, leaf_ids = _diamond(layers=5)
+    conn = _CountingConn(graph, leaf_ids)
+    out = await decode_result_with_detail(
+        conn,  # pyright: ignore[reportArgumentType]  # Why: the stand-in exposes only the fetch the re-read uses.
+        "pin",
+        node_id=1,
+        raw=_TRUNCATED_RAW,
+        metadata=None,
+        step_key="n1",
+    )
+    assert isinstance(out, list)
+    assert max(conn.reads.values()) == 1, (
+        f"a node in the shared subtree was read {max(conn.reads.values())} times "
+        f"(total fetches {sum(conn.reads.values())} for {len(conn.reads)} distinct nodes)"
+    )
+
+
+# ── the recursive metadata read and the empty-list flatten boundary ─────
+
+
+async def _emit_pin_items(ctx: StepContext, start: int) -> list[dict[str, Any]]:
+    return [{"idx": i, "pad": _ITEM_PAD} for i in range(start, start + _HALF_ITEMS)]
+
+
+@pytest.mark.integration
+async def test_nested_truncated_gather_over_gather_rebuilds_at_both_depths(
+    wf_pool: asyncpg.Pool,
+    wf_schema: str,
+) -> None:
+    """``gather([gather([a, b]), c])`` — a bodyless ``gather`` as another
+    ``gather``'s parent — must rebuild all items when BOTH join rows are
+    truncated.
+
+    The recursion threads each parent row's own ``metadata`` back into the
+    read, so the inner gather's stamp is what flattens its two list parents at
+    depth; the runner-less seat has no compiled graph and depends on it.
+    """
+    app = WorkflowApp()
+
+    @app.workflow("pin_nested_gather_over_gather")
+    def wf_def() -> Promise[object]:
+        half_a = step(_emit_pin_items, 0, key="half_a")
+        half_b = step(_emit_pin_items, _HALF_ITEMS, key="half_b")
+        inner = gather([half_a, half_b])
+        tail = step(_emit_pin_items, 2 * _HALF_ITEMS, key="tail")
+        return build(gather([inner, tail]))
+
+    runner = FlowRunner(app.get("pin_nested_gather_over_gather"), wf_pool, wf_schema)
+    claim = await runner.create_flow()
+    assert await runner.drive(claim.flow_id, until="terminal", max_ticks=4000) == "terminal"
+
+    # The graph's two bodyless gathers take derived keys (``gather`` and
+    # ``gather:1``); the terminal is the outer one.
+    outer_key = runner.compiled.terminal
+    assert outer_key is not None
+    await _assert_row_truncated(wf_pool, wf_schema, claim.flow_id, "gather", 2 * _HALF_ITEMS)
+    await _assert_row_truncated(wf_pool, wf_schema, claim.flow_id, outer_key, 3 * _HALF_ITEMS)
+    expected = list(range(3 * _HALF_ITEMS))
+
+    full = await runner.result(claim.flow_id)
+    assert isinstance(full, list)
+    assert sorted(item["idx"] for item in full) == expected
+
+    handle = await _child_handle(wf_pool, wf_schema, claim.flow_id, outer_key)
+    outcome = await handle.wait()
+    assert isinstance(outcome, ChildOk)
+    assert sorted(item.idx for item in outcome.result.root) == expected
+
+
+@pytest.mark.integration
+async def test_cycle_guard_refuses_a_self_referencing_truncated_row(
+    wf_pool: asyncpg.Pool,
+    wf_schema: str,
+) -> None:
+    """A ``wf_edge`` cycle (staged here as a self-edge, which no production
+    writer creates) must be refused with the typed class, not recurse."""
+    app = WorkflowApp()
+
+    @app.workflow("pin_cycle_gather")
+    def wf_def() -> Promise[object]:
+        half_a = step(_emit_half, _RangeIn(start=0, count=_HALF_ITEMS), key="half_a")
+        half_b = step(_emit_half, _RangeIn(start=_HALF_ITEMS, count=_HALF_ITEMS), key="half_b")
+        return build(gather([half_a, half_b]))
+
+    runner = FlowRunner(app.get("pin_cycle_gather"), wf_pool, wf_schema)
+    claim = await runner.create_flow()
+    assert await runner.drive(claim.flow_id, until="terminal", max_ticks=4000) == "terminal"
+
+    async with wf_pool.acquire() as conn:
+        join_id = await conn.fetchval(
+            render_sql(
+                "SELECT id FROM {schema}.jobs WHERE (metadata->>'flow_id')::uuid = $1 "
+                "AND step_key = 'gather'",
+                wf_schema,
+            ),
+            claim.flow_id,
+        )
+        assert join_id is not None
+        await conn.execute(
+            render_sql(
+                "INSERT INTO {schema}.wf_edge (child_id, parent_id, flow_id, failure_policy) "
+                "VALUES ($1, $1, $2, 'fail_closed')",
+                wf_schema,
+            ),
+            join_id,
+            claim.flow_id,
+        )
+        with pytest.raises(WorkflowResultDetailUnavailableError, match="form a cycle"):
+            await decode_result_with_detail(
+                conn,
+                wf_schema,
+                node_id=join_id,
+                raw=await conn.fetchval(
+                    render_sql("SELECT result FROM {schema}.jobs WHERE id = $1", wf_schema),
+                    join_id,
+                ),
+                metadata=await conn.fetchval(
+                    render_sql("SELECT metadata FROM {schema}.jobs WHERE id = $1", wf_schema),
+                    join_id,
+                ),
+                step_key="gather",
+            )
+        await conn.execute(
+            render_sql("DELETE FROM {schema}.wf_edge WHERE parent_id = $1", wf_schema), join_id
+        )
+
+
+async def _empty_list(ctx: StepContext) -> list[_FatItem]:
+    return []
+
+
+async def _big_list(ctx: StepContext) -> list[_FatItem]:
+    return [_FatItem(idx=i, pad=_ITEM_PAD) for i in range(_TOTAL_ITEMS)]
+
+
+@pytest.mark.integration
+async def test_truncated_gather_with_empty_list_parent_rebuilds_flattened(
+    wf_pool: asyncpg.Pool,
+    wf_schema: str,
+) -> None:
+    """An empty list parent is a list: it flattens away, not into an empty slot.
+
+    This is the boundary between "all parents are lists" (flatten) and "a
+    parent is not a list" (do not): the writer flattens ``[[], [200 items]]``
+    to 200, and a reader that disagrees shows up as a count mismatch.
+    """
+    app = WorkflowApp()
+
+    @app.workflow("pin_empty_parent_gather")
+    def wf_def() -> Promise[object]:
+        empty = step(_empty_list, key="empty")
+        big = step(_big_list, key="big")
+        return build(gather([empty, big]))
+
+    runner = FlowRunner(app.get("pin_empty_parent_gather"), wf_pool, wf_schema)
+    claim = await runner.create_flow()
+    assert await runner.drive(claim.flow_id, until="terminal", max_ticks=4000) == "terminal"
+    await _assert_row_truncated(wf_pool, wf_schema, claim.flow_id, "gather", _TOTAL_ITEMS)
+
+    full = await runner.result(claim.flow_id)
+    assert isinstance(full, list)
+    assert [item["idx"] for item in full] == list(range(_TOTAL_ITEMS))
+
+    handle = await _child_handle(wf_pool, wf_schema, claim.flow_id, "gather")
+    outcome = await handle.wait()
+    assert isinstance(outcome, ChildOk)
+    assert [item.idx for item in outcome.result.root] == list(range(_TOTAL_ITEMS))
+
+
+async def _expand_none_item(ctx: StepContext, idx: int) -> object:
+    """One map item that legitimately returns ``None``."""
+    if idx == 0:
+        return None
+    return await _expand_item(ctx, idx)
+
+
+@pytest.mark.integration
+async def test_none_returning_parent_is_stored_as_a_document_not_a_null_result(
+    wf_pool: asyncpg.Pool,
+    wf_schema: str,
+) -> None:
+    """A ``None``-returning step is NOT ``result IS NULL`` on the row.
+
+    The write path binds the empty document for a ``None`` payload, which is
+    what makes ``result IS NULL`` an unambiguous "this item's value is gone"
+    signal for the rebuild — and what keeps a real ``None`` item readable.
+    """
+    app = WorkflowApp()
+
+    @app.workflow("pin_none_item")
+    def wf_def() -> Promise[object]:
+        return build(map_source(step(_emit_indices, _RangeIn(), key="src"), _expand_none_item))
+
+    runner = FlowRunner(app.get("pin_none_item"), wf_pool, wf_schema)
+    claim = await runner.create_flow()
+    assert await runner.drive(claim.flow_id, until="terminal", max_ticks=4000) == "terminal"
+
+    async with wf_pool.acquire() as conn:
+        none_row = await conn.fetchrow(
+            render_sql(
+                "SELECT result FROM {schema}.jobs "
+                "WHERE (metadata->>'flow_id')::uuid = $1 "
+                "AND step_key = 'src.item' AND map_index = 0",
+                wf_schema,
+            ),
+            claim.flow_id,
+        )
+    assert none_row is not None, "test precondition failed: no None-returning item row"
+    stored: Any = none_row["result"]
+    assert stored is not None, (
+        "a None-returning step landed SQL NULL — then `result IS NULL` is not a "
+        "value-gone signal and a real None item would be refused"
+    )
+    stored_doc: Any = json.loads(stored) if isinstance(stored, str) else stored
+    assert stored_doc == {}, f"a None-returning step must land the empty document ({stored!r})"
+
+    await _assert_row_truncated(wf_pool, wf_schema, claim.flow_id, "src.join", _TOTAL_ITEMS)
+    full = await runner.result(claim.flow_id)
+    assert isinstance(full, list) and len(full) == _TOTAL_ITEMS
+    assert full[0] == {}, f"the None item did not round-trip as its stored document: {full[0]!r}"
+
+
+# ── the refusal's diagnosis survives the CLI's bounded line ─────────────
+
+
+@pytest.mark.parametrize(
+    ("reason", "expected", "rebuilt", "diagnosis"),
+    [
+        (
+            "result TTL has expired (the row's result is NULL — swept, or re-pended "
+            "with no expiry stamp; the surviving row and edge cannot supply a durable "
+            "collect item)",
+            None,
+            None,
+            "TTL has expired",
+        ),
+        (
+            "purged or missing parent detail rows (the full collect's only home is "
+            "gone: a deleted row, a missing wf_edge row, or a partially deleted fork)",
+            200,
+            0,
+            "purged",
+        ),
+        (
+            "the count does not reconcile (every surviving parent row is counted, "
+            "but the parent values do not reach the summary's length)",
+            200,
+            199,
+            "does not reconcile",
+        ),
+    ],
+)
+def test_refusal_reason_survives_the_cli_failed_node_line(
+    reason: str, expected: int | None, rebuilt: int | None, diagnosis: str
+) -> None:
+    """``taskq flows status`` must be able to say WHY a refusal happened.
+
+    ``_cli.stuck_lines`` renders a failed node through
+    ``_bounded_line(text, 120)``, which keeps about the first 100 characters.
+    The message leads with the node key, the counts and the diagnosis, and the
+    36-character row id trails them, so the reason and the full counts survive
+    the clamp.
+    """
+    from taskq.workflows._cli import _bounded_line
+
+    message = str(
+        WorkflowResultDetailUnavailableError(
+            node_id="01a21423-6009-7730-9e41-fc62bbf4a858",
+            step_key="src.join",
+            reason=reason,
+            expected=expected,
+            rebuilt=rebuilt,
+        )
+    )
+    rendered = _bounded_line(message)
+    assert diagnosis in rendered, (
+        f"the CLI's failed-node line drops the refusal's diagnosis: {rendered!r} "
+        f"(the full message is {len(message)} chars against the 120-char cap)"
+    )
+    if expected is not None and rebuilt is not None:
+        assert f"expected {expected} items, rebuilt {rebuilt}" in rendered, rendered
+
+
+def test_refusal_message_omits_a_fabricated_rebuilt_count() -> None:
+    """A caller that supplies ``expected`` alone must not be answered with a
+    fabricated ``rebuilt 0``."""
+    message = str(
+        WorkflowResultDetailUnavailableError(
+            node_id="01a21423-6009-7730-9e41-fc62bbf4a858",
+            step_key="src.join",
+            reason="a reason",
+            expected=200,
+        )
+    )
+    assert "rebuilt" not in message, message
+    assert "expected 200 items" in message, message

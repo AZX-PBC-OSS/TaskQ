@@ -213,7 +213,12 @@ def encode_result(value: object) -> dict[str, object] | None:
 _RESULT_ENVELOPE_KEYS: frozenset[str] = frozenset({"value", "__truncated__", "detail_home"})
 
 
-def decode_result(raw: object) -> object:
+def decode_result(
+    raw: object,
+    *,
+    node_id: object = None,
+    step_key: str | None = None,
+) -> object:
     """jsonb decoded once: asyncpg returns ``str`` on un-coded
     connections — parse through the estate's seam, never per call site.
     The runner's own envelope unwraps BY ITS KNOWN KEY SET — ``value``
@@ -228,7 +233,14 @@ def decode_result(raw: object) -> object:
     the markers ride the RAW jsonb, and the finalize's metadata receipt
     (``wf_collect_truncated``) carries the count for the reads that
     decide. A body's dict return never collides with the envelope keys
-    (the wrap is unconditional)."""
+    (the wrap is unconditional).
+
+    A row whose ``result`` is not a JSON object has no envelope to read:
+    that is the same fail-closed family as a collect that cannot be
+    rebuilt, so it raises
+    :class:`WorkflowResultDetailUnavailableError` — never a bare
+    ``assert`` (stripped under ``python -O``, and untranslatable by the
+    callers that only catch the typed refusal)."""
     if raw is None:
         return None
     # The Any-contract walk (the _json seam's parse contract — the same
@@ -236,7 +248,15 @@ def decode_result(raw: object) -> object:
     # runtime shape it consumes, and each use of an Unknown member carries
     # the targeted ignore with the Why.
     decoded: Any = _json_loads(raw) if isinstance(raw, str) else raw
-    assert isinstance(decoded, dict)
+    if not isinstance(decoded, dict):  # pyright: ignore[reportUnknownArgumentType]  # Why: the Any-contract walk.
+        raise WorkflowResultDetailUnavailableError(
+            node_id=node_id,
+            step_key=step_key or "<unknown>",
+            reason=(
+                f"the row's result is not a JSON object ({type(decoded).__name__}) — "
+                "the envelope's shape cannot be read"
+            ),
+        )
     if "value" in decoded:  # pyright: ignore[reportUnknownArgumentType]  # Why: the Any-contract walk.
         keys = set(decoded)  # pyright: ignore[reportUnknownArgumentType,reportUnknownVariableType]  # Why: the same walk — set() over an Any dict is partially unknown by construction.
         if keys <= _RESULT_ENVELOPE_KEYS:
@@ -285,6 +305,7 @@ async def decode_result_with_detail(
     result_expired: bool = False,
     resolve_node_kind: Callable[[str], str | None] | None = None,
     _ancestry: frozenset[object] = frozenset(),
+    _memo: dict[object, object] | None = None,
 ) -> object:
     """THE ONE DETAIL RE-READ (the read half of ``_bounded_collect``):
     the row's declared value — the FULL collect — decoded once, from the
@@ -296,13 +317,17 @@ async def decode_result_with_detail(
     runner's ``_parent_results`` / ``result()`` / ``_flow_state()``, and
     the runner-less ``ChildHandle._ok_result`` — so the unwrap, the
     recursion, the gather flattening, and the fail-closed completeness
-    check have ONE owner and cannot drift apart (they already had: three
-    readers each decoded the bare envelope and each returned the 64 KiB
-    prefix as if it were the collect).
+    check have ONE owner and cannot drift apart. Before this seam the four
+    seats did not behave alike: ``_flow_state`` and ``_ok_result`` decoded
+    the bare envelope and handed back the 64 KiB prefix as if it were the
+    collect, while ``result()`` and ``_parent_results`` went through a
+    one-level rebuild that lost items below the first depth and returned
+    ``[]`` once the detail rows were gone — two different wrong answers
+    for the same row.
 
-    * a non-truncated row (``result_truncation`` is ``None``) decodes
-      directly — the common case pays no query, and ``decode_result``
-      alone is the whole contract there.
+    * a non-truncated row (no truncation marker) decodes directly — the
+      common case pays no query, and ``decode_result`` alone is the whole
+      contract there.
     * a truncated row re-reads its parents and decodes each of them
       through the SAME function: a truncated ``gather`` wrapping a
       truncated ``map_join`` (or a nested ``gather``) rebuilds at every
@@ -312,16 +337,34 @@ async def decode_result_with_detail(
       every parent value is a list) so the re-read hands back exactly the
       shape the join packed — a ``map_join`` over list-returning items is
       ``list[list[T]]`` and is NEVER flattened. The node kind comes from
-      the durable ``metadata`` stamp first, then the caller's compiled
-      graph (``resolve_node_kind``) for rows created before the stamp
-      existed — a runner-less reader has no graph, and the stamp is what
-      makes it correct.
-    * every failure where the whole value cannot be rebuilt — parent
-      rows gone, an expired NULL parent result, a count short
-      of ``len(prefix) + __truncated__``, a marker that is not a positive
-      count, a prefix that is not a list, or an edge cycle — is
+      the caller's compiled graph (``resolve_node_kind``) when one is
+      supplied, and from the durable ``wf_node_kind`` metadata stamp
+      otherwise: the graph is the authority the WRITE path packs from, so
+      it outranks a stamp when both exist (a stale or forged stamp must
+      not change a ``map_join``'s nesting depth). A runner-less reader has
+      no graph and relies on the stamp alone.
+    * a row whose kind is unknown (a pre-stamp row read with no graph:
+      ``ChildHandle`` over a child flow created before the stamp existed)
+      and whose parent values do not match the recorded count gets ONE
+      count-verified reconciliation: if every parent value is a list, the
+      one-level gather flatten is tried and accepted only when its length
+      equals the recorded count. That recovers the pre-stamp ``gather``
+      without guessing at a ``map_join``'s ``list[list[T]]`` shape; when
+      neither shape reconciles the read refuses.
+    * every failure where the whole value cannot be rebuilt — a row with
+      no durable result (swept or re-pended: ``result_expired``), a
+      missing kind stamp with a count that does not reconcile, parent rows
+      gone, a count short of (or past) ``len(prefix) + __truncated__``, a
+      marker that is not a positive int, a prefix that is not a list, a
+      result that is not an object, or an edge cycle — is
       :class:`~taskq.workflows.api._runner_errors.WorkflowResultDetailUnavailableError`,
       never ``[]`` and never the prefix.
+
+    ``_memo`` is one read's cache, keyed by row id: a subtree shared by
+    several parent edges (two aggregations over the same oversized source,
+    merged by a third join) is fetched and rebuilt ONCE per read, not once
+    per path — the parent set is immutable inside one read, so the repeat
+    visits can only return the same value.
     """
 
     def refuse(reason: str, expected: int | None = None, rebuilt: int | None = None) -> NoReturn:
@@ -331,29 +374,37 @@ async def decode_result_with_detail(
 
     if result_expired:
         refuse(
-            "the parent row's result TTL has expired and its result is NULL; "
-            "the surviving row and edge cannot supply a durable collect item"
+            "result TTL has expired (the row's result is NULL — swept, or re-pended "
+            "with no expiry stamp; the surviving row and edge cannot supply a "
+            "durable collect item)"
         )
-    decoded = decode_result(raw)
-    truncated = result_truncation(raw)
-    if truncated is None:
+    memo: dict[object, object] = {} if _memo is None else _memo
+    if node_id in memo:
+        return memo[node_id]
+    decoded = decode_result(raw, node_id=node_id, step_key=step_key)
+    carries_marker, marker = truncation_marker(raw)
+    if not carries_marker:
+        memo[node_id] = decoded
         return decoded
+    # The row carries the truncated envelope's key set, so it IS the bounded
+    # summary — a marker that is not a positive int is corruption, and
+    # returning the prefix would be the silent short read this seam exists to
+    # refuse (``_bounded_collect`` only ever records the items it DROPPED, so
+    # zero or less is equally a lie).
+    if isinstance(marker, int) and not isinstance(marker, bool) and marker > 0:
+        truncated = marker
+    else:
+        refuse(
+            f"the truncation marker ({marker!r}) is not a positive integer count — "
+            "the row's summary cannot be reconciled with its detail"
+        )
 
     if node_id in _ancestry:
         refuse("the truncated collect's detail rows form a cycle (a node is its own ancestor)")
     if not isinstance(decoded, list):
         refuse(
-            "the bounded collect's truncated envelope carries a non-list prefix "
-            f"({type(decoded).__name__}) — there is no collect to rebuild"
-        )
-    # ``_bounded_collect`` only ever records the items it DROPPED, so a marker of
-    # zero or less on a truncated shape is corruption, not a fully-spelled
-    # collect: rebuilding from a lying marker is exactly the silent short read
-    # this seam exists to refuse.
-    if truncated <= 0:
-        refuse(
-            f"the bounded collect's truncation marker ({truncated}) is not a positive "
-            "count — the row's summary cannot be reconciled with its detail"
+            f"the truncated envelope's prefix is not a list ({type(decoded).__name__}) — "
+            "there is no collect to rebuild"
         )
     prefix = cast("list[object]", decoded)
     rows = await conn.fetch(render_sql(PARENT_RESULTS_BY_KEY_SQL_TEMPLATE, schema), node_id)
@@ -370,10 +421,16 @@ async def decode_result_with_detail(
                 result_expired=bool(row["result_expired"]),  # pyright: ignore[reportUnknownArgumentType]  # Why: same walk.
                 resolve_node_kind=resolve_node_kind,
                 _ancestry=_ancestry | {node_id},
+                _memo=memo,
             )
         )
-    kind = node_kind_from_metadata(metadata) or (
-        resolve_node_kind(step_key) if resolve_node_kind is not None else None
+    # The graph is the write path's own authority; the stamp is the
+    # runner-less reader's. Preferring the resolver mirrors the packer, so a
+    # stale or forged ``wf_node_kind`` cannot change the shape at a runner
+    # seat (a ``gather`` stamp on a ``map_join`` would flatten singleton
+    # batches and pass a count-only gate).
+    kind = (resolve_node_kind(step_key) if resolve_node_kind is not None else None) or (
+        node_kind_from_metadata(metadata)
     )
     if kind == "gather" and values and all(isinstance(v, list) for v in values):
         # the gather's flatten, mirrored (the identity packer's own rule —
@@ -381,32 +438,79 @@ async def decode_result_with_detail(
         # must hand the consumer the same shape).
         values = [item for v in values for item in cast("list[object]", v)]
     expected_total = len(prefix) + truncated
+    if (
+        len(values) != expected_total
+        and kind is None
+        and values
+        and all(isinstance(v, list) for v in values)
+    ):
+        # THE PRE-STAMP SHAPE'S COUNT-VERIFIED RECONCILIATION: a ``gather``
+        # row created before the durable stamp existed has no kind at a
+        # runner-less seat. Its un-flattened rebuild counts the parent
+        # LISTS where the pack counted items, so the flatten is tried and
+        # accepted only when it lands exactly on the recorded count — a
+        # ``map_join``'s ``list[list[T]]`` never reconciles by accident at
+        # the same count, and a torn purge still refuses.
+        candidate = [item for v in values for item in cast("list[object]", v)]
+        if len(candidate) == expected_total:
+            values = candidate
     if len(values) != expected_total:
+        if values:
+            # The parent rows ARE present and counted — the count simply
+            # disagrees with the summary. Blaming purged rows here would
+            # send the operator hunting for a purge that never happened.
+            refuse(
+                "the count does not reconcile (every surviving parent row is counted, "
+                "but the parent values do not reach the summary's length)",
+                expected=expected_total,
+                rebuilt=len(values),
+            )
         refuse(
-            "the parent detail rows are missing or incomplete (the full collect's "
-            "only home is gone: purged rows, a missing wf_edge row, or a partially "
-            "deleted fork)",
+            "purged or missing parent detail rows (the full collect's only home is "
+            "gone: a deleted row, a missing wf_edge row, or a partially deleted fork)",
             expected=expected_total,
-            rebuilt=len(values),
+            rebuilt=0,
         )
+    memo[node_id] = values
     return values
 
 
-def result_truncation(raw: object) -> int | None:
-    """The RAW row's truncation face (the marker's read): the count
-    when the envelope is the bounded collect's TRUNCATED shape, ``None``
-    otherwise (a None raw, a plain envelope, a body's own dict). The
-    decode's unwrap drops the markers from the consumer's value — THIS
-    seam is how the reads recover the count (the runner's detail
-    re-read keys on it: ``detail_home`` says the full collect lives on
-    the children's own result rows)."""
+def truncation_marker(raw: object) -> tuple[bool, object]:
+    """The RAW row's truncation face: ``(carries the marker key, the
+    marker's value)``.
+
+    The two doors must agree: :func:`decode_result` unwraps by KEY SET, so
+    a row that carries ``__truncated__`` IS the bounded summary whatever
+    the marker's type. The caller refuses a marker that is not a positive
+    ``int`` (a ``"200"`` string, a bool, ``None``, zero or a negative
+    count) instead of silently handing back the prefix. A row with no
+    marker key returns ``(False, None)`` — the plain envelope.
+    """
     if raw is None:
-        return None
+        return False, None
     decoded: Any = _json_loads(raw) if isinstance(raw, str) else raw
     if not isinstance(decoded, dict):  # pyright: ignore[reportUnknownArgumentType]  # Why: the Any-contract walk.
+        return False, None
+    mapping = cast("dict[str, object]", decoded)
+    if "__truncated__" not in mapping:
+        return False, None
+    return True, mapping["__truncated__"]
+
+
+def result_truncation(raw: object) -> int | None:
+    """The RAW row's truncation count: the marker when the envelope is the
+    bounded collect's TRUNCATED shape with a positive ``int`` count,
+    ``None`` otherwise (a None raw, a plain envelope, a body's own dict, a
+    malformed marker). The decode's unwrap drops the markers from the
+    consumer's value — THIS seam is how the reads recover the count (the
+    runner's detail re-read keys on it: ``detail_home`` says the full
+    collect lives on the children's own result rows)."""
+    carries, marker = truncation_marker(raw)
+    if not carries:
         return None
-    count = decoded.get("__truncated__")  # pyright: ignore[reportUnknownMemberType,reportAttributeTypeIssue,reportUnknownVariableType]  # Why: the same walk.
-    return count if isinstance(count, int) and not isinstance(count, bool) else None
+    if isinstance(marker, int) and not isinstance(marker, bool) and marker > 0:
+        return marker
+    return None
 
 
 # ── the typed boundary is complete (the typed boundary): a param's

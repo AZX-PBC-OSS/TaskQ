@@ -127,7 +127,6 @@ from taskq.workflows.api._runner_codec import (
 from taskq.workflows.api._runner_defer import DeferOps
 from taskq.workflows.api._runner_errors import (
     VanishedNodeError,
-    WorkflowResultDetailUnavailableError,
     WorkflowRunCancelledError,
     WorkflowRunError,
 )
@@ -1403,21 +1402,22 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
 
         # decided now, against the flow's state — never at create time.
         if node is not None and node.skip is not None:
-            # The state read sits ABOVE the ladder ``try``: a truncation
-            # whose parent detail rows are gone raises the deterministic
-            # :class:`WorkflowResultDetailUnavailableError` here, and an
-            # escaping raise would strand the just-claimed node ``running``
-            # until its lease expired (the `possibly-forever` wedge). Route
-            # it through the ladder's deterministic arm — the identical
-            # sequence the tail's body-failure catch and
-            # ``_route_finalize_refusal`` use, minus the emitter (none exists
-            # yet at this gate), so the node terminal-fails on attempt 1 with
-            # the class on the record and the tail's outcome vocabulary
+            # The state read and the predicate sit ABOVE the ladder ``try``:
+            # nothing inside the claim tail's body-failure arm can see a raise
+            # from here, so an escaping one would leave the just-claimed node
+            # ``running`` until its lease expired — the eternal-zombie wedge.
+            # Every raise is caught, not just the truncation refusal: the state
+            # read's :class:`WorkflowResultDetailUnavailableError` and any
+            # ordinary authoring bug in the predicate (a misspelt key, a bad
+            # comparison) all route through the ladder. A deterministic class
+            # terminal-fails on attempt 1 with the class on the record; a
+            # transient one spends the budget it declares. Either way the node
+            # gets a disposition and the tail's outcome vocabulary
             # (``laddered`` / ``deferred`` / ``cancelled`` / ``fenced``) keeps
             # its census meaning.
             try:
                 should_skip = node.skip(await self._flow_state(flow_id))
-            except WorkflowResultDetailUnavailableError as exc:
+            except Exception as exc:  # Why: the gate is outside the body-failure boundary — every raise must be routed, or the claimed node is stranded.
                 route = await self._ladder_or_fail(
                     flow_id,
                     row,
@@ -1445,7 +1445,7 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
                 )
                 return "skipped"
 
-            # the emission op's buffer: the attempt's own emitter — the declared
+        # the emission op's buffer: the attempt's own emitter — the declared
         # progress schema rides the node's decl (a map child inherits its
         # source's: the fork-spawned keys have no decl of their own).
         emitter = ProgressEmitter(
@@ -3057,7 +3057,10 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
         async def _decode(state_row: asyncpg.Record) -> object:
             # a truncating JOIN as the terminal node reads the full collect off
             # the children's rows — the decoded answer is the declared shape,
-            # never the bounded summary's envelope.
+            # never the bounded summary's envelope. The row's OWN expiry flag
+            # rides in: a swept terminal result is a definite "no durable
+            # value", refused rather than answered as the None that means
+            # "not terminal yet".
             async with self.pool.acquire() as conn:
                 return await self._decode_with_detail(
                     conn,
@@ -3065,6 +3068,7 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
                     state_row["node_id"],  # pyright: ignore[reportUnknownArgumentType]  # Why: same walk.
                     state_row["node_result"],  # pyright: ignore[reportUnknownArgumentType]  # Why: same walk.
                     state_row["node_metadata"],  # pyright: ignore[reportUnknownArgumentType]  # Why: same walk.
+                    bool(state_row["result_expired"]),  # pyright: ignore[reportUnknownArgumentType]  # Why: same walk.
                 )
 
         if run_status == "succeeded" and state is not None and state["node_status"] == "succeeded":
@@ -3151,8 +3155,9 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
         (:meth:`_decode_with_detail`) while this connection is held — a
         truncated ``map_join`` / ``gather`` entry is the FULL collect, the
         same value the step body on that node receives, so a ``skip=``
-        predicate never decides against a 64 KiB prefix. A truncated
-        entry whose parent detail rows are gone raises
+        predicate never decides against a 64 KiB prefix. An entry whose
+        own result the retention sweep nulled, or a truncated entry whose
+        parent detail rows are gone, raises
         :class:`WorkflowResultDetailUnavailableError` (the caller at the
         ``skip=`` gate routes it to the ladder as a deterministic
         refusal). The input read is taken after the connection is
@@ -3170,6 +3175,7 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
                     r["id"],  # pyright: ignore[reportUnknownArgumentType]  # Why: same walk.
                     r["result"],  # pyright: ignore[reportUnknownArgumentType]  # Why: same walk.
                     r["metadata"],  # pyright: ignore[reportUnknownArgumentType]  # Why: same walk.
+                    bool(r["result_expired"]),  # pyright: ignore[reportUnknownArgumentType]  # Why: same walk.
                 )
         return {"input": await self._flow_input(flow_id), "results": results}
 
