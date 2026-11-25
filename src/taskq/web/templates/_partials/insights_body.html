@@ -188,6 +188,10 @@
     <p class="text-xs text-slate-500 dark:text-slate-400 mb-2">
       Per (actor, queue) against the actor's ROUTED queue (the routing table dispatch follows).
       Unservable backlog is what will STILL be waiting after the next full claim wave.
+      On <code>wf</code>, <code>running</code> includes each live workflow run's root row —
+      a cache row that holds no dispatch slot — so <code>saturation</code> can read at or
+      above 1 and <code>unservable_backlog</code> can be positive while dispatch still
+      admits the actor's steps.
     </p>
     {% if backlog %}
     <div class="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg overflow-hidden">

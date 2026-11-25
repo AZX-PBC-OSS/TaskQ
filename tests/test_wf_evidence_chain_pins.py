@@ -26,25 +26,17 @@ fresh on-disk terminal) stays GREEN.
 from __future__ import annotations
 
 import json
+import os
 import subprocess  # Why: the verifier's verdict is its exit code — the script is the subject (the pin's own shape).
 import sys
 from pathlib import Path
 
 import pytest
 
+from tests._wf_fixtures import stale_head_sha
+
 _REPO = Path(__file__).resolve().parent.parent
 _VERIFIER = _REPO / "scripts" / "verify_evidence_heads.py"
-
-#: A head sha that is stale by construction: the repo's root commit — an
-#: ancestor with the whole tree's source changes since, the off-by-one
-#: rule can never call it fresh.
-_STALE_SHA = subprocess.run(  # Why: fixed argv, no shell; git resolves on the dev/CI path exactly as the repo's own scripts invoke it.
-    ["git", "rev-list", "--max-parents=0", "HEAD"],  # noqa: S607  # Why: as above.
-    cwd=_REPO,
-    capture_output=True,
-    text=True,
-    check=True,
-).stdout.strip()
 
 
 def _head() -> str:
@@ -55,6 +47,23 @@ def _head() -> str:
         text=True,
         check=True,
     ).stdout.strip()
+
+
+def _stale_head() -> str:
+    """A head sha that is stale by construction: the repo's root commit — an
+    ancestor with the whole tree's source changes since, the off-by-one rule
+    can never call it fresh (``tests._wf_fixtures`` guards the derivation).
+    Skips where this checkout cannot supply it — a single-commit shallow
+    clone has the root AT HEAD — so the pin never reds for its own fixture;
+    the full-history lanes always run it."""
+    sha = stale_head_sha()
+    if sha is None:
+        pytest.skip(
+            "this checkout's history cannot supply a stale ancestor head (the "
+            "root IS HEAD — a single-commit/shallow clone): the stale-terminal "
+            "premise needs >=2 commits, and the full-history lanes run it"
+        )
+    return sha
 
 
 def _estate(tmp_path: Path, claims: list[dict[str, str]], ghosts: tuple[str, ...] = ()) -> Path:
@@ -69,10 +78,19 @@ def _estate(tmp_path: Path, claims: list[dict[str, str]], ghosts: tuple[str, ...
     return runs
 
 
-def _verify(runs: Path) -> subprocess.CompletedProcess[str]:
+def _verify(
+    runs: Path, *, env_extra: dict[str, str] | None = None
+) -> subprocess.CompletedProcess[str]:
+    # The ambient GITHUB_EVENT_PATH is neutralized (the control: a CI
+    # pull_request payload must not forge the verifier's head — the
+    # synthetic estate's verdict belongs to THIS checkout's HEAD alone).
+    # *env_extra* is the proving leg's seam: a pin hands the ambient face
+    # back in to show the payload really is the refusal it neutralizes.
+    env = {**os.environ, "GITHUB_EVENT_PATH": "", **(env_extra or {})}
     return subprocess.run(  # noqa: S603  # Why: the interpreter is sys.executable, the script is the repo's own verifier; fixed argv, no shell.
         [sys.executable, str(_VERIFIER), "--runs-dir", str(runs)],
         cwd=_REPO,
+        env=env,
         capture_output=True,
         text=True,
         check=False,
@@ -98,7 +116,7 @@ def test_the_stale_terminal_one_hop_reds(tmp_path: Path) -> None:
         tmp_path,
         [
             _e("scenario", "drill-a.txt", HEAD, "t0", superseded_by="runs/proof.txt"),
-            _e("proof", "proof.txt", _STALE_SHA, "t1"),
+            _e("proof", "proof.txt", _stale_head(), "t1"),
             _e(
                 "proof", "proof-fresh.txt", HEAD, "t2"
             ),  # the stem's live entry is fresh — the old law saw only this
@@ -120,7 +138,7 @@ def test_the_stale_terminal_two_hops_reds(tmp_path: Path) -> None:
             _e("deep-scenario", "deep-a.txt", HEAD, "t0", superseded_by="runs/mid.txt"),
             _e("mid", "mid.txt", HEAD, "t1", superseded_by="runs/end.txt"),
             _e("mid", "mid-fresh.txt", HEAD, "t2"),
-            _e("end", "end.txt", _STALE_SHA, "t3"),
+            _e("end", "end.txt", _stale_head(), "t3"),
             _e("end", "end-fresh.txt", HEAD, "t4"),
         ],
     )
@@ -206,7 +224,7 @@ def test_the_stale_terminal_is_never_saved_by_its_stems_fresh_tail(tmp_path: Pat
         tmp_path,
         [
             _e("edge", "edge-a.txt", HEAD, "t0", superseded_by="runs/old.txt"),
-            _e("old", "old.txt", _STALE_SHA, "t1"),
+            _e("old", "old.txt", _stale_head(), "t1"),
             _e("old", "new.txt", HEAD, "t2"),
         ],
     )
@@ -227,7 +245,7 @@ def test_the_cited_import_terminal_is_history_by_declaration(tmp_path: Path, gho
         _e(
             "imported",
             "imported.txt",
-            _STALE_SHA,
+            _stale_head(),
             "t1",
             kind="CITED-IMPORT (the originating session's evidence gone; the import IS the provenance)",
         ),
@@ -243,3 +261,43 @@ def test_the_cited_import_terminal_is_history_by_declaration(tmp_path: Path, gho
             + proc.stdout
             + proc.stderr
         )
+
+
+def test_verify_ignores_ambient_github_event_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Synthetic estate verification must not inherit an ambient CI
+    ``GITHUB_EVENT_PATH`` whose pull-request head trails HEAD with source
+    changes: the verifier's env cross-check would refuse the run before
+    reading ``--runs-dir``. The pin proves that premise itself first — the
+    ambient payload, handed to the child unneutralized, IS the refusal —
+    so a reshaped payload or a degenerate history reds here loudly instead
+    of quietly emptying the guard this module's repair exists for."""
+    stale_sha = _stale_head()
+    event_file = tmp_path / "pr-event.json"
+    event_file.write_text(json.dumps({"pull_request": {"head": {"sha": stale_sha}}}))
+    monkeypatch.setenv("GITHUB_EVENT_PATH", str(event_file))
+    runs = _estate(
+        tmp_path,
+        [
+            _e("honest", "h1.txt", HEAD, "t0", superseded_by="runs/h2.txt"),
+            _e("honest-proof", "h2.txt", HEAD, "t1"),
+        ],
+    )
+    # The premise, proved in-pin: with the ambient face NOT neutralized the
+    # payload reaches the cross-check and the run is refused — the shape
+    # the neutralization below is the fix for.
+    refused = _verify(runs, env_extra={"GITHUB_EVENT_PATH": str(event_file)})
+    assert refused.returncode == 1 and "THE ENV-FORGED HEAD" in refused.stdout, (
+        "the ambient pull-request payload must be the env cross-check's refusal "
+        "before this pin can assert the neutralization — the sha must be a real "
+        "ancestor with behavioral changes since. The output:\n" + refused.stdout + refused.stderr
+    )
+    proc = _verify(runs)
+    assert proc.returncode == 0, (
+        "ambient GITHUB_EVENT_PATH must not fail synthetic estate verification:\n"
+        + proc.stdout
+        + proc.stderr
+    )
+    assert "THE ENV-FORGED HEAD" not in proc.stdout
+    assert "the head-stamp law holds" in proc.stdout

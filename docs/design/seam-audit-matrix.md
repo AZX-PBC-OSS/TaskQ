@@ -166,6 +166,12 @@ above.
 | lease and sweep deadlines | worker clock skew | the comparisons are server-side (`clock_timestamp()`); the same clock that stamped the lease judges it | `test_heartbeat.py` (the gated statement's server-side threshold), `test_rt_sweeps_*` |
 | harness seed aging | timing-sensitive choreography | seeds anchor to the PG clock instead of wall-clock sleeps | the sweep pins' seeding discipline |
 
+## 11. Dispatch admission
+
+| seam / caller | interleaving | invariant | pin |
+|---|---|---|---|
+| `capped_running.in_flight` (`backend/_dispatch_sql.py`), read by `per_actor_capacity`, `repend_capacity` and the `eligible` re-limit | a root written on a capped non-`wf` actor through the exported `insert_flow_run` (its `entry.actor` is caller-chosen): the subtraction's literal `'wf'` never sees it, so that actor's pending step is not admitted while a row that is not work holds the unit. Diagnostic shape: an actor at `saturation = 1` whose running rows include `__flow__` roots is an actor whose cap is held by rows that are not work. | a **running** flow root never holds a unit of `wf`'s cap; running steps and vanilla running rows do. The subtraction is the literal `'wf'`, so it relies on every root being written on `wf` (`FlowEntryShim.actor`). That scope is documented on `FlowEntry`/`insert_flow_run` but not enforced at the exported write. | `tests/test_wf_root_actor_cap_pins.py` (including the terminal-root and placement pins) and `tests/test_wf_root_cap_subtraction_gate.py` |
+
 ## What remains open
 
 Four rows read "no pin": the `resolve_claim`/`mark_claimed` bare-id intent

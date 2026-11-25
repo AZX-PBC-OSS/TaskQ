@@ -854,6 +854,20 @@ class BuildGraph:
         return base if n == 0 else f"{base}:{n}"
 
     def add(self, node: NodeDecl) -> None:
+        # The engine's reserved run-root marker is not a user node key: a
+        # ``__flow__`` step row is excluded from the dispatch fence
+        # (``step_key <> '__flow__'``) and from the nodeless-root reap's
+        # node-existence check, so a node sharing it wedges the run and
+        # then fails it under a false "create was not atomic" story.
+        # Refused here, in the one place every wiring verb adds a node
+        # (step, loop, chain_source, ...), so no verb can re-open the door.
+        if node.key == "__flow__":
+            raise WorkflowBuildError(
+                f"node key {node.key!r} is the engine's reserved run-root marker "
+                "(step_key = '__flow__'): a node sharing it is never claimed and "
+                "is invisible to the nodeless-root reap, so the run wedges and "
+                "then fails under a false cause; rename the node"
+            )
         if node.key in self.nodes:
             raise WorkflowBuildError(
                 f"node {node.key!r} is declared twice in one workflow — a "

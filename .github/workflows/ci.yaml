@@ -251,12 +251,17 @@ jobs:
         # pytest-timeout's graceful per-test failure into a lost worker.
         run: |
           set -euo pipefail
+          files="$(uv run --no-sync python scripts/ci_shard.py --shard ${{ matrix.shard }} --total 4)"
+          if [ -z "$files" ]; then
+            echo "::error::ci_shard.py returned no modules for shard ${{ matrix.shard }}/4"
+            exit 1
+          fi
+          mapfile -t files <<< "$files"
           if [ "${{ matrix.scope }}" = "full" ]; then
-            mapfile -t files < <(uv run --no-sync python scripts/ci_shard.py --shard ${{ matrix.shard }} --total 4)
             echo "full shard ${{ matrix.shard }}/4: ${#files[@]} modules"
             uv run --no-sync pytest "${files[@]}" -n 2 -m "not slow and not load_sensitive and not timescale" -o faulthandler_timeout=300
           else
-            echo "smoke shard ${{ matrix.shard }}/4 on ${{ matrix.python-version }}: the non-integration tier"
+            echo "smoke shard ${{ matrix.shard }}/4 on ${{ matrix.python-version }}: ${#files[@]} modules (before the marker filter)"
             uv run --no-sync pytest "${files[@]}" -n 2 -m "not integration and not slow and not load_sensitive and not timescale" -o faulthandler_timeout=300
           fi
 
@@ -453,14 +458,21 @@ jobs:
     # interpreter coverage is the fast matrix's job and the slow tier's value
     # is behaviour, not runtime parity.
     # The slow tier is the wave's longest wall-clock lane (wall-clock-bound
-    # lease/failover/chaos windows), so it runs on the 8-core larger runner:
-    # the per-worker core density doubles and the lane's wall time drops
-    # accordingly, at the larger runner's linear per-core cost. Parallelism
-    # stays at -n 2: every test here is xdist-safe by construction (this lane
-    # has always run -n 2), and the wall-clock scenarios must not tighten
-    # further under heavier packing.
+    # lease/failover/chaos windows). It runs on the standard `ubuntu-latest`
+    # runner (the larger-runner label does not yet exist, the same stand-in
+    # note the coverage lane carries), so the density it gets is -n 2 on 4
+    # cores. Parallelism stays at -n 2: every test here is xdist-safe by
+    # construction (this lane has always run -n 2), and the wall-clock
+    # scenarios must not tighten further under heavier packing.
+    # The cap sits above the lane's slowest test: the 200k identity proof
+    # carries a 50-minute (3,000 s) pytest-timeout (its own 45-minute inner
+    # orchestration deadline plus teardown margin), so a 45-minute job cap
+    # would cancel the lane before the test timed out with a diagnostic. 70
+    # minutes (4,200 s) leaves 1,200 s = 20 minutes over that worst-case
+    # outer path for lane setup, the lane's 900 s co-tenant budgets (the
+    # lost-job soak's trials and the compose stack e2e), and reporting.
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 70
     steps:
       # fetch-depth 0 is REQUIRED: the docs-honesty pins resolve the
       # evidence ref at collection. The docs-honesty pins resolve
@@ -543,7 +555,12 @@ jobs:
       - name: Run the load-sensitive suite serially
         run: |
           set -euo pipefail
-          mapfile -t files < <(uv run --no-sync python scripts/ci_shard.py --shard ${{ matrix.shard }} --total 4)
+          files="$(uv run --no-sync python scripts/ci_shard.py --shard ${{ matrix.shard }} --total 4 --include-system-e2e)"
+          if [ -z "$files" ]; then
+            echo "::error::ci_shard.py returned no modules for shard ${{ matrix.shard }}/4"
+            exit 1
+          fi
+          mapfile -t files <<< "$files"
           echo "load shard ${{ matrix.shard }}/4: ${#files[@]} modules"
           uv run --no-sync pytest "${files[@]}" --system-e2e -m "load_sensitive and not timescale" --timeout=900
 
@@ -672,7 +689,12 @@ jobs:
         # can trip the timer).
         run: |
           set -euo pipefail
-          mapfile -t files < <(uv run --no-sync python scripts/ci_shard.py --shard ${{ matrix.shard }} --total 4)
+          files="$(uv run --no-sync python scripts/ci_shard.py --shard ${{ matrix.shard }} --total 4)"
+          if [ -z "$files" ]; then
+            echo "::error::ci_shard.py returned no modules for shard ${{ matrix.shard }}/4"
+            exit 1
+          fi
+          mapfile -t files <<< "$files"
           echo "coverage shard ${{ matrix.shard }}/4: ${#files[@]} modules"
           uv run --no-sync pytest "${files[@]}" -n 2 -m "not slow and not load_sensitive and not timescale" --cov=taskq --cov-report=term-missing -o faulthandler_timeout=300
       - name: Upload this shard's coverage data
