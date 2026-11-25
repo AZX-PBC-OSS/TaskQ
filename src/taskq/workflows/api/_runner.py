@@ -213,16 +213,31 @@ def _bounded_collect(values: list[object]) -> dict[str, object]:
     envelope: dict[str, object] = {"value": values}
     if len(_jsonb(envelope).encode("utf-8")) <= FANIN_FAILURES_BYTE_CAP:
         return envelope
+    # The fitting pass is LINEAR in the fitted prefix: measure the fixed shell
+    # once, serialise each candidate item once, and keep a running byte total.
+    # JSON array serialisation is ``[`` item (``,`` item)* ``]``, so the row's
+    # bytes are the shell + each item's own serialised bytes + one comma
+    # between items. The ``__truncated__`` digit width is re-added per step
+    # because it SHRINKS as the kept prefix grows (``10000`` -> ``9999``); the
+    # measure still matches the greedy prefix the pre-linear loop kept.
+    shell_head = '{"value":['
+    shell_mid = '],"__truncated__":'
+    shell_tail = ',"detail_home":' + dumps_jsonb_str(detail_home) + "}"
+    shell_bytes = len((shell_head + shell_mid + shell_tail).encode("utf-8"))
     kept: list[object] = []
+    items_bytes = 0
     for value in values:
-        candidate = {
-            "value": [*kept, value],
-            "__truncated__": len(values) - len(kept) - 1,
-            "detail_home": detail_home,
-        }
-        if len(_jsonb(candidate).encode("utf-8")) > FANIN_FAILURES_BYTE_CAP:
+        # Measure through ``_jsonb`` (never ``_jsonb(value)``: a bare ``str``
+        # is returned RAW, not JSON-quoted) — a single-element array is the
+        # item's exact serialised width, minus its two brackets.
+        item_bytes = len(_jsonb([value]).encode("utf-8")) - 2
+        candidate_items_bytes = items_bytes + item_bytes + (1 if kept else 0)
+        remaining = len(values) - len(kept) - 1
+        candidate_bytes = shell_bytes + candidate_items_bytes + len(str(remaining))
+        if candidate_bytes > FANIN_FAILURES_BYTE_CAP:
             break
         kept.append(value)
+        items_bytes = candidate_items_bytes
     return {
         "value": kept,
         "__truncated__": len(values) - len(kept),
@@ -1428,6 +1443,7 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
         # the tail's — below — and returns before the miss finalize reads
         # this).
         result: dict[str, object] | None = None
+        collected: list[object] | None = None  # the join's full pack before the cap (#744)
         logical_attempt = attempt
         if node is not None and node.kind == "chain_source":
             from taskq.workflows.api._attempt import resolve_source_logical_attempt
@@ -1543,6 +1559,7 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
                 # __truncated__ marker, the detail on the child
                 # rows). Under the cap: byte-identical.
                 result = _bounded_collect(parents_values)
+                collected = parents_values
             else:
                 deps_tail = self._deps_tail(body, len(args))
                 deadline_s = self._body_deadline_seconds(row)
@@ -1895,6 +1912,7 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
                     run_priority=run_priority,
                     ledger_id=ledger_id,
                     ledger_claimed_at=ledger_claimed_at,
+                    collected=collected,
                 )
             except (
                 FanInBoundExceededError,
@@ -2233,6 +2251,7 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
         run_priority: int | None = None,
         ledger_id: JobId | None = None,
         ledger_claimed_at: Any = None,
+        collected: list[object] | None = None,
     ) -> FinalizeResult:
         """The success finalize (the fenced terminal + the ledger row +
         the fork): the FinalizeResult is RETURNED now — the
@@ -2240,14 +2259,20 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
         merge both key on ``applied`` (a fenced write is a zombie's,
         never a terminal-succeeded). ``run_priority`` threads the RUN's
         per-call override into the fork build (the priority surface —
-        the map's children resolve it as the law's first level)."""
+        the map's children resolve it as the law's first level).
+        ``collected`` is the body-less join's full pack, which the map
+        fork reads in place of the capped envelope."""
         fork: ForkSpec | None = None
         if node is not None and node.map_item is not None:
+            # the fork covers every item the join packed, never the capped row's prefix (#744)
+            fork_source: dict[str, object] | None = (
+                {"value": collected} if collected is not None else result
+            )
             from taskq.constants import SMALLINT_MAX
             from taskq.workflows._types import MAP_INDEX_CEILING, resolve_map_index_domain
 
             map_ceiling = MAP_INDEX_CEILING
-            raw_items = result.get("value") if result is not None else None
+            raw_items = fork_source.get("value") if fork_source is not None else None
             if _list_width(raw_items) > SMALLINT_MAX + 1:
                 # Only a map past the legacy 16-bit window pays for the all-five
                 # schema read; ordinary maps read nothing. A widened schema
@@ -2255,7 +2280,7 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
                 async with self.pool.acquire() as probe_conn:
                     map_ceiling = await resolve_map_index_domain(probe_conn, self.schema)
             fork = self._map_fork(
-                row, node, result, run_priority=run_priority, map_index_ceiling=map_ceiling
+                row, node, fork_source, run_priority=run_priority, map_index_ceiling=map_ceiling
             )
         elif node is not None and node.map_arms is not None and prebuilt_route_fork is not None:
             # the typed route's fork — built at the body path from

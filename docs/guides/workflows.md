@@ -228,7 +228,16 @@ alternative. The refusal's class is
 DETERMINISTIC authoring failure (the run record carries
 `error_class='FanInBoundExceededError'`, the retry ladder never burns —
 re-running cannot shrink the corpus), and its message carries the
-remedy: the child-driven escape below, or partition the map.
+remedy: the child-driven escape below, or partition the map. A map wired
+on a join or `gather` counts the true item count, not the prefix the
+join row spells under the size cap (below): past 1000 items it
+terminal-fails `FanInBoundExceededError` unless the map declares
+`child_driven=True`; on a widened (POST) schema — or at exactly 32,768
+items on any schema — it terminal-fails even with `child_driven` on the
+join counter's own `FanInBoundExceededError`.
+While the identity carriers are still `smallint`, a map past 32,768
+items fails first with `error_class='MapIndexExhaustedError'`,
+`child_driven` or not. Partition the source.
 
 THE HONEST DERIVATION (never a line through points that
 don't share one): the three measured points — 200 → 14.9 ms, 1000 →
@@ -362,7 +371,32 @@ compacts the row to the bounded summary (the `"__truncated__": N` marker
 counting the items no longer spelled + the ledger pointer); the FULL
 detail stays on the ledger/attempts — the record never loses it. The
 compacted row stays bounded forever (a later append increments the
-marker).
+marker). The collected result envelope of a map join or `gather` follows
+the same 64 KiB cap: past it the row keeps the prefix that fits,
+`__truncated__: N` and a `detail_home` pointer, and the full collect
+stays on the rows it was collected from (a map join's `.item` children,
+a `gather`'s parents). A map wired directly on the join forks one child
+per item the join packed, and a consumer step's argument re-reads those
+rows. The re-read goes one level deep: a consumer over a `gather` whose
+parent is itself a truncated join (a map join or a `gather`) still sees
+that parent's prefix. The map sees one level further, because the join
+built its pack through the same re-read: it sees a prefix only when
+both levels below its source are truncated joins, as in a map on a
+`gather` over a `gather` of truncated map joins. Two single-level
+readers bypass that detail re-read and see only the row's prefix
+(`docs/design/seam-audit-matrix.md` §12 row 2): a `skip` / guard
+predicate over a truncated join (`_flow_state`) and a child flow's
+terminal read of one (`_ok_result`) both decode the row's kept prefix,
+never the full collect. One further shape is silent: in a single-branch
+two-level nest — `gather([small_step, gather([truncated_map])])` — the
+outer join's pack is already shortened by the inner truncation and can
+fit under the 64 KiB cap, so its row carries NO `__truncated__` marker
+and no `wf_collect_truncated` receipt at all, indistinguishable from a
+complete pack, and a map wired on it forks a prefix of a prefix. The
+author-usable escape is an intermediate step that receives the truncated
+joins as direct arguments: its argument re-read reads each join's full
+collect off the children's rows, so an outer `gather` over those steps
+packs the whole corpus.
 
 ## The three cancel legs
 

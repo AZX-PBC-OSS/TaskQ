@@ -754,6 +754,31 @@ name against its own (pre-keyed) registry — the row PARKS budget-free
 upgraded workers claim it. The row is never admitted unprotected and
 never lost; the run resumes when the upgrade wave reaches its queue.
 
+### A map on a truncated join or `gather` forks every collected item
+
+> **Unreleased.** Breaking for workflows whose run succeeded on the
+> truncated prefix.
+
+A `map_source` wired directly on a map join or `gather` whose collected
+result passed the 64 KiB envelope cap used to fork only the prefix the
+join row still spelled, and the run ended `succeeded` on partial data.
+It now forks one child per collected item. Past 1000 items the source
+node terminal-fails with `FanInBoundExceededError` unless the map
+declares `child_driven=True`; on a widened (POST) schema — or at exactly
+32,768 items on any schema — it terminal-fails even with `child_driven`,
+on the join counter's `FanInBoundExceededError`.
+While the identity carriers are still `smallint`, a map past 32,768
+items fails first with `error_class='MapIndexExhaustedError'`,
+`child_driven` or not. Partition the source to stay under the bounds.
+A join that finalized before the upgrade keeps the children it already
+forked. Until the upgrade wave reaches every worker, a join CLAIMED by a
+still-running pre-upgrade worker keeps the old behaviour: it forks only
+the truncated prefix and the run still ends `succeeded` with no error.
+To audit runs from before (or during) the upgrade, look for the
+`"__truncated__"` marker on a join row's result envelope — and the
+`wf_collect_truncated` receipt in its metadata — which identify a join
+whose envelope was capped.
+
 ### Dispatch-path malformed payloads fail immediately
 
 > **Unreleased.** Breaking for callers that relied on invalid payloads
