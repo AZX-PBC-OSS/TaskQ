@@ -47,6 +47,8 @@ from pathlib import Path
 
 import pytest
 
+from tests._wf_fixtures import stale_head_sha
+
 _REPO = Path(__file__).resolve().parent.parent
 _VERIFIER = _REPO / "scripts" / "verify_evidence_heads.py"
 
@@ -62,17 +64,6 @@ def _head() -> str:
 
 
 HEAD = _head()
-
-#: An ancestor head behind HEAD with behavioral source changes since: the
-#: shape a pull-request merge checkout carries in GITHUB_EVENT_PATH when the
-#: PR branch trails main.
-_STALE_SHA = subprocess.run(  # Why: fixed argv, no shell; git resolves on the dev/CI path exactly as the repo's own scripts invoke it.
-    ["git", "rev-list", "--max-parents=0", "HEAD"],  # noqa: S607  # Why: as above.
-    cwd=_REPO,
-    capture_output=True,
-    text=True,
-    check=True,
-).stdout.strip()
 
 #: The wf-battery capture's real shape (the rejected instance's own
 #: words): the run-scoped stamp with the rc, then the pytest tail. The
@@ -140,11 +131,15 @@ def _estate(tmp_path: Path, claims: list[dict[str, str]], bodies: dict[str, str]
     return runs
 
 
-def _verify(runs: Path) -> subprocess.CompletedProcess[str]:
+def _verify(
+    runs: Path, *, env_extra: dict[str, str] | None = None
+) -> subprocess.CompletedProcess[str]:
     # The ambient GITHUB_EVENT_PATH is neutralized (the control: a CI
     # pull_request payload must not forge the verifier's head — the
     # synthetic estate's verdict belongs to THIS checkout's HEAD alone).
-    env = {**os.environ, "GITHUB_EVENT_PATH": ""}
+    # *env_extra* is the proving leg's seam: a pin hands the ambient face
+    # back in to show the payload really is the refusal it neutralizes.
+    env = {**os.environ, "GITHUB_EVENT_PATH": "", **(env_extra or {})}
     return subprocess.run(  # noqa: S603  # Why: the interpreter is sys.executable, the script is the repo's own verifier; fixed argv, no shell.
         [sys.executable, str(_VERIFIER), "--runs-dir", str(runs)],
         cwd=_REPO,
@@ -317,14 +312,33 @@ def test_verify_ignores_ambient_github_event_path(
     """Synthetic estate verification must not inherit an ambient CI
     ``GITHUB_EVENT_PATH`` whose pull-request head trails HEAD with source
     changes: the verifier's env cross-check would refuse the run before
-    reading ``--runs-dir``."""
+    reading ``--runs-dir``. The pin proves that premise itself first — the
+    ambient payload, handed to the child unneutralized, IS the refusal —
+    so a reshaped payload or a degenerate history reds here loudly instead
+    of quietly emptying the guard this module's repair exists for."""
+    stale_sha = stale_head_sha()
+    if stale_sha is None:
+        pytest.skip(
+            "this checkout's history cannot supply a stale ancestor head (the "
+            "root IS HEAD — a single-commit/shallow clone): the refusal premise "
+            "needs >=2 commits, and the full-history lanes run it"
+        )
     event_file = tmp_path / "pr-event.json"
-    event_file.write_text(json.dumps({"pull_request": {"head": {"sha": _STALE_SHA}}}))
+    event_file.write_text(json.dumps({"pull_request": {"head": {"sha": stale_sha}}}))
     monkeypatch.setenv("GITHUB_EVENT_PATH", str(event_file))
     runs = _estate(
         tmp_path,
         [_e("wf-battery", "green-cap.txt", "t0")],
         {"green-cap.txt": _GREEN_CAPTURE.format(head=HEAD)},
+    )
+    # The premise, proved in-pin: with the ambient face NOT neutralized the
+    # payload reaches the cross-check and the run is refused — the shape
+    # the neutralization below is the fix for.
+    refused = _verify(runs, env_extra={"GITHUB_EVENT_PATH": str(event_file)})
+    assert refused.returncode == 1 and "THE ENV-FORGED HEAD" in refused.stdout, (
+        "the ambient pull-request payload must be the env cross-check's refusal "
+        "before this pin can assert the neutralization — the sha must be a real "
+        "ancestor with behavioral changes since. The output:\n" + refused.stdout + refused.stderr
     )
     proc = _verify(runs)
     assert proc.returncode == 0, (
