@@ -42,15 +42,56 @@ def test_emit_reservation_exceeded_error_is_a_top_level_workflow_export() -> Non
 
 
 def test_spawn_result_model_error_is_a_top_level_workflow_export() -> None:
-    """``SpawnResultModelError`` (the spawn's ``result=`` refusal, #749)
-    is a top-level ``taskq.workflows`` export, IDENTICAL to its
-    defining-module class and a member of ``__all__``."""
+    """``SpawnResultModelError`` (the spawn's ``result=`` refusal) is a
+    top-level ``taskq.workflows`` export, IDENTICAL to its defining-module
+    class and a member of ``__all__``."""
     import taskq.workflows as wf
     import taskq.workflows._childflow as childflow
     from taskq.workflows import SpawnResultModelError
 
     assert "SpawnResultModelError" in wf.__all__
     assert SpawnResultModelError is childflow.SpawnResultModelError
+
+
+def test_child_result_contract_error_is_a_top_level_workflow_export() -> None:
+    """``ChildResultContractError`` (the join's decode refusal) is a
+    top-level ``taskq.workflows`` export by the same convention: a
+    ``ValueError`` (the shape pydantic's ``ValidationError`` had), the
+    defining-module class itself, and a member of ``__all__``."""
+    import taskq.workflows as wf
+    import taskq.workflows._childflow as childflow
+    from taskq.workflows import ChildResultContractError
+
+    assert "ChildResultContractError" in wf.__all__
+    assert ChildResultContractError is childflow.ChildResultContractError
+    assert issubclass(ChildResultContractError, ValueError)
+
+
+def test_every_childflow_symbol_the_root_reexports_is_in_the_module_all() -> None:
+    """``_childflow.__all__`` is the module's own declaration of the surface
+    it offers, and ``taskq.workflows`` re-exports from it. The two lists must
+    agree: every name the package root re-exports out of ``_childflow`` must
+    appear in ``_childflow.__all__``. ``RUF022`` enforces sortedness only, so
+    a MISSING member is invisible to lint."""
+    _childflow_module = "taskq.workflows._childflow"
+    import taskq.workflows as wf
+    import taskq.workflows._childflow as childflow
+
+    reexported = {
+        name
+        for name in wf.__all__
+        if getattr(getattr(wf, name, None), "__module__", None) == _childflow_module
+    }
+    # The witness: the walk is real and non-vacuous at this head.
+    assert {"ChildOk", "ChildWorkflowUnknownError", "SpawnDepthExceededError"} <= reexported, (
+        f"the re-export walk found nothing — the fixture head rotted: {sorted(reexported)}"
+    )
+    missing = sorted(reexported - set(childflow.__all__))
+    assert not missing, (
+        "taskq.workflows re-exports these out of taskq.workflows._childflow but the "
+        f"defining module's __all__ omits them: {missing} — the module's declared "
+        "surface is shorter than the surface it actually supplies"
+    )
 
 
 def test_map_index_schema_error_is_a_top_level_workflow_export() -> None:

@@ -71,10 +71,11 @@ bare-unwraps reds the attribute.
 
 from __future__ import annotations
 
+import types
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Final, Protocol
+from typing import TYPE_CHECKING, Final, Protocol, get_origin
 
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 
 from taskq._ids import new_uuid
 from taskq._json import dumps_jsonb_str
@@ -96,7 +97,9 @@ __all__ = [
     "ChildHandle",
     "ChildOk",
     "ChildOutcome",
+    "ChildResultContractError",
     "ChildWorkflowUnknownError",
+    "SpawnDepthExceededError",
     "SpawnResultModelError",
 ]
 
@@ -138,19 +141,31 @@ class SpawnDepthExceededError(ValueError):
     generation per sweep tick forever, and a corrupted (cyclic) parent
     link cannot run the walk forever either.
 
-    A DETERMINISTIC authoring failure (the ladder's fourth class' own
-    law): re-running cannot shrink the ancestor chain — the retry ladder
-    never burns; the node terminal-fails with this class on the record.
-    The remedy: bound the fan-out (raise ``max_depth=`` at the spawn
-    site, or flatten the recursion into a loop over a ledgered step)."""
+    A DETERMINISTIC authoring failure (the ladder's own
+    deterministic-authoring-failure law): re-running cannot shrink the
+    ancestor chain — the retry ladder never burns; the node terminal-fails
+    with this class on the record. The remedy: bound the fan-out (raise
+    ``max_depth=`` at the spawn site, or flatten the recursion into a loop
+    over a ledgered step)."""
 
 
 class SpawnResultModelError(TypeError):
     """``ctx.spawn_flow(result=…)`` is not a pydantic model subclass (bare
-    ``BaseModel`` is refused too). That class is the child's typed result
-    contract, which the join's hold schema and the ChildOk decode read. A
-    DETERMINISTIC authoring failure: refused before the slot claim and the
-    child create, the retry ladder never burns."""
+    ``BaseModel`` is refused too), or is a model class pydantic cannot
+    render the hold's JSON schema for. That class is the child's typed
+    result contract, which the join's hold schema and the ChildOk decode
+    read. A DETERMINISTIC authoring failure: refused before the slot claim
+    and the child create, the retry ladder never burns."""
+
+
+class ChildResultContractError(ValueError):
+    """The child terminal-SUCCEEDED but its result does not satisfy the
+    parent's declared ``result=`` model — the decode door
+    (``ChildHandle._ok_result``) re-raised pydantic's ``ValidationError``
+    as this class. A DETERMINISTIC authoring failure: the child's terminal
+    row is the truth, so every attempt re-reads the same undecodable
+    result; the retry ladder never burns. The remedy: pass the child's own
+    result model at the spawn site."""
 
 
 #: the ancestor chain the spawn walks is bounded here; a deeper fan-out is the
@@ -387,7 +402,21 @@ class ChildHandle[G: BaseModel]:
             self.flow_id,
         )
         decoded = decode_result(raw)  # the envelope's unwrap — the runner's own codec seam
-        result = self._result_model.model_validate(decoded)
+        try:
+            result = self._result_model.model_validate(decoded)
+        except ValidationError as exc:
+            # the summary names WHERE and WHAT KIND of mismatch, never the
+            # child's values: this text is persisted unredacted.
+            fields = ", ".join(
+                f"{'.'.join(str(part) for part in error['loc']) or '<root>'}: {error['type']}"
+                for error in exc.errors(include_input=False, include_url=False)
+            )
+            raise ChildResultContractError(
+                f"the child flow {self.flow_id} returned a result the parent's "
+                f"declared result= model {self._result_model.__name__} cannot "
+                f"decode ({fields or 'no field detail'}) — pass the child's own "
+                "result model at the spawn site"
+            ) from exc
         return ChildOk(flow_id=str(self.flow_id), result=result)
 
     async def _failed_result(self, conn: ConnLike, status: str) -> ChildFailed:
@@ -414,6 +443,33 @@ class ChildHandle[G: BaseModel]:
 # ── the spawn (the ctx mixin) ───────────────────────────────────────────
 
 
+#: The persisted refusal message's name budget. The loop boundary keeps only
+#: the first 200 characters of the body's exception (``api/_runner_loop.py``),
+#: so the display name is bounded to keep the diagnosis and the remedy inside
+#: that window for any registry key — nothing else bounds a workflow name.
+_SPAWN_NAME_DISPLAY_MAX: Final[int] = 40
+
+
+def _display_spawn_name(name: str) -> str:
+    """The workflow name as the persisted message shows it."""
+    if len(name) <= _SPAWN_NAME_DISPLAY_MAX:
+        return name
+    return f"{name[: _SPAWN_NAME_DISPLAY_MAX - 3]}..."
+
+
+def _offending_value_name(value: object) -> str:
+    """Name a refused ``result=`` value. Only a type or a typing/union alias
+    keeps its ``repr`` (the repr IS the diagnosis); every other value is
+    named by class, because the message is persisted unredacted into
+    ``jobs.error_message`` and ``wf_step_ledger.error_message``."""
+    if (
+        isinstance(value, (type, types.GenericAlias, types.UnionType))
+        or get_origin(value) is not None
+    ):
+        return repr(value)
+    return f"an instance of {type(value).__name__}"
+
+
 class CtxSpawnOps(_SpawnHost):
     """The context's spawn mixin (the machinery's home; the context
     composes it — beside :class:`CtxWaitOps`)."""
@@ -436,10 +492,14 @@ class CtxSpawnOps(_SpawnHost):
         retry ADOPTS the same child, never duplicates.
 
         ``result=`` is the child's typed result contract (type[BaseModel])
-        — the join's ``ChildOk.result`` re-validates into it; a value that
-        is not a pydantic model subclass (bare ``BaseModel`` included) is
-        refused with :class:`SpawnResultModelError` before anything is read
-        or written.
+        — the join's hold schema is rendered from it and ``ChildOk.result``
+        re-validates into it. A value that is not a pydantic model subclass
+        (bare ``BaseModel`` included), or a model class pydantic cannot
+        render a JSON schema for, is refused with
+        :class:`SpawnResultModelError` before anything is read or written;
+        a child result the declared model cannot decode raises
+        :class:`ChildResultContractError` at the join (deterministic: the
+        retry ladder never burns).
         The spawn refuses a terminal-less child (the join could never read a
         result). ``key=`` overrides the slot (the author's identity);
         the default slot is the per-attempt spawn cursor (stable across
@@ -463,19 +523,29 @@ class CtxSpawnOps(_SpawnHost):
         verdict. A CONCURRENT fan-out that must join STABLY across the
         resume passes ``key=`` (the slot's allocation order is the
         scheduler's, the author's identity is the caller's)."""
-        if not (isinstance(result, type) and issubclass(result, BaseModel)) or result is BaseModel:  # pyright: ignore[reportUnnecessaryIsInstance]  # Why: the type[G] bound is checker-only; this is its runtime half (#749).
-            # an instance is named by class: the message is persisted unredacted.
-            got = (
-                f"an instance of {type(result).__name__}"
-                if isinstance(result, BaseModel)
-                else repr(result)
-            )
-            # remedy before the value: the loop boundary keeps only 200 chars.
+        if not (isinstance(result, type) and issubclass(result, BaseModel)) or result is BaseModel:  # pyright: ignore[reportUnnecessaryIsInstance]  # Why: the type[G] bound is checker-only; this is its runtime half.
+            # an offending value is named by class: the message is persisted
+            # unredacted.
+            got = _offending_value_name(result)
+            # remedy before the value: the loop boundary keeps only 200 chars,
+            # and the name is bounded so the remedy lands there for any key.
             raise SpawnResultModelError(
-                f"ctx.spawn_flow({name!r}): result= must be a subclass of pydantic "
-                "BaseModel, not BaseModel itself; declare the child's result as a "
-                f"model and pass that class; got {got}"
+                f"ctx.spawn_flow({_display_spawn_name(name)!r}): result= must be a "
+                "subclass of pydantic BaseModel (not BaseModel itself); pass that "
+                f"class; got {got}"
             )
+        # the guard asks the hold door's own question: ``wait`` registers the
+        # model's JSON schema as the hold's payload contract, and the schema
+        # generator can refuse a class the predicate accepted. Any failure
+        # means the class is not a usable result contract.
+        try:
+            result.model_json_schema()
+        except Exception as exc:  # Why: pydantic runs author types' schema hooks here; any failure means the hold cannot use the class.
+            raise SpawnResultModelError(
+                f"ctx.spawn_flow({_display_spawn_name(name)!r}): result= must be a "
+                "model class pydantic can schema; pass that class; "
+                f"{result.__name__} failed ({type(exc).__name__})"
+            ) from exc
         from taskq.workflows._worker_execution import get_compiled_workflow
 
         try:

@@ -6,10 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 <!-- THE MARKERS' LAW (release-please's own review): this file carries ONLY
-     release-please-generated sections — hand-written blocks are invisible
-     to the release pipeline and are refused by the pin. The workflow
-     engine's announcement lives in the README's feature list and the
-     conventional commit subjects (which generate the release notes). -->
+     release-please-generated sections — release-please owns the file, and a
+     hand-written block here is invisible to the release pipeline (no local
+     pin enforces that; the convention is what keeps the generated history
+     honest). The workflow engine's announcement lives in the README's
+     feature list and the conventional commit subjects (which generate the
+     release notes). -->
 
 ## [0.2.2](https://github.com/AZX-PBC-OSS/TaskQ/compare/v0.2.1...v0.2.2) (2026-07-22)
 

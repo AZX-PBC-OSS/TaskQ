@@ -505,3 +505,33 @@ def test_docs8_no_current_facing_doc_teaches_the_deleted_backpressure_behaviour(
         "'Slot-free emit backpressure: saturation is a park, not a "
         "failure'); rephrase the surface to the shipped mechanism:\n" + "\n".join(offenders)
     )
+
+
+# ── the coverage matrix names only paths that exist ────────────
+
+_COVERAGE_MATRIX = _REPO / "docs" / "taskqflow-coverage.md"
+#: only repository-relative paths the matrix spells as backticked literals
+_COVERAGE_PATH_RE = re.compile(r"`((?:examples|docs|src|tests)/[A-Za-z0-9_./-]+)`")
+
+
+def test_docs9_every_backticked_repository_path_in_the_coverage_matrix_exists() -> None:
+    """The matrix's own legend says the example column names "the runnable
+    file that demonstrates the capability (the example IS the verification)".
+    A path that does not exist is not a stale label — it is a row claiming
+    verification the repository does not carry. The walk is mechanical over
+    every backticked repository path in the table so a renamed or moved file
+    reds here rather than rotting silently."""
+    text = _COVERAGE_MATRIX.read_text()
+    rows = [line for line in text.splitlines() if line.startswith("| ")]
+    assert rows, "the coverage matrix table is gone — the pin's witness fails loud"
+    looked_at = 0
+    missing: list[tuple[str, str]] = []
+    for row in rows:
+        for path in _COVERAGE_PATH_RE.findall(row):
+            looked_at += 1
+            if not (_REPO / path).exists():
+                missing.append((path, row.split("|")[1].strip()[:60]))
+    assert looked_at > 20, f"the path walk found almost nothing ({looked_at}) — the walk rotted"
+    assert not missing, "the coverage matrix names paths that do not exist: " + "; ".join(
+        f"{path!r} (row: {row})" for path, row in missing
+    )
