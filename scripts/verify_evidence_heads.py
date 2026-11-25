@@ -462,8 +462,24 @@ def _source_changes_since(head_sha: str, stem: str | None = None) -> bool:
     ``_DOCS_SENSITIVE_STEM_PREFIXES`` prefix names an evidence kind
     whose battery READS the docs estate — for those the exemption set
     is the NARROW one (``_NARROW_EXCLUSIONS``) and a docs-only merge
-    stalifies exactly as a src/ merge would. An unresolvable claimed
-    head (not an ancestor) = stale."""
+    stalifies exactly as a src/ merge would.
+
+    An unresolvable claimed head (not an ancestor) = stale, decided
+    FIRST by ``git merge-base --is-ancestor``: a two-dot diff compares
+    two snapshots and cannot see ancestry, so two lineages carrying the
+    same source tree (the frozen evidence branch against the main commit
+    it was synced to) would read as fresh. This is the same shape as the
+    in-suite mirror's ``tests/_wf_fixtures.source_changes_since`` — one
+    law, two faces, and the sync pin holds their exclusion sets in step."""
+    ancestor = subprocess.run(
+        ["git", "merge-base", "--is-ancestor", "--", head_sha, "HEAD"],
+        cwd=REPO,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if ancestor.returncode != 0:
+        return True  # the claimed head resolves nowhere, or is no ancestor — stale
     if stem is not None and stem.startswith(_DOCS_SENSITIVE_STEM_PREFIXES):
         exclusions = _NARROW_EXCLUSIONS
     else:
@@ -489,27 +505,15 @@ def _source_changes_since(head_sha: str, stem: str | None = None) -> bool:
 
 
 def _off_by_one_fresh(recorded: str, stem: str | None = None) -> bool:
-    """Off-BY-one RULE with its own teeth
-    *recorded* must be an ANCESTOR of HEAD — a sha that resolves
-    nowhere, or a discarded/orphan commit that exists in the object
-    store but is no part of this checkout's history, can never verify
-    the checked-out tree — and the diff since it must touch no
-    BEHAVIORAL path (the diff half's exclusion set — the measurements
-    estate plus the non-behavioral paths, NARROWED to the measurements
-    estate + .github for the DOCS-DERIVED stems, see
-    ``_DOCS_SENSITIVE_STEM_PREFIXES``). One cheap subprocess:
-    ``git merge-base --is-ancestor``
-    exits nonzero for both the unresolvable and the non-ancestor sha
-    (one subprocess, the walk's cost — measured with the rest)."""
-    ancestor = subprocess.run(
-        ["git", "merge-base", "--is-ancestor", recorded, "HEAD"],
-        cwd=REPO,
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    if ancestor.returncode != 0:
-        return False
+    """Off-BY-one RULE: *recorded* must be an ANCESTOR of HEAD — a sha that
+    resolves nowhere, or a discarded/orphan commit that exists in the object
+    store but is no part of this checkout's history, can never verify the
+    checked-out tree — and the diff since it must touch no BEHAVIORAL path
+    (the exclusion set is per stem, see ``_DOCS_SENSITIVE_STEM_PREFIXES``).
+
+    Both halves live in :func:`_source_changes_since` (the ancestry probe is
+    its first ``git merge-base --is-ancestor``, exactly as the in-suite mirror
+    carries it); this wrapper is the composed verdict its call sites expect."""
     return not _source_changes_since(recorded, stem)
 
 
