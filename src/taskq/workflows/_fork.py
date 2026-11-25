@@ -14,11 +14,12 @@ hand-built ids (pin 18's collision dragon).
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+import structlog
 
 from taskq._ids import new_uuid
 from taskq.backend._protocol import ConnLike, JobId
 from taskq.constants import SMALLINT_MAX
+from taskq.obs import get_logger
 from taskq.workflows._policy import canonical_retry_kind, row_retry_curve
 from taskq.workflows._sql import WorkflowSql
 from taskq.workflows._types import (
@@ -32,8 +33,7 @@ from taskq.workflows._types import (
 )
 from taskq.workflows.definitions import FanInBoundExceededError, validate_fork
 
-if TYPE_CHECKING:
-    pass
+logger: structlog.stdlib.BoundLogger = get_logger(__name__)
 
 __all__ = ["FORK_CHUNK", "insert_fork"]
 
@@ -164,19 +164,30 @@ async def insert_fork(
         # since #745 no binding names one. The probe can still find a row
         # minted by an outbox drain from a binding stamped before #745 (an
         # in-flight run), or one an engine-level caller inserted itself
-        # through insert_node. The fork adopts it: add the items' weight to
-        # the counter + stamp the consumers, never a second insert. The probe
-        # has no status guard: adopting a row that already ran leaves the
-        # consumers' reserved deps unreleased (the run wedges or reads an
-        # empty join). Every other shape takes the insert path.
+        # through insert_node. The fork ADOPTS a PENDING one: add the items'
+        # weight to the counter + stamp the consumers, never a second insert.
+        # The status leg is load-bearing: adopting a row that already ran
+        # leaves the consumers' reserved deps unreleased (the run wedges or
+        # reads an empty join), so any other state is left untouched — the
+        # fork takes the insert path and its own row runs with the true
+        # children. The read is ordered so a pre-fix residue (several rows
+        # for the key) resolves deterministically: the lowest PENDING row
+        # wins, and a non-pending row is read only to report it.
         join_row = await conn.fetchrow(
-            f"SELECT id, deps_pending FROM {wsql.schema}.jobs WHERE step_key = $1 "  # noqa: S608  # Why: the schema is the bundle's validated identifier; every value is $-bound.
-            "AND (metadata->>'flow_id')::uuid = $2",
+            f"SELECT id, status, deps_pending FROM {wsql.schema}.jobs WHERE step_key = $1 "  # noqa: S608  # Why: the schema is the bundle's validated identifier; every value is $-bound.
+            "AND (metadata->>'flow_id')::uuid = $2 "
+            "ORDER BY (status = 'pending') DESC, id LIMIT 1",
             fork.join.step_key,
             flow_id,
         )
-        if join_row is not None:
+        if join_row is not None and join_row["status"] == "pending":
             join_id = JobId(join_row["id"])
+            logger.debug(
+                "wf-fork-join-adopted",
+                flow_id=str(flow_id),
+                step_key=fork.join.step_key,
+                existing_job_id=str(join_id),
+            )
             # The counter is a COUNT of unterminal parents (a smallint, never
             # the widened record identity), and the pre-created join already
             # carries its own source edge's weight: the adoption adds the
@@ -221,6 +232,20 @@ async def insert_fork(
                 join_id,
             )
         else:
+            if join_row is not None:
+                # The row exists and has already run (or is running): adopting
+                # it would leave every consumer's reserved dep unreleased —
+                # the wedge the old status-less probe caused. The residue is
+                # otherwise invisible to the upgrade detectors (a
+                # never-adopted row has deps_pending = 0), so this is the one
+                # place it is reported from the system's own records.
+                logger.warning(
+                    "wf-fork-join-adoption-skipped",
+                    flow_id=str(flow_id),
+                    step_key=fork.join.step_key,
+                    existing_job_id=str(join_row["id"]),
+                    existing_status=str(join_row["status"]),
+                )
             join_id = JobId(new_uuid())
             await conn.execute(
                 wsql.fork_join_node,
