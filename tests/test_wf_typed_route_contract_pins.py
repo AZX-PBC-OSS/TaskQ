@@ -7,25 +7,22 @@ correct and must survive every later fix.
 
 The behaviors held:
 
-* the EMPTY-LIST route: ``_route_fork`` returns
-  ``None`` over ``[]`` (api/_runner.py:1212-1213). With a CONSUMER of
-  the join the join row never spawns, the consumer's reserved dep never
-  releases, the run wedges ``running`` FOREVER; with the join as the
-  TERMINAL the run terminalizes SUCCEEDED with ``result()`` == ``None``
-  — the succeeded-having-routed-nothing shape through the empty-corpus
-  door. the PIN'S SEMANTICS (the map's empty-join shape is the named
-  precedent): an empty source list → the join FIRES exactly once with
-  ``[]`` → the consumer receives ``[]`` → the flow terminalizes
-  succeeded → ``result()`` is the consumer's empty-list answer.
-* the >1000 FAN-IN DRIVER CRASH: ``_route_fork``
-  carries no ``MAX_FAN_IN_PER_JOIN`` check; ``validate_fork`` raises
-  inside the finalize tx, OUTSIDE the ladder's try
-  (api/_runner.py:746) — a raw ``ValueError`` escapes ``drive()``, the
-  source row wedges ``running``, and the fleet's reclaim re-crashes it
-  forever. The error's own remedy (``JoinSpec(child_driven=True)``) is
+* the EMPTY-LIST route: the route's fork builds a ZERO-CHILD join over
+  ``[]``. With a CONSUMER of the join the join row spawns, the
+  consumer's reserved dep releases, and the consumer receives ``[]`` —
+  the flow terminalizes succeeded with ``result()`` the consumer's
+  empty-list answer (never the succeeded-having-routed-nothing ``None``);
+  with the join as the TERMINAL, ``result()`` is ``[]``.
+* the >1000 FAN-IN DRIVER CRASH: the pre-fix route fork carried no
+  ``MAX_FAN_IN_PER_JOIN`` check, and ``validate_fork``'s raise landed
+  outside the ladder's try — a raw ``ValueError`` escaped ``drive()``,
+  the source row wedged ``running``, and the fleet's reclaim re-crashed
+  it forever. The error's own remedy (``JoinSpec(child_driven=True)``) is
   unreachable from the route API. the PIN: a TYPED, LADDERED, NAMED
   refusal — the source terminal-FAILED with a named ``error_class``,
-  the run failed loudly, a re-drive does not re-crash.
+  the run failed loudly, a re-drive does not re-crash. The fork's
+  ``validate_fork`` call now sits on the body path, inside the execution
+  ladder's try.
 * the ARM-ARITY HOLE: E15's comment claims "E10/E12's faces
   own the arity" — FALSE for arms (E10 walks ``node.args``, E12 walks
   ``map_item``/``loop_body``, neither walks ``map_arms``;

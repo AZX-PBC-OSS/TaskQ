@@ -2495,8 +2495,11 @@ vocabulary at both levels, at THREE doors: the wiring verb's refusal
 compiled graph), and the runtime `RouterNotTotal` — the element of a
 type with no arm, or a source return that is not the declared
 `list[...]` at all (the body that lied about its union) — fails the
-source LOUDLY, nothing routes, the run FAILS. The skip-silent shape is
-dead at both levels.
+source LOUDLY, nothing routes, the run FAILS. A `skip=` predicate on
+a route source is refused at the wiring: the dispatch-time skip gate
+would finalize the source `succeeded` without its fork, stranding the
+join and the downstream consumer. The skip-silent shape is dead at
+both levels.
 
 ### Chain or DAG? (the one-paragraph decision guide)
 

@@ -74,12 +74,19 @@ spans — cheaper, honest.
 from __future__ import annotations
 
 from collections.abc import Sequence
+from dataclasses import replace
 from typing import Final
 
 from opentelemetry.trace import Span, StatusCode
 
 from taskq.exceptions import RetryAfter, Snooze
-from taskq.obs import otel_enabled, record_exception_text, render_exception
+from taskq.obs import (
+    ExceptionText,
+    ScrubbedText,
+    otel_enabled,
+    record_exception_text,
+    render_exception,
+)
 
 __all__ = [
     "finish_step_span",
@@ -238,6 +245,43 @@ def finish_step_span(span: Span, outcome: str) -> None:
         span.set_status(StatusCode.ERROR)
 
 
+#: The PUBLIC name of the engine's private route refusal — the record name the
+#: durable row, the docs and every operator surface use.
+_ROUTER_RECORD_CLASS: Final[str] = "RouterNotTotal"
+_ENGINE_ROUTER_CLASS: Final[str] = "_EngineRouterNotTotal"
+
+
+def _public_error_class(exc: BaseException) -> str | None:
+    """The public record name of the engine's private route refusal, else ``None``.
+
+    The engine raises :class:`taskq.workflows.chain._EngineRouterNotTotal` so
+    only its own throws enter the deterministic classification; the telemetry
+    surface names the class the docs teach, never the engine's spelling."""
+    from taskq.workflows.chain import (
+        _EngineRouterNotTotal,  # pyright: ignore[reportPrivateUsage]  # Why: the public-name mapping is exactly the seam this private subclass exists for.
+    )
+
+    return _ROUTER_RECORD_CLASS if isinstance(exc, _EngineRouterNotTotal) else None
+
+
+def _publicly_named_router_text(rendered: ExceptionText) -> ExceptionText:
+    """One rendering of the engine's route refusal, named by its public class.
+
+    The private spelling reaches the telemetry three ways — ``exception.type``,
+    the traceback's class line and (defensively) the rendered message — so all
+    three are normalized together. The text is already scrubbed; the
+    replacement swaps one class name for another and cannot reassemble a
+    credential the scrub removed."""
+    return replace(
+        rendered,
+        type_name=rendered.type_name.replace(_ENGINE_ROUTER_CLASS, _ROUTER_RECORD_CLASS),
+        message=ScrubbedText(rendered.message.replace(_ENGINE_ROUTER_CLASS, _ROUTER_RECORD_CLASS)),
+        stacktrace=ScrubbedText(
+            rendered.stacktrace.replace(_ENGINE_ROUTER_CLASS, _ROUTER_RECORD_CLASS)
+        ),
+    )
+
+
 def record_step_laddered(span: Span, exc: Exception, *, retried: bool) -> None:
     """Record the ladder's verdict on the STEP span — SCRUBBED.
 
@@ -250,6 +294,12 @@ def record_step_laddered(span: Span, exc: Exception, *, retried: bool) -> None:
     event names the route the ladder took (``retried`` — the node
     re-pends; ``False`` — the budget exhausted, the terminal landed),
     the distinction the row's ledger carries and the span echoes.
+
+    The engine's private route raiser is named by its PUBLIC class on both
+    surfaces (the event's ``error_class`` and ``exception.type``, plus the
+    traceback's class line): the underscore spelling is an engine
+    implementation detail, and the operator surfaces read the class the docs
+    teach — the same name the durable row records.
 
     A non-recording span takes nothing: rendering is the dominant cost
     of a failed attempt (``_record_scrubbed_error``'s own law).
@@ -266,14 +316,19 @@ def record_step_laddered(span: Span, exc: Exception, *, retried: bool) -> None:
     # Deferred: see the docstring (the ladder module's own import chain).
     from taskq.workflows.api._runner_ladder import deterministic_failure_leaf
 
+    leaf = deterministic_failure_leaf(exc)
+    public_class = _public_error_class(leaf)
+    rendered = render_exception(exc)
+    if public_class is not None:
+        rendered = _publicly_named_router_text(rendered)
     span.add_event(
         "wf.laddered",
         attributes={
-            "error_class": type(deterministic_failure_leaf(exc)).__qualname__,
+            "error_class": public_class or type(leaf).__qualname__,
             "retried": retried,
         },
     )
-    record_exception_text(span, render_exception(exc))
+    record_exception_text(span, rendered)
 
 
 def record_step_held(span: Span, hold_id: str, signals: Sequence[str]) -> None:

@@ -98,7 +98,12 @@ def _deterministic_classes() -> tuple[type[BaseException], ...]:
     fail-closed refusals): each is raised by the engine's own gates for a
     defect that re-running cannot fix — the one tuple both the routing
     predicate and the terminal's own record-class helper consume (one
-    truth, never a second spelling to drift)."""
+    truth, never a second spelling to drift).
+
+    The route's membership is the ENGINE-PRIVATE raiser
+    (:class:`taskq.workflows.chain._EngineRouterNotTotal`), never the public
+    ``RouterNotTotal``: a body that raises or chains the public class is not
+    an engine refusal and keeps its own retry budget and recorded class."""
     from taskq.exceptions import ReservedTimerNamespaceError
     from taskq.workflows._childflow import (
         ChildFlowLostError,
@@ -120,8 +125,11 @@ def _deterministic_classes() -> tuple[type[BaseException], ...]:
         DuplicateSubstepError,
         VanishedNodeError,
         WorkflowResultDetailUnavailableError,
+        _RouteForkMissingError,  # pyright: ignore[reportPrivateUsage]  # Why: the fail-closed guard's own refusal is deterministic by construction; its home is the runner's error module.
     )
-    from taskq.workflows.chain import RouterNotTotal
+    from taskq.workflows.chain import (
+        _EngineRouterNotTotal,  # pyright: ignore[reportPrivateUsage]  # Why: only the engine's own route throws are deterministic; the public class stays caller-classified.
+    )
     from taskq.workflows.definitions import FanInBoundExceededError
 
     return (
@@ -132,7 +140,8 @@ def _deterministic_classes() -> tuple[type[BaseException], ...]:
         MapIndexExhaustedError,
         MapIndexSchemaError,
         FanInBoundExceededError,
-        RouterNotTotal,
+        _EngineRouterNotTotal,
+        _RouteForkMissingError,
         ReservedTimerNamespaceError,
         SpawnDepthExceededError,
         SpawnKeyReservedError,
@@ -202,11 +211,24 @@ def deterministic_failure_leaf(exc: BaseException) -> BaseException:
     return leaf if leaf is not None else exc
 
 
+def _record_class_name(leaf: BaseException) -> str:
+    """The durable record name of a failure leaf.
+
+    The engine's private route raiser records as the public
+    ``RouterNotTotal`` — the durable row and projection name the class the
+    docs and the operator surfaces teach, not the engine's subclass."""
+    from taskq.workflows.chain import (
+        _EngineRouterNotTotal,  # pyright: ignore[reportPrivateUsage]  # Why: the record-name mapping is exactly the seam this private class exists for.
+    )
+
+    return "RouterNotTotal" if isinstance(leaf, _EngineRouterNotTotal) else type(leaf).__name__
+
+
 def _find_deterministic_leaf(exc: BaseException) -> str | None:
-    """The FIRST deterministic leaf's own class name (the shared walker's
+    """The FIRST deterministic leaf's own RECORD name (the shared walker's
     deterministic face); None when nothing deterministic is carried."""
     leaf = find_embedded_exception(exc, _deterministic_classes())
-    return type(leaf).__name__ if leaf is not None else None
+    return _record_class_name(leaf) if leaf is not None else None
 
 
 def is_deterministic_authoring_failure(exc: BaseException) -> bool:
@@ -324,7 +346,8 @@ class LadderOps(_LadderHost):
         kinds fail immediately (the classifier knob). Returns the
         route the ladder took — ``"retried"`` (the re-pend; the attempt's
         span echoes it on the ``wf.laddered`` event) or ``"failed"`` (the
-        terminal landed).
+        terminal landed); a fenced terminal-mark CAS (a peer owns the row)
+        returns ``"fenced"``, and a cancelled/parked row its own label.
 
         A
         fork-spawned map child (``<src>.item`` / ``<src>.item:<tag>``)
@@ -358,7 +381,7 @@ class LadderOps(_LadderHost):
         found = find_embedded_exception(exc, _deterministic_classes())
         deterministic = found is not None
         leaf: BaseException = found if found is not None else exc
-        recorded_class = type(leaf).__name__
+        recorded_class = _record_class_name(leaf)
         # resume-not-retry: the ladder counts the ledger's
         # 'failed' rows — the claim's attempt ordinal increments on every
         # claim (holds' resumes included), so a hold-heavy node keeps its
@@ -530,7 +553,12 @@ class LadderOps(_LadderHost):
                     "error_class": recorded_class,
                 },
             )
-        return "failed"
+            return "failed"
+        # applied=False on a claimed path is the terminal-mark CAS's fence: a
+        # peer owns the row (the ledger records this attempt 'fenced'). The
+        # identity-less arm (ledger_id is None) is not a fence and keeps the
+        # 'failed' label.
+        return "fenced" if ledger_id is not None else "failed"
 
     async def _deadline_disposition(
         self,

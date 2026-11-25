@@ -129,6 +129,7 @@ from taskq.workflows.api._runner_errors import (
     VanishedNodeError,
     WorkflowRunCancelledError,
     WorkflowRunError,
+    _RouteForkMissingError,  # pyright: ignore[reportPrivateUsage]  # Why: the fail-closed guard lives in this module's own error home; the underscore keeps it out of the caller-catchable surface.
 )
 from taskq.workflows.api._runner_exit import ExitOps
 from taskq.workflows.api._runner_ladder import (
@@ -162,7 +163,10 @@ from taskq.workflows.api._sql_runner import (
     WF_ARGS_KEY,
     render_sql,
 )
-from taskq.workflows.chain import Chain
+from taskq.workflows.chain import (
+    Chain,
+    _EngineRouterNotTotal,  # pyright: ignore[reportPrivateUsage]  # Why: the engine's own route refusal subclass is the class its own finalize boundaries must catch; the underscore keeps it out of the caller-catchable surface.
+)
 from taskq.workflows.definitions import FanInBoundExceededError, validate_fork
 from taskq.workflows.engine import fan_in_skip, finalize_node
 from taskq.workflows.ledger import (
@@ -1686,8 +1690,10 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
                     # No identity read happens here: this is the BODY failure
                     # boundary, and a runner-issued catalog statement escaping it
                     # would be recorded as a body failure. A route's width is
-                    # bounded by jobs.deps_pending (the join counter), refused
-                    # deterministically inside the finalize's machinery boundary.
+                    # bounded by jobs.deps_pending (the join counter); the fork's
+                    # own validate_fork call below sits on this body path, inside
+                    # the execution ladder's try, so the bound's exceed is the
+                    # deterministic named refusal, never a mid-finalize raise.
                     route_fork = self._route_fork(
                         row,
                         node,
@@ -1843,9 +1849,12 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
             # wrapper above).
             if route == "deferred":
                 return "deferred"
-            record_step_laddered(trace.get_current_span(), exc, retried=route == "retried")
             if route in ("cancelled", "fenced"):
+                # A fenced attempt wrote no terminal: it is not a laddered
+                # failure and must not emit the ladder's retried=False event
+                # (the caller's label echoes the ledger row, which says fenced).
                 return route
+            record_step_laddered(trace.get_current_span(), exc, retried=route == "retried")
             return "laddered"
 
         from taskq.workflows._emit import MapIndexExhaustedError
@@ -1871,9 +1880,12 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
             )
             if route == "deferred":
                 return "deferred"
-            record_step_laddered(trace.get_current_span(), exc, retried=route == "retried")
             if route in ("cancelled", "fenced"):
+                # A fenced attempt wrote no terminal: it is not a laddered
+                # failure and must not emit the ladder's retried=False event
+                # (the caller's label echoes the ledger row, which says fenced).
                 return route
+            record_step_laddered(trace.get_current_span(), exc, retried=route == "retried")
             return "laddered"
 
         try:
@@ -1911,6 +1923,7 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
                     FanInBoundExceededError,
                     MapIndexExhaustedError,
                     MapIndexSchemaError,
+                    _EngineRouterNotTotal,
                 ) as exc:
                     return await _route_finalize_refusal(exc)
                 return "succeeded"
@@ -1941,6 +1954,7 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
                     FanInBoundExceededError,
                     MapIndexExhaustedError,
                     MapIndexSchemaError,
+                    _RouteForkMissingError,
                 ) as exc:
                     return await _route_finalize_refusal(exc)
                 if final.applied:
@@ -1977,6 +1991,7 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
                 FanInBoundExceededError,
                 MapIndexExhaustedError,
                 MapIndexSchemaError,
+                _RouteForkMissingError,
             ) as exc:
                 return await _route_finalize_refusal(exc)
                 # the miss ran the body — the cache fill happens only on the
@@ -2360,11 +2375,15 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
             # runtime type; the encoded envelope's dicts cannot).
             if prebuilt_route_fork is None:
                 # Fail closed: _route_fork returns a ForkSpec or raises, and
-                # cache=True on a route source is refused at build (E17), so
-                # this branch is unreachable on valid paths. A map_arms node
-                # finalized succeeded with fork=None would silently skip the
-                # join and wedge the flow — never commit that.
-                raise RuntimeError(
+                # the two authoring shapes that could skip it are refused at
+                # build (cache=True by E17 and the wiring verb; skip= by the
+                # wiring verb), so this branch is unreachable on valid paths.
+                # A map_arms node finalized succeeded with fork=None would
+                # silently skip the join and wedge the flow — never commit
+                # that. The private class routes the refusal through the
+                # deterministic ladder, so the day a fence is wrong the
+                # operator gets a named failed row, not a silent `running` one.
+                raise _RouteForkMissingError(
                     "a route source finalized succeeded without its route fork "
                     f"(the join never spawns, the flow wedges): {row['step_key']!r}"
                 )
@@ -2583,9 +2602,15 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
         outbox carries the consumer bindings — the cascade
         fix), except a nested map's join, which its own fork writes
         (#745). A body return that is not a list forks ZERO children (the
-        map over nothing — the join fires empty, the collect states it);
-        the typed route's sibling (``_route_fork``) refuses that shape
-        instead, because its source declares ``list[...]``.
+        map over nothing — the join fires empty, the collect states it).
+        The typed route's sibling (``_route_fork``) refuses that shape
+        instead: its arm set is a TOTALITY CONTRACT over the source's
+        declared union members, so a non-list return is a shape the
+        declared contract cannot express — there is no honest zero-child
+        fork of a typed dispatch that promises one child per element of a
+        declared sum. The plain map derives its children from whatever the
+        body produced, and "no items" is a well-defined corpus with a
+        well-defined empty join, so ``[]`` is the honest answer there.
 
         ``run_priority`` is the RUN's per-call override (the wf-priority
         fix): the children and the join land at the RESOLVED priority —
@@ -2793,15 +2818,17 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
 
         An oversized route is NOT an identity refusal: ``validate_fork``'s
         join-count bound refuses more than ``SMALLINT_MAX`` children with
-        ``FanInBoundExceededError`` inside the finalize's machinery boundary.
-        The route fork therefore performs no catalog read on the body path."""
+        ``FanInBoundExceededError`` at this call site — the body path, inside
+        the execution ladder's try — so the exceed is the immediate named
+        terminal, never the mid-finalize raise the reclaim re-crashed. The
+        route fork therefore performs no catalog read on the body path."""
         from taskq.workflows._types import ConsumerBinding
-        from taskq.workflows.chain import RouterNotTotal, type_tag
+        from taskq.workflows.chain import type_tag
 
         if not isinstance(outcome_value, list):
             # The type and remedy precede the unbounded step key: terminal
             # messages truncate at 500 chars, and the key must not erase them.
-            raise RouterNotTotal(
+            raise _EngineRouterNotTotal(
                 f"route source returned {type(outcome_value).__name__!r}; the route "
                 "is a MAP face and requires the declared ``list[...]`` shape "
                 "(``[]`` for an empty corpus). "
@@ -2813,8 +2840,8 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
         )  # Why: the isinstance narrowed the object-typed body return to list[Unknown] — the cast is the declared laundering (the element walk below re-narrows per element; the codec's own seam shape).
         # The routed arms share the map's fork identity, but a route's binding
         # limit is jobs.deps_pending's join counter, not the record identity:
-        # validate_fork (inside the finalize's machinery boundary) refuses more
-        # than SMALLINT_MAX children with FanInBoundExceededError. Reading the
+        # validate_fork (called on this body path, below) refuses more than
+        # SMALLINT_MAX children with FanInBoundExceededError. Reading the
         # identity domain here would put a DB statement inside the BODY failure
         # boundary, where a transport fault would be mis-recorded as a body
         # failure.
@@ -2880,10 +2907,13 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
             tag = type_tag(type(element))
             arm = node.map_arms.get(tag) if node.map_arms is not None else None
             if arm is None:
-                # The type and remedy precede the unbounded step key: terminal
-                # messages truncate at 500 chars, and the key must not erase them.
-                raise RouterNotTotal(
-                    f"element #{i} is {type(element).__name__!r} — no route arm "
+                # The dispatch tag and the remedy precede the unbounded step
+                # key: terminal messages truncate at 500 chars, and the key must
+                # not erase them. The tag — the arms' own key vocabulary — names
+                # the class the arms did not match; a bare ``__name__`` is
+                # indistinguishable from a declared member of the same name.
+                raise _EngineRouterNotTotal(
+                    f"element #{i} is {tag!r} — no route arm "
                     "for it (the route is total over the source's declared "
                     "union members): this is a defect, not a dead end — the body "
                     "lied about its union, or the union drifted from the "

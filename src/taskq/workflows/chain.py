@@ -110,6 +110,19 @@ class RouterNotTotal(Exception):
     and nothing routes."""
 
 
+class _EngineRouterNotTotal(RouterNotTotal):
+    """The ENGINE's own route refusal (engine-private).
+
+    The public :class:`RouterNotTotal` is the class a caller catches and the
+    docs teach. The engine's own runtime doors — the chain's
+    :meth:`Route.next_step` and the graph route's fork — raise THIS subclass,
+    so only the engine's throws enter the deterministic authoring-failure
+    classification. A body that raises or chains the public class keeps its
+    own retry budget and its own recorded ``error_class``; the durable row
+    still names the class ``RouterNotTotal`` (the terminal's record helper
+    maps this subclass back to the public name)."""
+
+
 class Route:
     """The conditional edge map for one chain step: outcome → next step
     (a step key of the chain, or :data:`DONE`).
@@ -193,11 +206,14 @@ class Route:
         try:
             return self._routes[outcome]
         except KeyError:
-            raise RouterNotTotal(
-                f"outcome {outcome!r} has no route — the chain's route is "
-                "total over the step's outcome vocabulary (the enum's members, "
-                "or the payload union's member types); this is a defect, not a "
-                "dead end"
+            # The remedy precedes the unbounded outcome: terminal messages
+            # truncate at 500 chars, and a long foreign outcome (a text tag, a
+            # payload blob) must not erase "has no route".
+            raise _EngineRouterNotTotal(
+                "an outcome has no route — the chain's route is total over the "
+                "step's outcome vocabulary (the enum's members, or the payload "
+                "union's member types); the arrived value was "
+                f"{outcome!r}; this is a defect, not a dead end"
             ) from None
 
 
