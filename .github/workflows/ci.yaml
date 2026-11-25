@@ -459,8 +459,13 @@ jobs:
     # stays at -n 2: every test here is xdist-safe by construction (this lane
     # has always run -n 2), and the wall-clock scenarios must not tighten
     # further under heavier packing.
+    # The cap sits above the lane's slowest test: the 200k identity proof
+    # carries a 50-minute pytest-timeout (its own 45-minute inner
+    # orchestration deadline plus teardown margin), so a 45-minute job cap
+    # would cancel the lane before the test timed out with a diagnostic. 60
+    # minutes leaves ~6 minutes of headroom over that worst-case outer path.
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 60
     steps:
       # fetch-depth 0 is REQUIRED: the docs-honesty pins resolve the
       # evidence ref at collection. The docs-honesty pins resolve

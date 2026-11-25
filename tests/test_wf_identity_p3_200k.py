@@ -49,6 +49,19 @@ pytestmark = [pytest.mark.integration, pytest.mark.slow]
 _RECORDS = 200_000
 _PAGE = 1000
 
+#: The proof's own orchestration deadline. 200 pages at the issue's slowest
+#: reported CI page rate (11.1 s/page; see ``_MEASURED_SLOWEST_PAGE_SECONDS`` in
+#: ``tests/test_wf_identity_p3_200k_harness.py``) project linearly to ~2,220 s,
+#: and the page rate is bounded only from below, so this budget clears that
+#: projection by ~22%.
+_INNER_TIMEOUT_S = 2700.0
+#: ``pytest-timeout`` spans bootstrap, orchestration, post-flight verification,
+#: and schema teardown as one window while the inner deadline wraps
+#: ``orchestrate()`` alone. The margin keeps them strictly ordered, so an
+#: orchestration overrun exits through the inner ``TimeoutError`` instead of
+#: this marker's asynchronous ``SIGALRM``.
+_OUTER_TIMEOUT_S = _INNER_TIMEOUT_S + 300.0
+
 
 async def _exercise(pg_dsn: str, record_count: int) -> dict[str, object]:
     assert record_count > 0 and record_count % _PAGE == 0
@@ -155,15 +168,21 @@ async def _exercise(pg_dsn: str, record_count: int) -> dict[str, object]:
         started = time.perf_counter_ns()
         stop = asyncio.Event()
 
+        # A whole-page claim lets one pod take every record while the other
+        # spins on empty dispatch rounds; an even share of the page each keeps
+        # both pods working every dispatched page without touching the page
+        # size (the source still emits 1,000 records per cursor advance).
+        claim_limit = _PAGE // len(fleet.pods)
+
         async def work(pod_index: int) -> None:
             pod = fleet.pods[pod_index]
             runner = runners[pod_index]
             while not stop.is_set():
                 # Production dispatch arbitrates these two pods. Execution uses
                 # the workflow fleet-claimed door with the exact physical fence.
-                claimed = await pod.claim(["default"], _PAGE)
+                claimed = await pod.claim(["default"], claim_limit)
                 if not claimed:
-                    await asyncio.sleep(0.001)
+                    await asyncio.sleep(0.01)
                     continue
                 # The backend's typed JobRow intentionally omits workflow-only
                 # fields. Re-read this pod's just-claimed physical rows through
@@ -177,17 +196,24 @@ async def _exercise(pg_dsn: str, record_count: int) -> dict[str, object]:
                         [row.id for row in claimed],
                     )
                 assert len(documents) == len(claimed)
-                outcomes = await asyncio.gather(
-                    *(
-                        runner.run_fleet_claimed_step(
-                            flow,
-                            document,
-                            attempt=int(document["attempt"]),
-                            claim_epoch=int(document["claim_epoch"]),
+                # A bare ``gather`` resolves on the first sibling that raises or
+                # finishes cancelling and then returns to ``_exercise``'s
+                # teardown with the rest of the batch still holding connections
+                # and transactions. The group cancels and awaits every sibling
+                # before this batch returns, on both failure and cancellation.
+                async with asyncio.TaskGroup() as batch:
+                    steps = [
+                        batch.create_task(
+                            runner.run_fleet_claimed_step(
+                                flow,
+                                document,
+                                attempt=int(document["attempt"]),
+                                claim_epoch=int(document["claim_epoch"]),
+                            )
                         )
                         for document in documents
-                    )
-                )
+                    ]
+                outcomes = [step.result() for step in steps]
                 assert set(outcomes) <= {"succeeded", "deferred"}, outcomes
 
         async def orchestrate() -> None:
@@ -201,12 +227,15 @@ async def _exercise(pg_dsn: str, record_count: int) -> dict[str, object]:
                 # Orchestration-only: all bodies above run on the two claimed
                 # production worker pods. This seat maintains roots and wakes.
                 await creator.tick(flow, execute=False)
-                await asyncio.sleep(0.001)
+                # ``tick`` runs five sweep passes; polling it every millisecond
+                # piles redundant sweep queries onto the same Postgres the
+                # claimed pods are working, so this seat idles between passes.
+                await asyncio.sleep(0.05)
 
         async with asyncio.TaskGroup() as tasks:
             tasks.create_task(work(0))
             tasks.create_task(work(1))
-            await asyncio.wait_for(orchestrate(), timeout=1800.0)
+            await asyncio.wait_for(orchestrate(), timeout=_INNER_TIMEOUT_S)
             stop.set()
         elapsed_s = (time.perf_counter_ns() - started) / 1e9
 
@@ -348,7 +377,7 @@ async def _exercise(pg_dsn: str, record_count: int) -> dict[str, object]:
         logging.disable(previous_log_disable)
 
 
-@pytest.mark.timeout(1800)
+@pytest.mark.timeout(_OUTER_TIMEOUT_S)
 @pytest.mark.xdist_group("wf_identity_p3_scale")
 async def test_real_200k_unique_records_at_shipped_default_bound(pg_dsn: str) -> None:
     configured = os.environ.get("TASKQ_P3_TEST_RECORDS")
