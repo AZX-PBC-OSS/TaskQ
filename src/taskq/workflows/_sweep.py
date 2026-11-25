@@ -552,7 +552,6 @@ async def drain_outbox(
     introduced. The delivery contract the pass executes (exactly-once fire,
     idempotent consumer insert, pin 20) lives in :func:`_drain_outbox_once`.
     """
-    default_retry_kind = declared_retry_kind(default_retry_kind, what="outbox default_retry_kind")
     for final_attempt in (False, True):
         try:
             return await _drain_outbox_once(

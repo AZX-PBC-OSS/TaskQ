@@ -27,7 +27,7 @@ from taskq.ratelimit.reservation import ConcurrencyReservation
 from taskq.ratelimit.sliding_window import SlidingWindow
 from taskq.ratelimit.token_bucket import TokenBucket
 from taskq.retry import RetryClassifierHook, RetryOverride, RetryPolicy
-from taskq.workflows._types import duration_seconds
+from taskq.workflows._types import FiniteRetryKind, StoredFiniteRetryKind, duration_seconds
 
 __all__ = [
     "CLEAR_POLICY",
@@ -109,7 +109,7 @@ type PolicyRateLimit = str | KeyedRateLimitRef | TokenBucket | SlidingWindow
 type PolicyReservation = (
     str | ConcurrencyReservation | KeyedReservationRef | FiniteReservationCohort
 )
-type PolicyRetryKind = RetryKind | Literal["permanent"]
+type PolicyRetryKind = FiniteRetryKind
 
 
 def canonical_retry_kind(value: str, *, what: str = "retry_kind") -> RetryKind:
@@ -124,7 +124,7 @@ def canonical_retry_kind(value: str, *, what: str = "retry_kind") -> RetryKind:
     return value
 
 
-def declared_retry_kind(value: str, *, what: str = "retry_kind") -> RetryKind:
+def declared_retry_kind(value: str, *, what: str = "retry_kind") -> StoredFiniteRetryKind:
     """Validate one new workflow declaration's retry kind: finite kinds only.
 
     ``canonical_retry_kind`` accepts ``"indefinite"`` because previously
@@ -303,9 +303,18 @@ class RetrySpec:
         return value
 
     def classify(
-        self, exc: BaseException, attempt: int
+        self,
+        exc: BaseException,
+        attempt: int,
+        *,
+        flow_id: str | None = None,
+        step_key: str | None = None,
     ) -> RetryOverride | WorkflowRetryOverride | None:
-        """Safely classify only a body-raised exception selected by the runner."""
+        """Safely classify only a body-raised exception selected by the runner.
+
+        ``flow_id``/``step_key`` are the caller's row identity: they make a
+        refusal attributable to the run and step that declared the hook, and
+        are omitted from the event when the caller has no row context."""
         value = self._call_classifier(exc, attempt)
         if value is None:
             return None
@@ -327,7 +336,12 @@ class RetrySpec:
         if value.kind == "indefinite":
             # New workflow declarations are finite. The classifier cannot
             # manufacture the legacy unbounded kind behind that validation.
-            logger.warning("workflow-retry-classifier-indefinite-refused")
+            context: dict[str, str] = {}
+            if flow_id is not None:
+                context["flow_id"] = flow_id
+            if step_key is not None:
+                context["step_key"] = step_key
+            logger.warning("workflow-retry-classifier-indefinite-refused", **context)
             return None
         return value
 
@@ -549,7 +563,7 @@ class ResolvedExecutionPolicy:
     # Compatibility-only budget, not a shadow curve/policy declaration. The
     # legacy public source keeps its original fixed ladder when retry is absent.
     legacy_max_attempts: int = 3
-    legacy_retry_kind: RetryKind = "transient"
+    legacy_retry_kind: StoredFiniteRetryKind = "transient"
 
     @property
     def max_attempts(self) -> int:
@@ -558,8 +572,14 @@ class ResolvedExecutionPolicy:
         )
 
     @property
-    def retry_kind(self) -> RetryKind:
-        return self.retry.policy.kind if self.retry is not None else self.legacy_retry_kind
+    def retry_kind(self) -> StoredFiniteRetryKind:
+        # RetrySpec.__post_init__ refuses "indefinite" and the legacy fallback
+        # is fixed at "transient": both arms are the stored finite vocabulary.
+        return (
+            cast("StoredFiniteRetryKind", self.retry.policy.kind)
+            if self.retry is not None
+            else self.legacy_retry_kind
+        )
 
     @property
     def retry_for_rows(self) -> RetryPolicy | None:

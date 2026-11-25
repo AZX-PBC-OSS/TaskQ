@@ -22,7 +22,7 @@ from typing import Any, Final
 from taskq.backend._protocol import JobId
 from taskq.constants import SMALLINT_MAX
 from taskq.workflows._policy import declared_retry_kind
-from taskq.workflows._types import ForkSpec
+from taskq.workflows._types import FiniteRetryKind, ForkSpec
 
 __all__ = [
     "FAILURE_POLICIES",
@@ -68,7 +68,7 @@ class WorkflowDef:
     actor: str = "workflow"
     queue: str = "default"
     max_attempts: int = 3
-    retry_kind: str = "transient"
+    retry_kind: FiniteRetryKind = "transient"
     capture_policy: str = "errors-only"
     redact: Callable[[str], str] | None = None
     #: The loop nodes' declared ``on_exhausted`` policies, keyed by loop

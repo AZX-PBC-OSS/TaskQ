@@ -371,7 +371,12 @@ class LadderOps(_LadderHost):
                 )
             )
         override = (
-            retry_spec.classify(exc, failed_count + 1)
+            retry_spec.classify(
+                exc,
+                failed_count + 1,
+                flow_id=str(flow_id),
+                step_key=str(row["step_key"]),
+            )
             if retry_spec is not None and not deterministic
             else None
         )

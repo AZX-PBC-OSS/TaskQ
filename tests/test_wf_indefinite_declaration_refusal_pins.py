@@ -11,11 +11,14 @@ SQL retain legacy ``"indefinite"`` support for previously persisted rows and
 vanilla actors.
 """
 
+# ruff: noqa: S608  # Why: the schema is a fixture-derived test identifier; every value is $-bound.
+
 from __future__ import annotations
 
 import enum
 from typing import Any, cast
 
+import asyncpg
 import pytest
 import structlog
 from pydantic import BaseModel
@@ -38,7 +41,6 @@ from taskq.workflows import (
     build,
     chain_fork,
     chain_source,
-    chain_start,
     loop,
     map_source,
     route,
@@ -46,14 +48,16 @@ from taskq.workflows import (
 )
 from taskq.workflows._emit import _emit_tx, emit_batch
 from taskq.workflows._policy import canonical_retry_kind
+from taskq.workflows._sql import WorkflowSql
 from taskq.workflows._sweep import _drain_outbox_once, drain_outbox
-from taskq.workflows._types import ChildSpec, EmitChild, ForkSpec, NodeSpec
+from taskq.workflows._types import ChildSpec, EmitChild, FiniteRetryKind, ForkSpec, NodeSpec
 from taskq.workflows.api._graph import NodeDecl
 from taskq.workflows.api._runner import _node_retry_spec
 from taskq.workflows.api._runner_codec import FlowEntryShim
+from taskq.workflows.chain import type_tag
 from taskq.workflows.definitions import WorkflowDef
 from taskq.workflows.engine import render_workflow_sql
-from taskq.workflows.ledger import insert_flow_run
+from taskq.workflows.ledger import insert_flow_run, run_idempotency_scope
 
 # Typed as Any so static narrowing of declaration Literals to finite kinds
 # continues to type-check while runtime callers still probe the refused word.
@@ -87,10 +91,19 @@ async def _consumer_body(ctx: StepContext, items: list[str]) -> str:
     return ",".join(items)
 
 
-def _assert_e21_indefinite(exc_info: pytest.ExceptionInfo[WorkflowPolicyError]) -> None:
+def _assert_e21_indefinite(
+    exc_info: pytest.ExceptionInfo[WorkflowPolicyError], *, what: str | None = None
+) -> None:
     assert exc_info.value.code == "E21-execution-policy"
     assert "E21-execution-policy" in str(exc_info.value)
     assert "indefinite" in str(exc_info.value)
+    if what is not None:
+        # The ``what`` prefix is the only field that distinguishes one door's
+        # refusal from another's, so a pin that names its door proves the
+        # refusal came from that door rather than a validator behind it.
+        assert exc_info.value.message.startswith(f"{what} must be a finite retry kind"), (
+            f"expected the refusal to name {what!r}, got {exc_info.value.message!r}"
+        )
 
 
 def test_step_direct_refuses_indefinite_retry_kind() -> None:
@@ -102,7 +115,7 @@ def test_step_direct_refuses_indefinite_retry_kind() -> None:
 
     with pytest.raises(WorkflowPolicyError) as exc_info:
         app.get("wf_step_direct_indefinite")
-    _assert_e21_indefinite(exc_info)
+    _assert_e21_indefinite(exc_info, what=f"step {'s'!r}'s retry_kind")
 
 
 @pytest.mark.parametrize("fanout", ["map_source", "route"])
@@ -122,7 +135,7 @@ def test_step_downstream_of_fanout_refuses_indefinite_at_declaration(fanout: str
 
     with pytest.raises(WorkflowPolicyError) as exc_info:
         app.get(wf_name)
-    _assert_e21_indefinite(exc_info)
+    _assert_e21_indefinite(exc_info, what=f"step {'after'!r}'s retry_kind")
 
 
 def test_workflow_actor_declaration_refuses_indefinite_retry_kind() -> None:
@@ -134,7 +147,7 @@ def test_workflow_actor_declaration_refuses_indefinite_retry_kind() -> None:
         async def _indefinite_actor(ctx: StepContext) -> str:
             return "ok"
 
-    _assert_e21_indefinite(exc_info)
+    _assert_e21_indefinite(exc_info, what="actor retry_kind")
 
 
 def test_step_wired_with_indefinite_actor_handle_refuses_indefinite() -> None:
@@ -146,7 +159,7 @@ def test_step_wired_with_indefinite_actor_handle_refuses_indefinite() -> None:
 
     # Exercise step()'s own handle-copy validation path even when @app.actor
     # rejects "indefinite" earlier.
-    _handle.retry_kind = "indefinite"
+    cast("Any", _handle).retry_kind = _INDEFINITE
 
     @app.workflow("wf_step_wired_actor_indefinite")
     def _wf() -> Promise[object]:
@@ -154,7 +167,7 @@ def test_step_wired_with_indefinite_actor_handle_refuses_indefinite() -> None:
 
     with pytest.raises(WorkflowPolicyError) as exc_info:
         app.get("wf_step_wired_actor_indefinite")
-    _assert_e21_indefinite(exc_info)
+    _assert_e21_indefinite(exc_info, what=f"step {'s'!r}'s retry_kind")
 
 
 @pytest.mark.parametrize("entrypoint", ["step", "map_source", "route", "loop", "chain"])
@@ -167,10 +180,12 @@ def test_actor_handle_wiring_entrypoints_refuse_indefinite_actor(entrypoint: str
 
     # Bypass the decorator's own door so each wiring entrypoint is actually
     # exercised; raising during @app.actor would leave all five paths untested.
-    _actor_body.retry_kind = "indefinite"
+    cast("Any", _actor_body).retry_kind = _INDEFINITE
 
+    door = "actor retry_kind"
     with pytest.raises(WorkflowPolicyError) as exc_info:
         if entrypoint == "step":
+            door = f"step {'s'!r}'s retry_kind"
 
             @app.workflow("wf_actor_step")
             def _wf_step() -> Promise[object]:
@@ -178,6 +193,7 @@ def test_actor_handle_wiring_entrypoints_refuse_indefinite_actor(entrypoint: str
 
             app.get("wf_actor_step")
         elif entrypoint == "map_source":
+            door = f"map {'src'!r}'s actor retry_kind"
 
             @app.workflow("wf_actor_map")
             def _wf_map() -> Promise[object]:
@@ -186,6 +202,7 @@ def test_actor_handle_wiring_entrypoints_refuse_indefinite_actor(entrypoint: str
 
             app.get("wf_actor_map")
         elif entrypoint == "route":
+            door = f"route arm {type_tag(_Item)!r}'s actor retry_kind"
 
             @app.workflow("wf_actor_route")
             def _wf_route() -> Promise[object]:
@@ -194,6 +211,7 @@ def test_actor_handle_wiring_entrypoints_refuse_indefinite_actor(entrypoint: str
 
             app.get("wf_actor_route")
         elif entrypoint == "loop":
+            door = "loop body actor retry_kind"
 
             @app.workflow("wf_actor_loop")
             def _wf_loop() -> Promise[object]:
@@ -201,7 +219,10 @@ def test_actor_handle_wiring_entrypoints_refuse_indefinite_actor(entrypoint: str
 
             app.get("wf_actor_loop")
         else:
-            chain = Chain(
+            # Construction is the chain's door: __post_init__ validates each
+            # step's handle before any record is started.
+            door = "actor retry_kind"
+            Chain(
                 name="wf_actor_chain",
                 start="s",
                 steps={
@@ -212,9 +233,8 @@ def test_actor_handle_wiring_entrypoints_refuse_indefinite_actor(entrypoint: str
                     )
                 },
             )
-            chain_start(chain, _Item(value=1), map_index=0, trace_id="trace-1")
 
-    _assert_e21_indefinite(exc_info)
+    _assert_e21_indefinite(exc_info, what=door)
 
 
 def test_chain_declaration_refuses_indefinite_actor_handle() -> None:
@@ -224,7 +244,7 @@ def test_chain_declaration_refuses_indefinite_actor_handle() -> None:
     async def _actor_body(ctx: StepContext, item: _Item) -> str:
         return str(item.value)
 
-    _actor_body.retry_kind = "indefinite"
+    cast("Any", _actor_body).retry_kind = _INDEFINITE
 
     with pytest.raises(WorkflowPolicyError) as exc_info:
         Chain(
@@ -238,7 +258,7 @@ def test_chain_declaration_refuses_indefinite_actor_handle() -> None:
                 )
             },
         )
-    _assert_e21_indefinite(exc_info)
+    _assert_e21_indefinite(exc_info, what="actor retry_kind")
 
 
 def test_chain_source_refuses_handle_mutated_after_chain_construction() -> None:
@@ -259,7 +279,7 @@ def test_chain_source_refuses_handle_mutated_after_chain_construction() -> None:
             )
         },
     )
-    _actor_body.retry_kind = "indefinite"
+    cast("Any", _actor_body).retry_kind = _INDEFINITE
 
     async def _source(ctx: StepContext) -> None:
         return None
@@ -270,7 +290,7 @@ def test_chain_source_refuses_handle_mutated_after_chain_construction() -> None:
 
     with pytest.raises(WorkflowPolicyError) as exc_info:
         app.get("wf_chain_source_mutated_actor")
-    _assert_e21_indefinite(exc_info)
+    _assert_e21_indefinite(exc_info, what="actor retry_kind")
 
 
 @pytest.mark.parametrize("with_child", [True, False])
@@ -283,7 +303,7 @@ def test_chain_fork_refuses_indefinite_retry_kind(with_child: bool) -> None:
 
     with pytest.raises(WorkflowPolicyError) as exc_info:
         chain_fork(child, trace_id="trace-1", retry_kind=_INDEFINITE)
-    _assert_e21_indefinite(exc_info)
+    _assert_e21_indefinite(exc_info, what="chain_fork retry_kind")
 
 
 def test_fork_spec_refuses_indefinite_retry_kind() -> None:
@@ -291,7 +311,7 @@ def test_fork_spec_refuses_indefinite_retry_kind() -> None:
 
     with pytest.raises(WorkflowPolicyError) as exc_info:
         ForkSpec(children=(child,), retry_kind=_INDEFINITE)
-    _assert_e21_indefinite(exc_info)
+    _assert_e21_indefinite(exc_info, what="ForkSpec.retry_kind")
 
 
 def test_node_spec_refuses_indefinite_retry_kind() -> None:
@@ -303,7 +323,7 @@ def test_node_spec_refuses_indefinite_retry_kind() -> None:
             queue="default",
             retry_kind=_INDEFINITE,
         )
-    _assert_e21_indefinite(exc_info)
+    _assert_e21_indefinite(exc_info, what="NodeSpec.retry_kind")
 
 
 def test_node_spec_with_resolved_retry_refuses_indefinite_retry_kind() -> None:
@@ -316,7 +336,7 @@ def test_node_spec_with_resolved_retry_refuses_indefinite_retry_kind() -> None:
             retry=RetrySpec(),
             retry_kind=_INDEFINITE,
         )
-    _assert_e21_indefinite(exc_info)
+    _assert_e21_indefinite(exc_info, what="NodeSpec.retry_kind")
 
 
 def test_compiled_node_lowering_refuses_indefinite_retry_kind() -> None:
@@ -330,7 +350,7 @@ def test_compiled_node_lowering_refuses_indefinite_retry_kind() -> None:
 
     with pytest.raises(WorkflowPolicyError) as exc_info:
         _node_retry_spec(node)
-    _assert_e21_indefinite(exc_info)
+    _assert_e21_indefinite(exc_info, what="retry_kind")
 
 
 @pytest.mark.parametrize(
@@ -345,7 +365,7 @@ def test_compiled_node_lowering_refuses_indefinite_retry_kind() -> None:
 def test_retry_spec_exceptions_map_refuses_indefinite(mapped_value: Any) -> None:
     with pytest.raises(WorkflowPolicyError) as exc_info:
         RetrySpec(exceptions={ValueError: mapped_value})
-    _assert_e21_indefinite(exc_info)
+    _assert_e21_indefinite(exc_info, what="exception retry kind")
 
 
 def test_dynamic_classifier_cannot_reintroduce_indefinite() -> None:
@@ -358,6 +378,18 @@ def test_dynamic_classifier_cannot_reintroduce_indefinite() -> None:
         assert spec.classify(ValueError("boom"), 1) is None
 
     assert [entry["event"] for entry in logs] == ["workflow-retry-classifier-indefinite-refused"]
+    assert "flow_id" not in logs[0] and "step_key" not in logs[0]
+
+    # A row-context call attributes the refusal to the run and step whose
+    # declaration carried the hook — without it the event names nothing.
+    with structlog.testing.capture_logs() as scoped_logs:
+        assert spec.classify(ValueError("boom"), 1, flow_id=str(_FLOW_ID), step_key="s") is None
+
+    assert [entry["event"] for entry in scoped_logs] == [
+        "workflow-retry-classifier-indefinite-refused"
+    ]
+    assert scoped_logs[0]["flow_id"] == str(_FLOW_ID)
+    assert scoped_logs[0]["step_key"] == "s"
 
 
 class _UnreachablePool:
@@ -368,33 +400,30 @@ class _UnreachablePool:
 
 
 class _UnreachableConn:
+    """Guard proving a refused declaration issues no statement at all.
+
+    The flow-root statements are recognised by identity against the rendered
+    ``wsql`` (never by SQL text), so a whitespace-only reflow of one keeps
+    this double honest."""
+
+    def __init__(self, wsql: WorkflowSql) -> None:
+        self.wsql = wsql
+        self.insert_attempted = False
+
     def fetchval(self, *_args: Any, **_kwargs: Any) -> Any:
         raise AssertionError(
             "reached the emit cursor write without refusing retry_kind='indefinite'"
         )
 
     async def fetchrow(self, sql: str, *_args: Any, **_kwargs: Any) -> Any:
-        if sql.strip().startswith("SELECT id, status::text"):
-            return None
-        raise AssertionError(
-            "reached the flow root insert without refusing retry_kind='indefinite'"
-        )
-
-
-class _LegacyFlowConn:
-    def __init__(self, wsql: Any) -> None:
-        self.wsql = wsql
-        self.insert_attempted = False
-
-    async def fetchrow(self, sql: str, *_args: Any, **_kwargs: Any) -> Any:
         if sql == self.wsql.flow_run_read:
-            return {
-                "id": _FLOW_ID,
-                "status": "running",
-                "required_worker_schema": None,
-            }
-        self.insert_attempted = True
-        raise AssertionError("a legacy run-key replay attempted a new root insert")
+            raise AssertionError("read the flow root without refusing retry_kind='indefinite'")
+        if sql == self.wsql.flow_run_insert:
+            self.insert_attempted = True
+            raise AssertionError(
+                "reached the flow root insert without refusing retry_kind='indefinite'"
+            )
+        raise AssertionError(f"issued an unexpected statement without refusing: {sql!r}")
 
 
 async def test_emit_batch_refuses_indefinite_retry_kind_at_door() -> None:
@@ -420,14 +449,16 @@ async def test_emit_batch_refuses_indefinite_retry_kind_at_door() -> None:
             cursor={},
             retry_kind="indefinite",
         )
-    _assert_e21_indefinite(exc_info)
+    _assert_e21_indefinite(exc_info, what="emit retry_kind")
 
 
 async def test_emit_tx_refuses_indefinite_retry_kind_at_its_own_door() -> None:
+    wsql = render_workflow_sql("taskq")
+
     with pytest.raises(WorkflowPolicyError) as exc_info:
         await _emit_tx(
-            cast("Any", _UnreachableConn()),
-            render_workflow_sql("taskq"),
+            cast("Any", _UnreachableConn(wsql)),
+            wsql,
             flow_id=_FLOW_ID,
             source_id=_JOB_ID,
             worker_id=_WORKER_ID,
@@ -440,7 +471,7 @@ async def test_emit_tx_refuses_indefinite_retry_kind_at_its_own_door() -> None:
             retry_kind="indefinite",
             _window_hook=None,
         )
-    _assert_e21_indefinite(exc_info)
+    _assert_e21_indefinite(exc_info, what="emit retry_kind")
 
 
 async def test_drain_outbox_refuses_indefinite_default_retry_kind_at_door() -> None:
@@ -450,7 +481,7 @@ async def test_drain_outbox_refuses_indefinite_default_retry_kind_at_door() -> N
             render_workflow_sql("taskq"),
             default_retry_kind="indefinite",
         )
-    _assert_e21_indefinite(exc_info)
+    _assert_e21_indefinite(exc_info, what="outbox default_retry_kind")
 
 
 async def test_drain_outbox_once_refuses_indefinite_default_retry_kind_at_its_own_door() -> None:
@@ -460,44 +491,125 @@ async def test_drain_outbox_once_refuses_indefinite_default_retry_kind_at_its_ow
             render_workflow_sql("taskq"),
             default_retry_kind="indefinite",
         )
-    _assert_e21_indefinite(exc_info)
+    _assert_e21_indefinite(exc_info, what="outbox default_retry_kind")
 
 
 def test_workflow_def_refuses_indefinite_retry_kind() -> None:
     with pytest.raises(WorkflowPolicyError) as exc_info:
         WorkflowDef(name="wf_def_indefinite", bodies={}, retry_kind="indefinite")
-    _assert_e21_indefinite(exc_info)
+    _assert_e21_indefinite(exc_info, what="WorkflowDef.retry_kind")
 
 
 async def test_insert_flow_run_refuses_indefinite_retry_kind_at_its_own_door() -> None:
+    wsql = render_workflow_sql("taskq")
+    conn = _UnreachableConn(wsql)
     entry = FlowEntryShim("wf_root_indefinite", {}, retry_kind="indefinite")
 
     with pytest.raises(WorkflowPolicyError) as exc_info:
         await insert_flow_run(
-            cast("Any", _UnreachableConn()),
-            render_workflow_sql("taskq"),
+            cast("Any", conn),
+            wsql,
             entry=entry,
             run_key="run-1",
         )
-    _assert_e21_indefinite(exc_info)
-
-
-async def test_insert_flow_run_adopts_a_legacy_indefinite_run_without_inserting() -> None:
-    wsql = render_workflow_sql("taskq")
-    conn = _LegacyFlowConn(wsql)
-    entry = FlowEntryShim("wf_root_indefinite", {}, retry_kind="indefinite")
-
-    claim = await insert_flow_run(
-        cast("Any", conn),
-        wsql,
-        entry=entry,
-        run_key="run-1",
-    )
-
-    assert claim.created is False
-    assert claim.kind == "existing-running"
-    assert claim.flow_id == _FLOW_ID
+    _assert_e21_indefinite(exc_info, what="flow retry_kind")
     assert conn.insert_attempted is False
+
+
+@pytest.mark.integration
+async def test_legacy_indefinite_root_is_adopted_through_the_production_entry_shape(
+    wf_conn: asyncpg.Connection,
+    wf_schema: str,
+    wf_sql: WorkflowSql,
+) -> None:
+    """A legacy root (its COLUMN says ``indefinite``) replays onto the same run
+    through the shape ``_insert_root`` builds: created=False, one row, and the
+    stored kind survives the replay untouched.
+
+    The adoption rides the run-key arbiter's conflict path, which never reads
+    the declaration's kind, so the production entry shape (a ``FlowEntryShim``
+    built with the dataclass default ``"transient"``) is all the replay needs."""
+    entry = FlowEntryShim("wf_legacy_root", {"taskq:wf_input": None})
+    assert entry.retry_kind == "transient"
+    key = "legacy:2026-01-01T00:00:00Z"
+
+    first = await insert_flow_run(wf_conn, wf_sql, entry=entry, run_key=key)
+    assert first.created is True
+
+    # the legacy row: persisted before the kind became undeclarable.
+    await wf_conn.execute(
+        f'UPDATE "{wf_schema}".jobs SET retry_kind = $1 WHERE id = $2',
+        "indefinite",
+        first.flow_id,
+    )
+    stamped = await wf_conn.fetchval(
+        f'SELECT retry_kind FROM "{wf_schema}".jobs WHERE id = $1', first.flow_id
+    )
+    assert stamped == "indefinite"
+
+    replay = await insert_flow_run(wf_conn, wf_sql, entry=entry, run_key=key)
+
+    assert replay.created is False
+    assert replay.kind == "existing-running"
+    assert replay.flow_id == first.flow_id
+    rows = await wf_conn.fetchval(
+        f'SELECT count(*) FROM "{wf_schema}".jobs '
+        "WHERE idempotency_scope = $1 AND idempotency_key = $2",
+        run_idempotency_scope(entry.name),
+        key,
+    )
+    assert int(rows) == 1, "the replay never inserts a second root"
+    kept = await wf_conn.fetchval(
+        f'SELECT retry_kind FROM "{wf_schema}".jobs WHERE id = $1', first.flow_id
+    )
+    assert kept == "indefinite", "the replay leaves the legacy row's kind as it found it"
+
+
+async def test_declared_indefinite_is_refused_whether_or_not_the_run_key_is_taken() -> None:
+    """The refusal belongs to the DECLARATION: a fresh run key raises before
+    any statement, and a taken run key raises just as firmly rather than
+    silently adopting the existing run."""
+
+    class _KeyedConn:
+        """A run-key connection: a row may sit at the key, but a refused
+        declaration must never read it or attempt the insert."""
+
+        def __init__(self, wsql: WorkflowSql, row: dict[str, object] | None) -> None:
+            self.wsql = wsql
+            self.row = row
+            self.read_attempted = False
+            self.insert_attempted = False
+
+        async def fetchrow(self, sql: str, *_args: Any, **_kwargs: Any) -> Any:
+            if sql == self.wsql.flow_run_read:
+                self.read_attempted = True
+                return self.row
+            if sql == self.wsql.flow_run_insert:
+                self.insert_attempted = True
+                raise AssertionError("a refused declaration reached the flow-root insert")
+            raise AssertionError(f"unexpected statement on a refused declaration: {sql!r}")
+
+    wsql = render_workflow_sql("taskq")
+    entry = FlowEntryShim("wf_refused_root", {}, retry_kind="indefinite")
+
+    for label, row in (
+        ("fresh-key", None),
+        (
+            "taken-key",
+            {"id": _FLOW_ID, "status": "running", "required_worker_schema": None},
+        ),
+    ):
+        conn = _KeyedConn(wsql, row)
+        with pytest.raises(WorkflowPolicyError) as exc_info:
+            await insert_flow_run(
+                cast("Any", conn),
+                wsql,
+                entry=entry,
+                run_key=label,
+            )
+        _assert_e21_indefinite(exc_info, what="flow retry_kind")
+        assert conn.read_attempted is False, "the refusal precedes any occupancy read"
+        assert conn.insert_attempted is False
 
 
 def test_canonical_retry_kind_preserves_legacy_indefinite_and_alias() -> None:
@@ -519,7 +631,9 @@ def test_canonical_retry_kind_preserves_legacy_indefinite_and_alias() -> None:
         ("permanent", "non_retryable"),
     ],
 )
-def test_valid_finite_retry_kinds_remain_accepted(declared: str, expected: str) -> None:
+def test_valid_finite_retry_kinds_remain_accepted(
+    declared: FiniteRetryKind, expected: FiniteRetryKind
+) -> None:
     app = WorkflowApp()
 
     @app.actor(retry_kind=declared)
@@ -537,7 +651,7 @@ def test_valid_finite_retry_kinds_remain_accepted(declared: str, expected: str) 
     assert compiled.nodes["s"].retry_kind == expected_node_kind
 
     child = ChildSpec(step_key="next", actor="wf", queue="default", payload={}, map_index=0)
-    fork = chain_fork(child, trace_id="trace-1", retry_kind=cast("Any", declared))
+    fork = chain_fork(child, trace_id="trace-1", retry_kind=declared)
     assert fork is not None
     assert fork.retry_kind == expected
 
@@ -546,13 +660,13 @@ def test_valid_finite_retry_kinds_remain_accepted(declared: str, expected: str) 
         step_key="s",
         actor="wf",
         queue="default",
-        retry_kind=cast("Any", declared),
+        retry_kind=declared,
     )
     assert node.retry_kind == expected
 
     spec = RetrySpec(
         policy=RetryPolicy(kind=cast("Any", expected)),
-        exceptions={ValueError: cast("Any", declared)},
+        exceptions={ValueError: declared},
     )
     classified = spec.classify(ValueError("boom"), 1)
     assert classified is not None and classified.kind == expected

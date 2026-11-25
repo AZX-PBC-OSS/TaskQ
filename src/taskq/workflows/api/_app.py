@@ -39,7 +39,7 @@ from taskq.actor_config import (
 from taskq.constants import check_max_attempts_domain, check_priority_domain
 from taskq.ratelimit.reservation import ConcurrencyReservation
 from taskq.workflows._emit import EMIT_MAX_IN_FLIGHT_DEFAULT
-from taskq.workflows._types import duration_seconds
+from taskq.workflows._types import FiniteRetryKind, duration_seconds
 from taskq.workflows.api._graph import (
     BuildGraph,
     NodeDecl,
@@ -68,7 +68,7 @@ __all__ = [
 #: only a value different from these folds into the node — a bare
 #: ``@app.actor()`` never changes a step's retry shape.
 ACTOR_MAX_ATTEMPTS_DEFAULT: Final = 3
-ACTOR_RETRY_KIND_DEFAULT: Final = "transient"
+ACTOR_RETRY_KIND_DEFAULT: Final[FiniteRetryKind] = "transient"
 
 
 class WorkflowActor:
@@ -84,7 +84,7 @@ class WorkflowActor:
         name: str,
         queue: str,
         max_attempts: int,
-        retry_kind: str,
+        retry_kind: FiniteRetryKind,
         capture_policy: str,
         redact: Callable[[dict[str, object]], dict[str, object]] | None,
         max_concurrent: int | None = None,
@@ -106,7 +106,10 @@ class WorkflowActor:
         declared_retry_kind(
             retry_kind, what="actor retry_kind"
         )  # validate only; preserve the public authoring alias
-        self.retry_kind = retry_kind
+        # The explicit annotation keeps the declared vocabulary on the
+        # attribute: the class-level form would shadow the handle's delegated
+        # ``__annotations__`` read (E4's face), so it stays on the instance.
+        self.retry_kind: FiniteRetryKind = retry_kind
         self.capture_policy = capture_policy
         self.redact = redact
         # the capacity terms . The projection carries these into the cohort's
@@ -344,7 +347,7 @@ class WorkflowApp:
         name: str | None = None,
         queue: str = "default",
         max_attempts: int = ACTOR_MAX_ATTEMPTS_DEFAULT,
-        retry_kind: str = ACTOR_RETRY_KIND_DEFAULT,
+        retry_kind: FiniteRetryKind = ACTOR_RETRY_KIND_DEFAULT,
         capture_policy: Literal["none", "errors-only", "all"] | None = None,
         capture: Literal["none", "errors-only", "all"] | None = None,
         redact: Callable[[dict[str, object]], dict[str, object]] | None = None,
@@ -367,7 +370,7 @@ class WorkflowApp:
         name: str | None = None,
         queue: str = "default",
         max_attempts: int = ACTOR_MAX_ATTEMPTS_DEFAULT,
-        retry_kind: str = ACTOR_RETRY_KIND_DEFAULT,
+        retry_kind: FiniteRetryKind = ACTOR_RETRY_KIND_DEFAULT,
         capture_policy: Literal["none", "errors-only", "all"] | None = None,
         capture: Literal["none", "errors-only", "all"] | None = None,
         redact: Callable[[dict[str, object]], dict[str, object]] | None = None,
@@ -389,7 +392,7 @@ class WorkflowApp:
         name: str | None = None,
         queue: str = "default",
         max_attempts: int = ACTOR_MAX_ATTEMPTS_DEFAULT,
-        retry_kind: str = ACTOR_RETRY_KIND_DEFAULT,
+        retry_kind: FiniteRetryKind = ACTOR_RETRY_KIND_DEFAULT,
         capture_policy: Literal["none", "errors-only", "all"] | None = None,
         capture: Literal["none", "errors-only", "all"] | None = None,
         redact: Callable[[dict[str, object]], dict[str, object]] | None = None,

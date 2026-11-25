@@ -46,7 +46,7 @@ import enum
 import types
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Literal, get_args
+from typing import TYPE_CHECKING, Any, get_args
 
 from pydantic import BaseModel
 
@@ -58,7 +58,7 @@ from taskq.workflows._policy import (
     handle_policy,
     resolve_execution_policy,
 )
-from taskq.workflows._types import ChildSpec, EmitChild, ForkSpec
+from taskq.workflows._types import ChildSpec, EmitChild, FiniteRetryKind, ForkSpec
 
 if TYPE_CHECKING:
     from taskq.workflows.api._app import WorkflowActor
@@ -418,7 +418,7 @@ def chain_fork(
     *,
     trace_id: str | None,
     max_attempts: int = 3,
-    retry_kind: Literal["transient", "non_retryable", "permanent"] = "transient",
+    retry_kind: FiniteRetryKind = "transient",
 ) -> ForkSpec | None:
     """The fork a chain step's finalize carries: AT MOST one child (no
     fan-in, no join — the route rides the certified fork-at-finalize

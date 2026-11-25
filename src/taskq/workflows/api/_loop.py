@@ -289,12 +289,14 @@ def loop(
     ``on_exhausted="fail"`` terminal-fails the flow and enqueues
     NOTHING — the policy is READ by the driver and the sweep, both arms
     pinned end-to-end."""
-    from taskq.workflows._policy import handle_policy
+    from taskq.workflows._policy import declared_retry_kind
+    from taskq.workflows.api._app import WorkflowActor  # the cycle-break
     from taskq.workflows.api._graph import NodeDecl
 
     # Loop-row retry terms belong to the loop driver, but a wired actor handle
-    # still crosses this declaration door and must carry a representable kind.
-    handle_policy(body)
+    # still crosses this declaration door and must carry a finite kind.
+    if isinstance(body, WorkflowActor):
+        declared_retry_kind(body.retry_kind, what="loop body actor retry_kind")
 
     # the loop's derived keys (``<key>.iter<i>``) own the dot.
     if "." in name:

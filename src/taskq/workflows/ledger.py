@@ -361,19 +361,6 @@ async def insert_flow_run(
     """
     if required_worker_schema is not None:
         validate_required_worker_schema(required_worker_schema)
-    if entry.retry_kind == "indefinite":
-        # A run-key replay is a read of an existing row, not a new declaration.
-        # Preserve legacy adoption without allowing this value into a new INSERT.
-        existing = await conn.fetchrow(
-            wsql.flow_run_read, run_idempotency_scope(entry.name), run_key
-        )
-        if existing is not None:
-            return RunClaim(
-                flow_id=JobId(existing["id"]),
-                created=False,
-                status=existing["status"],
-                required_worker_schema=existing["required_worker_schema"],
-            )
     retry_kind = declared_retry_kind(entry.retry_kind, what="flow retry_kind")
     flow_id = new_uuid()
     # the root's metadata names the workflow whose registered definition

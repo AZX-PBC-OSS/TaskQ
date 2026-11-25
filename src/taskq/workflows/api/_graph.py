@@ -29,7 +29,6 @@ from typing import TYPE_CHECKING, Any, Concatenate, Final, cast, get_args, get_o
 from pydantic import BaseModel
 
 from taskq.actor_config import validate_capacity_owner
-from taskq.backend._protocol import RetryKind
 from taskq.constants import check_priority_domain
 from taskq.ratelimit.refs import KeyedRateLimitRef, KeyedReservationRef
 from taskq.ratelimit.reservation import ConcurrencyReservation
@@ -39,10 +38,9 @@ from taskq.workflows._policy import (
     ExecutionPolicy,
     ResolvedExecutionPolicy,
     declared_retry_kind,
-    handle_policy,
     resolve_source_execution_policy,
 )
-from taskq.workflows._types import EdgeFailurePolicy, duration_seconds
+from taskq.workflows._types import EdgeFailurePolicy, FiniteRetryKind, duration_seconds
 from taskq.workflows.api._hints import body_hints, ctx_input_reads, inner_fn, own_source
 from taskq.workflows.chain import Chain
 
@@ -656,7 +654,7 @@ class NodeDecl:
     #: default; the timeout arm resolves per the same policy.
     on_failure: str = "fail_closed"
     max_attempts: int = 3
-    retry_kind: RetryKind | None = None
+    retry_kind: FiniteRetryKind | None = None
     skip: SkipPredicate | None = None
     gates: tuple[GateDecl, ...] = ()
     #: the claim path acquires these buckets before the body runs — the vanilla
@@ -970,7 +968,7 @@ def step[R](
     queue: str = "default",
     on_failure: EdgeFailurePolicy = "fail_closed",
     max_attempts: int | None = None,
-    retry_kind: str | None = None,
+    retry_kind: FiniteRetryKind | None = None,
     skip: SkipPredicate | None = None,
     gates: tuple[GateDecl, ...] = (),
     progress_schema: type[BaseModel] | None = None,
@@ -1460,9 +1458,9 @@ def map_source[S, R](
     from taskq.workflows.api._app import WorkflowActor  # the cycle-break (inner_fn's own pattern)
 
     if isinstance(body, WorkflowActor):
-        # The fork owns map-row retry terms, but the wired handle still crosses
-        # this declaration door and must not carry an unrepresentable kind.
-        handle_policy(body)
+        # The fork owns map-row retry terms, but the wired handle's retry kind
+        # still crosses this declaration door and must be a finite kind.
+        declared_retry_kind(body.retry_kind, what=f"map {source.key!r}'s actor retry_kind")
         _wire_handle_terms_into_node(source_node, body, what=f"map {source.key!r}")
     join_key = f"{source.key}.join"
     graph.add(
@@ -1568,8 +1566,13 @@ def _attach_route[S](
             value if isinstance(value, RouteArm) else RouteArm(body=value),
         )
         # As above for map bodies: route-row terms come from the fork, while
-        # the handle's own declaration is still validated at this door.
-        handle_policy(arm.body)
+        # the handle's own retry kind is still validated at this door.
+        from taskq.workflows.api._app import (  # the cycle-break (inner_fn's own pattern)
+            WorkflowActor,
+        )
+
+        if isinstance(arm.body, WorkflowActor):
+            declared_retry_kind(arm.body.retry_kind, what=f"route arm {tag!r}'s actor retry_kind")
         # The priority domain (step()'s own law — the wiring site
         # refuses before any row exists): the arm's override checked at
         # the same door the arms normalize through (both map_source's

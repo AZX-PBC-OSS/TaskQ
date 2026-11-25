@@ -150,6 +150,12 @@ def test_retries_guide_states_the_workflow_step_budgets() -> None:
             "bounded ladder",
         ),
         (
+            'new workflow declarations refuse `retry_kind="indefinite"` at decoration '
+            "and compile time",
+            "§12 must state the refusal itself: a new workflow declaration cannot name "
+            "the kind, and only a persisted legacy row keeps it",
+        ),
+        (
             "a workflow step keeps the two budgets apart (§12)",
             "§13's 'a crashed worker spends an attempt' must point workflow steps at §12",
         ),
@@ -163,6 +169,11 @@ def test_retries_guide_states_the_workflow_step_budgets() -> None:
         (
             "it counts failed attempts only, so crashes are budgeted apart",
             "§14 must say the workflow ladder counts failed attempts only",
+        ),
+        (
+            "New workflow declarations accept only the finite retry kinds",
+            "§14 must state the declaration vocabulary: only finite kinds are accepted, "
+            "and only a persisted legacy row keeps `indefinite`",
         ),
     ):
         assert phrase in retries, f"retries.md must say {phrase!r}: {why}"
