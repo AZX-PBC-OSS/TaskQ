@@ -203,6 +203,51 @@ def head_sha() -> str:
     return out.strip()
 
 
+def stale_head_sha() -> str | None:
+    """The stale-head fixture the evidence packs' REFUSAL arms need: the
+    repo's ROOT commit — an ancestor of HEAD whose diff carries the whole
+    tree's behavioral changes, so the head-stamp law's own off-by-one rule
+    can never call a claim recorded on it fresh.
+
+    ``None`` when THIS checkout cannot supply that shape; the caller must
+    SKIP its pin rather than assert a premise nothing here establishes.
+    The degenerate shapes, each measured:
+
+    * a single-commit history (``git clone --depth 1``) has the root AT
+      HEAD — nothing trails it, so the ``GITHUB_EVENT_PATH`` cross-check
+      ACCEPTS it and a refusal pin would accuse the verifier for the
+      fixture's own gap (and the content-door pin would green with the
+      neutralization removed — a guard that cannot fail);
+    * a git that cannot answer (no repo, a torn object store) offers no
+      sha to pin, and an import-time ``check=True`` would turn that into
+      a collection error naming no test;
+    * several roots (an unrelated-history merge) name no single ancestor;
+    * a root whose diff from HEAD is behavioral-free is FRESH under the
+      rule — :func:`source_changes_since` mirrors the verifier's diff
+      half, so a shared answer here would make the pin's own premise
+      disagree with the law it pins.
+
+    Full-history checkouts — every CI lane that collects the evidence
+    pins (all ``fetch-depth: 0``) — always resolve a sha here.
+    """
+    import subprocess
+
+    proc = subprocess.run(
+        ["git", "rev-list", "--max-parents=0", "HEAD"],
+        cwd=Path(__file__).parent.parent,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    roots = proc.stdout.split()
+    if proc.returncode != 0 or len(roots) != 1:
+        return None
+    root = roots[0]
+    if root == head_sha() or not source_changes_since(root):
+        return None
+    return root
+
+
 #: The provenance law's version marker — a sink record stamped with this
 #: law carries fully-cited entries (run + capture path + sha256); the
 #: guard verifies every record stamped with it and grandfathered NOTHING
