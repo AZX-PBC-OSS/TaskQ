@@ -276,16 +276,22 @@ async def test_inner_timeout_cancels_and_awaits_all_step_tasks_before_teardown(
 
     async def injected_step(
         self: FlowRunner,
-        flow: Any,
+        flow_id: Any,
         row: asyncpg.Record,
         *,
         attempt: int,
         claim_epoch: int,
+        run_priority: int | None = None,
     ) -> Any:
         nonlocal record_calls
         if row["step_key"] != "record":
             return await _REAL_RUN_CLAIMED_STEP(
-                self, flow, row, attempt=attempt, claim_epoch=claim_epoch
+                self,
+                flow_id,
+                row,
+                attempt=attempt,
+                claim_epoch=claim_epoch,
+                run_priority=run_priority,
             )
         record_calls += 1
         call_index = record_calls
@@ -404,16 +410,22 @@ async def test_claimed_step_failure_cancels_and_awaits_sibling_tasks(
 
     async def injected_step(
         self: FlowRunner,
-        flow: Any,
+        flow_id: Any,
         row: asyncpg.Record,
         *,
         attempt: int,
         claim_epoch: int,
+        run_priority: int | None = None,
     ) -> Any:
         nonlocal record_calls
         if row["step_key"] != "record":
             return await _REAL_RUN_CLAIMED_STEP(
-                self, flow, row, attempt=attempt, claim_epoch=claim_epoch
+                self,
+                flow_id,
+                row,
+                attempt=attempt,
+                claim_epoch=claim_epoch,
+                run_priority=run_priority,
             )
         record_calls += 1
         if record_calls == 1:
@@ -486,11 +498,12 @@ async def test_both_pods_share_every_claimed_page(
 
     async def gated_step(
         self: FlowRunner,
-        flow: Any,
+        flow_id: Any,
         row: dict[str, Any],
         *,
         attempt: int,
         claim_epoch: int,
+        run_priority: int | None = None,
     ) -> Any:
         # Hold every record batch until both pods hold record work. The
         # claiming pod is awaiting its own batch, so a whole-page claim keeps
@@ -499,7 +512,12 @@ async def test_both_pods_share_every_claimed_page(
         if row["step_key"] == "record":
             await asyncio.wait_for(both_pods_claimed.wait(), timeout=_SECOND_POD_CLAIM_DEADLINE_S)
         return await _REAL_RUN_CLAIMED_STEP(
-            self, flow, row, attempt=attempt, claim_epoch=claim_epoch
+            self,
+            flow_id,
+            row,
+            attempt=attempt,
+            claim_epoch=claim_epoch,
+            run_priority=run_priority,
         )
 
     monkeypatch.setattr(Pod, "claim", spying_claim)
