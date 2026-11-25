@@ -155,11 +155,23 @@ async def _nested_count(
     )
 
 
-def _assert_one_writer(rows: list[asyncpg.Record], nested: list[str]) -> None:
+def _assert_one_writer(rows: list[asyncpg.Record], nested: list[str], flow_id: Any) -> None:
     for key in nested:
         found = [dict(r) for r in rows if r["step_key"] == key]
         assert len(found) == 1, f"the nested join {key!r} has one writer; got rows {found}"
         assert found[0]["status"] == "succeeded", found
+        # WHO wrote it: the fork keys parent-scoped
+        # (``wf:{flow}:{parent}:{join}``), the outbox drain keys bare
+        # (``wf:{join}``). Without this leg the in-process ordering is green
+        # under the defect too — the drain mints the row, the nested fork
+        # ADOPTS it, and the surplus collapses back to one.
+        parent = key.removesuffix(".join")
+        expected = f"wf:{flow_id}:{parent}:{key}"
+        assert found[0]["idempotency_key"] == expected, (
+            f"the nested join {key!r} must be written by its own source's fork "
+            f"(key {expected!r}); got {found[0]['idempotency_key']!r} — the "
+            f"unparented 'wf:{key}' is the outbox drain's key"
+        )
     pending = [dict(r) for r in rows if r["status"] == "pending"]
     assert pending == [], f"a terminal run holds no pending row; got {pending}"
 
@@ -216,7 +228,7 @@ async def test_a_late_drain_never_mints_a_second_nested_join_row(
     assert await runner.result(flow_id) == expected
     await real_drain(wf_pool, runner.wsql)  # the leader's late tick
 
-    _assert_one_writer(await _flow_rows(wf_conn, wf_schema, flow_id), nested)
+    _assert_one_writer(await _flow_rows(wf_conn, wf_schema, flow_id), nested, flow_id)
 
 
 @pytest.mark.parametrize("shape", SHAPES)
@@ -224,8 +236,14 @@ async def test_the_in_process_drive_keeps_one_nested_join_row(
     shape: str, wf_pool: asyncpg.Pool, wf_schema: str, wf_conn: asyncpg.Connection
 ) -> None:
     """The in-process ordering (the drain runs at the end of every tick,
-    before the outer join is claimed): the same law — one row per nested
-    join, nothing pending, the right answer."""
+    before the outer join is claimed): one row per nested join, nothing
+    pending, the right answer — and the row is the FORK'S (the parent-scoped
+    idempotency key), never the drain's bare one.
+
+    That last leg is what makes the arm deletion-sensitive: under the #745
+    defect this ordering is green on every other assertion, because the drain
+    mints the nested join first and the nested fork ADOPTS it, collapsing the
+    surplus back to one row."""
     app = WorkflowApp()
     nested, expected = _wire(app, shape)
     runner = FlowRunner(app.get(f"map_on_{shape}_join"), wf_pool, wf_schema)
@@ -234,7 +252,7 @@ async def test_the_in_process_drive_keeps_one_nested_join_row(
     assert await runner.result(flow_id) == expected
     await sweep_module.drain_outbox(wf_pool, runner.wsql)
 
-    _assert_one_writer(await _flow_rows(wf_conn, wf_schema, flow_id), nested)
+    _assert_one_writer(await _flow_rows(wf_conn, wf_schema, flow_id), nested, flow_id)
 
 
 @pytest.mark.parametrize("shape", ["map", "route"])
@@ -276,7 +294,7 @@ async def test_an_early_drain_never_creates_the_nested_join_before_its_fork(
 
     assert await runner.drive(flow_id) == "terminal"
     assert await runner.result(flow_id) == expected
-    _assert_one_writer(await _flow_rows(wf_conn, wf_schema, flow_id), nested)
+    _assert_one_writer(await _flow_rows(wf_conn, wf_schema, flow_id), nested, flow_id)
 
 
 @pytest.mark.parametrize("shape", SHAPES)

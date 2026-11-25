@@ -618,7 +618,7 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
     ) -> None:
         for key in sorted(self.compiled.nodes):
             node = self.compiled.nodes[key]
-            if node.kind == "map_join":
+            if node.is_fork_spawned_join:
                 continue  # spawned by the source's fork
             # The map-join's downstream is a static row: every
             # non-join node is inserted upfront — a node whose parent is
@@ -720,7 +720,7 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
         # The edges in a second pass (both endpoints exist).
         for key in sorted(self.compiled.nodes):
             node = self.compiled.nodes[key]
-            if node.kind == "map_join":
+            if node.is_fork_spawned_join:
                 continue
             for parent_key in node.parents:
                 parent_node = self.compiled.nodes.get(parent_key)
@@ -733,7 +733,7 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
                 if child_row is None:
                     continue  # the fork's outbox writes these edges at fire
                 if parent_row is None:
-                    if parent_node is not None and parent_node.kind == "map_join":
+                    if parent_node is not None and parent_node.is_fork_spawned_join:
                         # the map JOIN'S edge — the fork writes the edge row at
                         # the source's finalize . The counter is reserved now:
                         # the consumer can never dispatch before the join's
@@ -2556,7 +2556,7 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
             for downstream in sorted(self.compiled.nodes)
             if join_key in self.compiled.nodes[downstream].parents
             # a map on this join: its join is the nested fork's own row (#745)
-            and self.compiled.nodes[downstream].kind != "map_join"
+            and not self.compiled.nodes[downstream].is_fork_spawned_join
         )
         return ForkSpec(
             children=tuple(
@@ -2636,6 +2636,13 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
         row NAMES its arm), the arm's placement (R4: the per-arm
         actor/queue), and the element's jsonb under the item key (the
         arm body's declared param type is the decode's target — R3).
+
+        The join's consumers are the wiring's downstream nodes (the outbox
+        carries the consumer bindings — the cascade fix), EXCEPT a nested
+        map's join, which its own fork writes (#745): naming it here would
+        put a binding for the nested join on the outer join's fire, and the
+        drain would mint a second row for one step key. ``_map_fork``'s
+        comprehension carries the same exclusion — change both or neither.
 
         LOUD DOOR (R1 — the skip-silent shape is DEAD): an element
         whose type has no arm raises :class:`RouterNotTotal` before any
@@ -2738,7 +2745,7 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
             for downstream in sorted(self.compiled.nodes)
             if join_key in self.compiled.nodes[downstream].parents
             # a map on this join: its join is the nested fork's own row (#745)
-            and self.compiled.nodes[downstream].kind != "map_join"
+            and not self.compiled.nodes[downstream].is_fork_spawned_join
         )
         children: list[ChildSpec] = []
         for i, element in enumerate(items):
