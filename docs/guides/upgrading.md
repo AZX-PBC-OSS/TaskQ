@@ -2015,10 +2015,41 @@ WHERE n.metadata ? 'flow_id'
   AND (r.id IS NULL OR r.status NOT IN ('pending', 'scheduled', 'running'));
 ```
 
-Cancel each one with `taskq job cancel <id>`. The row goes straight to
-`cancelled`; the root keeps its status and the run's result does not
-change. `taskq flows list` then shows the run as `cancelled
-root=succeeded` instead of `pending root=succeeded`.
+`taskq job cancel <id>` is the record-only repair, and its cost has to be
+stated plainly: the row goes to `cancelled`, the root keeps its status and
+the run's result does not change, but every surface that derives the run's
+status from its rows — `taskq flows list`, the headline of `taskq flows
+status`, the admin run page — then reports the successful run as
+`cancelled`, permanently. The maintenance leg only re-derives a root that
+is still `running`, so nothing ever reconciles a terminal root from its
+rows again, and the estate's status-truth check (a `succeeded` root must
+derive `complete`) keeps flagging the run.
+
+Remove the row instead. A second row is a pure orphan: no edge row names
+it as child or parent, no step-ledger row records a claim for it, and no
+consumer belongs to it. The statement below deletes one only when every
+one of those facts holds and the row is still `pending` under the drain's
+own key — a real join row has its source's edge and a claim history, so it
+can never match:
+
+```sql
+DELETE FROM jobs n
+WHERE n.step_key LIKE '%.join.join'
+  AND n.idempotency_key = 'wf:' || n.step_key
+  AND n.status = 'pending'
+  AND NOT EXISTS (
+    SELECT 1 FROM wf_edge e
+    WHERE e.child_id = n.id OR e.parent_id = n.id
+  )
+  AND NOT EXISTS (
+    SELECT 1 FROM wf_step_ledger l
+    WHERE l.job_id = n.id
+  );
+```
+
+The run's rows then derive `complete` under its `succeeded` root, so the
+root's status, the run's result and every rows-derived surface agree.
+Re-run the first query to confirm it no longer selects the run.
 
 The second finds second rows that ran before the nested fork and were then
 adopted by it:
@@ -2079,6 +2110,16 @@ WHERE n.metadata ? 'flow_id'
 If `root_status` is `running`, stop the run with
 `taskq flows cancel <run_id>` (it stays on the list). Whatever its status,
 treat the run's result as suspect and re-run it.
+
+A fourth shape is not a repair case, so none of the queries selects it. If
+the drain's second row had already run (or was still running) when the
+nested fork reached it, the fork now refuses to adopt it and writes its own
+row: the run completes with the right result, and the leftover row sits
+`succeeded` with `deps_pending = 0` — debris, not a wrong answer, and
+invisible to the three queries above because a never-adopted row's counter
+never drains. The refusal is recorded as a
+`wf-fork-join-adoption-skipped` log event naming the run, the step key and
+the leftover row.
 
 ---
 
