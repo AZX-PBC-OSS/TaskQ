@@ -181,13 +181,7 @@ async def insert_fork(
             flow_id,
         )
         if join_row is not None and join_row["status"] == "pending":
-            join_id = JobId(join_row["id"])
-            logger.debug(
-                "wf-fork-join-adopted",
-                flow_id=str(flow_id),
-                step_key=fork.join.step_key,
-                existing_job_id=str(join_id),
-            )
+            candidate = JobId(join_row["id"])
             # The counter is a COUNT of unterminal parents (a smallint, never
             # the widened record identity), and the pre-created join already
             # carries its own source edge's weight: the adoption adds the
@@ -216,11 +210,17 @@ async def insert_fork(
                 reservations=fork.join.reservations,
             )
             join_doc.pop("flow_id", None)
-            await conn.execute(
+            # The status leg repeats the probe's guard INSIDE the write: a
+            # worker can claim the pending row between the SELECT and this
+            # UPDATE, and adopting it after the claim would leave the
+            # consumers' reserved deps unreleased exactly as adopting a
+            # finished row would. Zero rows RETURNING = lost that race.
+            adopted = await conn.fetchval(
                 f"UPDATE {wsql.schema}.jobs "  # noqa: S608  # Why: the schema is the bundle's validated identifier; every value is a bound parameter.
                 "SET deps_pending = deps_pending + $1, "
                 "metadata = jsonb_set(metadata || $2::jsonb, '{consumers}', $3::jsonb, true) "
-                "WHERE id = $4",
+                "WHERE id = $4 AND status = 'pending' "
+                "RETURNING id",
                 len(children),
                 _jsonb(join_doc),
                 _jsonb(
@@ -229,23 +229,45 @@ async def insert_fork(
                     ).get("consumers")
                     or []
                 ),
-                join_id,
+                candidate,
             )
-        else:
-            if join_row is not None:
-                # The row exists and has already run (or is running): adopting
-                # it would leave every consumer's reserved dep unreleased —
-                # the wedge the old status-less probe caused. The residue is
-                # otherwise invisible to the upgrade detectors (a
-                # never-adopted row has deps_pending = 0), so this is the one
-                # place it is reported from the system's own records.
+            if adopted is not None:
+                join_id = JobId(adopted)
+                logger.debug(
+                    "wf-fork-join-adopted",
+                    flow_id=str(flow_id),
+                    step_key=fork.join.step_key,
+                    existing_job_id=str(join_id),
+                )
+            else:
+                concurrent_status = await conn.fetchval(
+                    f"SELECT status FROM {wsql.schema}.jobs WHERE id = $1",  # noqa: S608  # Why: the schema is the bundle's validated identifier; the id is a bound parameter.
+                    candidate,
+                )
                 logger.warning(
                     "wf-fork-join-adoption-skipped",
                     flow_id=str(flow_id),
                     step_key=fork.join.step_key,
-                    existing_job_id=str(join_row["id"]),
-                    existing_status=str(join_row["status"]),
+                    existing_job_id=str(candidate),
+                    existing_status=(
+                        str(concurrent_status) if concurrent_status is not None else "missing"
+                    ),
                 )
+        elif join_row is not None:
+            # The row exists and has already run (or is running): adopting
+            # it would leave every consumer's reserved dep unreleased —
+            # the wedge the old status-less probe caused. The residue is
+            # otherwise invisible to the upgrade detectors (a
+            # never-adopted row has deps_pending = 0), so this is the one
+            # place it is reported from the system's own records.
+            logger.warning(
+                "wf-fork-join-adoption-skipped",
+                flow_id=str(flow_id),
+                step_key=fork.join.step_key,
+                existing_job_id=str(join_row["id"]),
+                existing_status=str(join_row["status"]),
+            )
+        if join_id is None:
             join_id = JobId(new_uuid())
             await conn.execute(
                 wsql.fork_join_node,

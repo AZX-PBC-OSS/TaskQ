@@ -36,10 +36,8 @@ from typing import Any
 
 import asyncpg
 import pytest
-from pydantic import BaseModel
 
 import taskq.workflows._sweep as sweep_module
-from taskq.testing.fixtures import ModulePgSchema
 from taskq.workflows import (
     FlowRunner,
     Promise,
@@ -62,10 +60,6 @@ pytestmark = pytest.mark.integration
 
 GUIDE = Path(__file__).resolve().parents[1] / "docs" / "guides" / "upgrading.md"
 SECTION = "### A map on another fan-out's join: the nested join has one row"
-
-
-class Img(BaseModel):
-    n: int
 
 
 async def seeds(ctx: StepContext) -> list[dict[str, int]]:
@@ -146,6 +140,62 @@ def _listed(rows: list[asyncpg.Record], root_status: str) -> str:
         ]
     )
     return line[1].replace("00000000-0000-0000-0000-000000000000", "")
+
+
+async def _step_rows(
+    conn: asyncpg.Connection, schema: str, flow_id: Any, step_key: str
+) -> list[dict[str, Any]]:
+    return [
+        dict(r)
+        for r in await conn.fetch(
+            f'SELECT id, status, deps_pending, idempotency_key FROM "{schema}".jobs '
+            "WHERE (metadata->>'flow_id')::uuid = $1 AND step_key = $2 ORDER BY id",
+            flow_id,
+            step_key,
+        )
+    ]
+
+
+async def _live_drain_state(
+    wf_pool: asyncpg.Pool,
+    wf_conn: asyncpg.Connection,
+    wf_schema: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> tuple[FlowRunner, Any, dict[str, Any]]:
+    """A LIVE run holding a pending drain-minted nested-join row — the state
+    the removal must never touch. Returns (runner, flow_id, drain row)."""
+    app = WorkflowApp()
+    runner = FlowRunner(app.get(_wire(app)), wf_pool, wf_schema)
+    flow_id = (await runner.create_flow()).flow_id
+
+    real_drain = sweep_module.drain_outbox
+
+    async def _muted_drain(*_a: object, **_k: object) -> int:
+        return 0
+
+    # the source runs; stamp the pre-#745 binding before the outer join fires.
+    await runner.tick(flow_id)
+    await _forge_old_binding(runner, wf_conn, wf_schema, flow_id)
+
+    # hold the leader's drain back until the outer join has fired, so the
+    # nested join row can only come from the drain itself.
+    monkeypatch.setattr(sweep_module, "drain_outbox", _muted_drain)
+    for _ in range(50):
+        outer = await _step_rows(wf_conn, wf_schema, flow_id, "seeds.join")
+        if [r["status"] for r in outer] == ["pending"] and outer[0]["deps_pending"] == 0:
+            break
+        await runner.tick(flow_id)
+    else:
+        raise AssertionError("the outer join never fired")
+    assert await _root_status(wf_conn, wf_schema, flow_id) == "running"
+
+    monkeypatch.setattr(sweep_module, "drain_outbox", real_drain)
+    await real_drain(wf_pool, runner.wsql)
+    drained = await _step_rows(wf_conn, wf_schema, flow_id, "seeds.join.join")
+    assert [r["idempotency_key"] for r in drained] == ["wf:seeds.join.join"], drained
+    assert drained[0]["status"] == "pending", drained
+    assert await _root_status(wf_conn, wf_schema, flow_id) == "running"
+    return runner, flow_id, drained[0]
 
 
 async def _root_status(conn: asyncpg.Connection, schema: str, flow_id: Any) -> str:
@@ -239,7 +289,6 @@ async def test_the_detector_selects_the_surplus_row_and_the_guarded_removal_rest
     wf_pool: asyncpg.Pool,
     wf_conn: asyncpg.Connection,
     wf_schema: str,
-    module_pg_schema: ModulePgSchema,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     await wf_conn.execute(f'SET search_path TO "{wf_schema}"')
@@ -266,7 +315,6 @@ async def test_the_detector_selects_the_surplus_row_and_the_guarded_removal_rest
     # ── the removal is a pure-orphan delete: exactly one row ──────────────
     deleted = await wf_conn.execute(removal)
     assert deleted == "DELETE 1", deleted
-    await wf_conn.execute(f'SET search_path TO "{wf_schema}"')
 
     after = await _rows(wf_conn, wf_schema, flow_id)
     assert [r["id"] for r in after if str(r["id"]) == str(drain_row["id"])] == [], (
@@ -284,6 +332,37 @@ async def test_the_detector_selects_the_surplus_row_and_the_guarded_removal_rest
     assert "root=succeeded" in after_line, after_line
     # detector 1 no longer selects the run (the guide's confirmation step).
     assert [dict(r) for r in await wf_conn.fetch(detectors[0])] == []
+
+
+async def test_the_removal_never_deletes_a_live_runs_pending_drain_row(
+    wf_pool: asyncpg.Pool,
+    wf_conn: asyncpg.Connection,
+    wf_schema: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The removal's root guard, in the direction that matters most: a
+    ``pending`` drain-minted row on a LIVE run — the row a worker may be
+    about to claim, and the row a nested fork may still adopt — is never
+    deleted. Only a finished or pruned run's row is repair material."""
+    await wf_conn.execute(f'SET search_path TO "{wf_schema}"')
+    detectors, removal = _statements()
+
+    runner, flow_id, drained = await _live_drain_state(wf_pool, wf_conn, wf_schema, monkeypatch)
+    assert await _root_status(wf_conn, wf_schema, flow_id) == "running"
+    # detector 1 already excludes a live run; the removal must agree with it.
+    assert [dict(r) for r in await wf_conn.fetch(detectors[0])] == []
+
+    assert await wf_conn.execute(removal) == "DELETE 0"
+    still = await _step_rows(wf_conn, wf_schema, flow_id, "seeds.join.join")
+    assert [(r["id"], r["status"]) for r in still] == [(drained["id"], "pending")], still
+
+    # and the run is left to finish: its nested fork adopts that pending row
+    # (the supported compatibility path), so refusing the delete lost nothing.
+    assert await runner.drive(flow_id) == "terminal"
+    assert await runner.result(flow_id) == 10
+    nested = await _step_rows(wf_conn, wf_schema, flow_id, "seeds.join.join")
+    assert [(r["id"], r["status"]) for r in nested] == [(drained["id"], "succeeded")], nested
+    assert await reconstruct_workflow_status(wf_conn, runner.wsql, flow_id) == "complete"
 
 
 async def test_the_detectors_and_the_removal_select_nothing_on_a_healthy_run(
@@ -306,5 +385,4 @@ async def test_the_detectors_and_the_removal_select_nothing_on_a_healthy_run(
         rows = await wf_conn.fetch(statement)
         assert [dict(r) for r in rows] == [], f"detector {i} selected a healthy run: {rows}"
     assert await wf_conn.execute(removal) == "DELETE 0"
-    await wf_conn.execute(f'SET search_path TO "{wf_schema}"')
     assert await reconstruct_workflow_status(wf_conn, runner.wsql, flow_id) == "complete"

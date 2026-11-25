@@ -2028,15 +2028,23 @@ derive `complete`) keeps flagging the run.
 Remove the row instead. A second row is a pure orphan: no edge row names
 it as child or parent, no step-ledger row records a claim for it, and no
 consumer belongs to it. The statement below deletes one only when every
-one of those facts holds and the row is still `pending` under the drain's
-own key — a real join row has its source's edge and a claim history, so it
-can never match:
+one of those facts holds, the row is still `pending` under the drain's own
+key, and the run it belongs to is finished or pruned — never a live run's
+fresh drain row. A real join row has its source's edge and a claim
+history, so it can never match:
 
 ```sql
 DELETE FROM jobs n
-WHERE n.step_key LIKE '%.join.join'
+WHERE n.metadata ? 'flow_id'
+  AND n.step_key LIKE '%.join.join'
   AND n.idempotency_key = 'wf:' || n.step_key
   AND n.status = 'pending'
+  AND NOT EXISTS (
+    SELECT 1 FROM jobs r
+    WHERE r.id = (n.metadata->>'flow_id')::uuid
+      AND r.step_key = '__flow__'
+      AND r.status IN ('pending', 'scheduled', 'running')
+  )
   AND NOT EXISTS (
     SELECT 1 FROM wf_edge e
     WHERE e.child_id = n.id OR e.parent_id = n.id
@@ -2116,8 +2124,8 @@ the drain's second row had already run (or was still running) when the
 nested fork reached it, the fork now refuses to adopt it and writes its own
 row: the run completes with the right result, and the leftover row sits
 `succeeded` with `deps_pending = 0` — debris, not a wrong answer, and
-invisible to the three queries above because a never-adopted row's counter
-never drains. The refusal is recorded as a
+invisible to the three queries above because a never-adopted row keeps
+`deps_pending = 0`. The refusal is recorded as a
 `wf-fork-join-adoption-skipped` log event naming the run, the step key and
 the leftover row.
 

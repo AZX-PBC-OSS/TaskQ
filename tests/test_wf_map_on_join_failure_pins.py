@@ -5,9 +5,10 @@
 (one writer per nested join, nothing pending). Nothing there makes a step
 fail, and the failure path is where the topology's one novel row shape
 lives: the post-map step (``final``) is a STATIC row whose dep is *reserved*
-without an edge (``_runner.py::_insert_static_nodes``'s ``parent_node.kind
-== "map_join"`` branch), and the edge that releases it is written only when
-the NESTED fork runs (``_fork.py::insert_fork``'s ``wsql.fork_consumer_edges``).
+without an edge (``_runner.py::_insert_static_nodes``'s
+``parent_node.is_fork_spawned_join`` branch), and the edge that releases it
+is written only when the NESTED fork runs
+(``_fork.py::insert_fork``'s ``wsql.fork_consumer_edges``).
 
 So between the consumer's birth and the nested fork's claim, ``final`` is
 ``pending`` with ``deps_pending = 1``, the bare ``join`` marker and ZERO edge
@@ -38,9 +39,13 @@ a wiring fault with a wiring remedy — while ``'flow_dead'`` is "the fence's
 record: the flow died and this join can never fire" with the retry-or-cancel
 remedy ``_cli.py::stuck_lines`` derives from it.
 
-``test_a_route_cannot_sit_on_a_join`` pins the build refusal that keeps a
-``map_join`` node out of every ROUTE's consumer set — the reason the #745
-predicate added to ``_route_fork`` cannot fire on any shape the DSL accepts.
+``test_a_route_cannot_sit_on_a_join`` pins the build refusal: a join node
+declares no body, so ``route()`` refuses to attach to one — a join can
+never be a ROUTE's source. The reverse placement is the one that exercises
+``_route_fork``: a ``map_source`` on a ROUTE's join makes that route's fork
+compute ``<route>.join``'s consumers, and the nested map's join must not be
+among them. ``tests/test_wf_map_on_join_pins.py``'s ``route`` arm drives
+exactly that shape.
 """
 
 from __future__ import annotations
@@ -204,10 +209,11 @@ async def test_a_successful_nested_map_leaves_no_orphan_parent_stamp(
 
 
 def test_a_route_cannot_sit_on_a_join() -> None:
-    """The refusal that makes ``_route_fork``'s #745 predicate unreachable:
-    a join node declares no body, so ``_attach_route`` refuses it. Only a
-    ``map_source`` can be placed on a join, so only ``_map_fork``'s consumer
-    comprehension can ever name a ``map_join`` node."""
+    """A join node declares no body, so ``route()`` refuses to attach to it:
+    a fan-out's join can never be a ROUTE's source. The reverse placement —
+    a ``map_source`` on a route's join — is the shape that exercises
+    ``_route_fork``'s consumer filter: that route's fork builds the join's
+    consumers and must not name the nested map's join."""
     app = WorkflowApp()
 
     @app.workflow("route_on_join_refused")
