@@ -26,6 +26,7 @@ fresh on-disk terminal) stays GREEN.
 from __future__ import annotations
 
 import json
+import os
 import subprocess  # Why: the verifier's verdict is its exit code — the script is the subject (the pin's own shape).
 import sys
 from pathlib import Path
@@ -70,9 +71,14 @@ def _estate(tmp_path: Path, claims: list[dict[str, str]], ghosts: tuple[str, ...
 
 
 def _verify(runs: Path) -> subprocess.CompletedProcess[str]:
+    # The ambient GITHUB_EVENT_PATH is neutralized (the control: a CI
+    # pull_request payload must not forge the verifier's head — the
+    # synthetic estate's verdict belongs to THIS checkout's HEAD alone).
+    env = {**os.environ, "GITHUB_EVENT_PATH": ""}
     return subprocess.run(  # noqa: S603  # Why: the interpreter is sys.executable, the script is the repo's own verifier; fixed argv, no shell.
         [sys.executable, str(_VERIFIER), "--runs-dir", str(runs)],
         cwd=_REPO,
+        env=env,
         capture_output=True,
         text=True,
         check=False,
@@ -243,3 +249,30 @@ def test_the_cited_import_terminal_is_history_by_declaration(tmp_path: Path, gho
             + proc.stdout
             + proc.stderr
         )
+
+
+def test_verify_ignores_ambient_github_event_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Synthetic estate verification must not inherit an ambient CI
+    ``GITHUB_EVENT_PATH`` whose pull-request head trails HEAD with source
+    changes: the verifier's env cross-check would refuse the run before
+    reading ``--runs-dir``."""
+    event_file = tmp_path / "pr-event.json"
+    event_file.write_text(json.dumps({"pull_request": {"head": {"sha": _STALE_SHA}}}))
+    monkeypatch.setenv("GITHUB_EVENT_PATH", str(event_file))
+    runs = _estate(
+        tmp_path,
+        [
+            _e("honest", "h1.txt", HEAD, "t0", superseded_by="runs/h2.txt"),
+            _e("honest-proof", "h2.txt", HEAD, "t1"),
+        ],
+    )
+    proc = _verify(runs)
+    assert proc.returncode == 0, (
+        "ambient GITHUB_EVENT_PATH must not fail synthetic estate verification:\n"
+        + proc.stdout
+        + proc.stderr
+    )
+    assert "THE ENV-FORGED HEAD" not in proc.stdout
+    assert "the head-stamp law holds" in proc.stdout

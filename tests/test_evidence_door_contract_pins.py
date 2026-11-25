@@ -8,13 +8,17 @@ the assertions stand as the permanent green guards.
 The method: every pin builds a SYNTHETIC ESTATE in
 a tmp dir (a ``runs/`` with a hand-written ``CLAIMS.json`` + the tampered
 capture) and runs the verifier as a subprocess against it
-(``--runs-dir``). Every claim is FRESH (``head_sha`` = the worktree's own
-``git rev-parse HEAD``) so the head-stamp law holds and only the door leg
-under pin can judge. The verifier's ``REPO`` is its own parent — the
-working tree's residue never enters.
+(``--runs-dir``). The scan-window, JSON and future-dated families'
+claims are FRESH (``head_sha`` = the worktree's own ``git rev-parse
+HEAD``) so the head-stamp law holds and only the door leg under pin can
+judge; the EMPTY REGISTRY family carries no claim at all, and the
+ENV-FORGED HEAD family is the deliberate exception — its claim carries
+the event's own sha, so the head-stamp leg IS the leg under pin there.
+The verifier's ``REPO`` is its own parent — the working tree's residue
+never enters.
 
-The pin families (every estate below exits rc=0 today; each was a
-shape the door once greened):
+The pin families (every estate below was a shape the pre-door verifier
+greened — each now exits rc=1, the rejection its pin asserts):
 
 * the SCAN WINDOW: ``_scan_window`` reads
   the whole capture — a red verdict (``1 failed, N passed``) sitting
@@ -35,8 +39,9 @@ shape the door once greened):
 * the ENV-FORGED HEAD: the verified
   head is the REPO'S own head (``git rev-parse HEAD``), env-
   influenceable never; the CI env face survives only under the
-  cross-check against the repo's own history (a sha the repo cannot
-  name never judges the estate).
+  cross-check against the repo's own history — neither a sha the repo
+  cannot name nor a valid ancestor whose diff carries behavioral
+  changes ever judges the estate, and there is no merge-ref escape.
 """
 
 from __future__ import annotations
@@ -48,11 +53,23 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 _REPO = Path(__file__).resolve().parents[1]
 _VERIFIER = _REPO / "scripts" / "verify_evidence_heads.py"
 
 #: A sha that exists nowhere in the repo (the forgery).
 _FORGED_SHA = "f" * 40
+
+#: A valid ancestor with behavioral source changes since: the pull-request
+#: head behind main that a merge-ref escape would wrongly trust.
+_STALE_SHA = subprocess.run(  # Why: fixed argv, no shell; git resolves on the dev/CI path exactly as the repo's own scripts invoke it.
+    ["git", "rev-list", "--max-parents=0", "HEAD"],  # noqa: S607  # Why: as above.
+    cwd=_REPO,
+    capture_output=True,
+    text=True,
+    check=True,
+).stdout.strip()
 
 
 def _repo_head() -> str:
@@ -221,27 +238,37 @@ def test_d4_a_future_dated_capture_is_refused(tmp_path: Path) -> None:
 # ── the env-forged head ────────────────────────────────────────────
 
 
-def test_d5_the_verified_head_is_the_repos_own(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    "event_sha",
+    [_FORGED_SHA, _STALE_SHA],
+    ids=["unresolvable-forgery", "valid-stale-pr-head"],
+)
+def test_d5_the_verified_head_is_the_repos_own(tmp_path: Path, event_sha: str) -> None:
     """The verified head comes from the REPO (``git rev-parse HEAD``),
-    env-influenceable never — or the CI override is cross-checked against
-    the repo's own history. The estate: a green capture stamped with the
-    FORGED sha (a 40-hex string the repo cannot name), the event payload
-    carrying the same forgery — today the claim is "fresh" against the
-    forgery and greens. Under any fix the forgery cannot judge: env
-    ignored ⇒ the claim is stale at the repo's HEAD (the forged sha is
-    not an ancestor — the off-by-one rule's own red); env cross-checked ⇒
-    the unresolvable sha is refused."""
+    env-influenceable never: the CI override is cross-checked against the
+    repo's own history. The estate carries a green capture stamped with
+    the event's sha, so trusting either an unresolvable forgery or a valid
+    stale PR head would green through the merge-ref escape. The env face
+    is never trusted or silently ignored: both shapes are actively refused
+    before the estate can be judged."""
     runs_dir = tmp_path / "runs"
     _write_estate(
         runs_dir,
-        [_claim("d5-stem", "d5.txt", _FORGED_SHA, "2026-10-11T00:00:00")],
+        [_claim("d5-stem", "d5.txt", event_sha, "2026-10-11T00:00:00")],
         {"d5.txt": "run-scoped stamp: rc=0\n38 passed in 1.0s\n"},
     )
     payload = runs_dir / "forged-event.json"
-    payload.write_text(json.dumps({"pull_request": {"head": {"sha": _FORGED_SHA}}}))
+    payload.write_text(json.dumps({"pull_request": {"head": {"sha": event_sha}}}))
     output = _run_verifier(runs_dir, env_extra={"GITHUB_EVENT_PATH": str(payload)})
+    assert output.startswith("rc=1\n"), output
+    assert "THE ENV-FORGED HEAD" in output, (
+        "The verifier must actively refuse the forged env head; merely ignoring "
+        "the event and rejecting the stale claim would remove the cross-check. "
+        "The output:\n" + output
+    )
+    assert event_sha[:12] in output
     assert "the head-stamp law holds" not in output, (
-        "The verifier judged the estate against the FORGED head "
-        f"{_FORGED_SHA[:12]}… (the env payload's say-so) and GREENED — the "
+        "The verifier judged the estate against the env head "
+        f"{event_sha[:12]}… (the event payload's say-so) and GREENED — the "
         "repo's own HEAD was never consulted. The output:\n" + output
     )

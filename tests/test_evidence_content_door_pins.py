@@ -40,9 +40,12 @@ the verdict).
 from __future__ import annotations
 
 import json
+import os
 import subprocess  # Why: the verifier's verdict is its exit code — the script is the subject (the pin's own shape).
 import sys
 from pathlib import Path
+
+import pytest
 
 _REPO = Path(__file__).resolve().parent.parent
 _VERIFIER = _REPO / "scripts" / "verify_evidence_heads.py"
@@ -59,6 +62,17 @@ def _head() -> str:
 
 
 HEAD = _head()
+
+#: An ancestor head behind HEAD with behavioral source changes since: the
+#: shape a pull-request merge checkout carries in GITHUB_EVENT_PATH when the
+#: PR branch trails main.
+_STALE_SHA = subprocess.run(  # Why: fixed argv, no shell; git resolves on the dev/CI path exactly as the repo's own scripts invoke it.
+    ["git", "rev-list", "--max-parents=0", "HEAD"],  # noqa: S607  # Why: as above.
+    cwd=_REPO,
+    capture_output=True,
+    text=True,
+    check=True,
+).stdout.strip()
 
 #: The wf-battery capture's real shape (the rejected instance's own
 #: words): the run-scoped stamp with the rc, then the pytest tail. The
@@ -127,9 +141,14 @@ def _estate(tmp_path: Path, claims: list[dict[str, str]], bodies: dict[str, str]
 
 
 def _verify(runs: Path) -> subprocess.CompletedProcess[str]:
+    # The ambient GITHUB_EVENT_PATH is neutralized (the control: a CI
+    # pull_request payload must not forge the verifier's head — the
+    # synthetic estate's verdict belongs to THIS checkout's HEAD alone).
+    env = {**os.environ, "GITHUB_EVENT_PATH": ""}
     return subprocess.run(  # noqa: S603  # Why: the interpreter is sys.executable, the script is the repo's own verifier; fixed argv, no shell.
         [sys.executable, str(_VERIFIER), "--runs-dir", str(runs)],
         cwd=_REPO,
+        env=env,
         capture_output=True,
         text=True,
         check=False,
@@ -290,3 +309,28 @@ def test_the_chain_terminal_content_door(tmp_path: Path) -> None:
     assert proc.returncode == 1, "the chain's terminal must pass the content door too"
     assert "CONTENT-VERDICT MISMATCH" in proc.stdout
     assert "terminal.txt" in proc.stdout
+
+
+def test_verify_ignores_ambient_github_event_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Synthetic estate verification must not inherit an ambient CI
+    ``GITHUB_EVENT_PATH`` whose pull-request head trails HEAD with source
+    changes: the verifier's env cross-check would refuse the run before
+    reading ``--runs-dir``."""
+    event_file = tmp_path / "pr-event.json"
+    event_file.write_text(json.dumps({"pull_request": {"head": {"sha": _STALE_SHA}}}))
+    monkeypatch.setenv("GITHUB_EVENT_PATH", str(event_file))
+    runs = _estate(
+        tmp_path,
+        [_e("wf-battery", "green-cap.txt", "t0")],
+        {"green-cap.txt": _GREEN_CAPTURE.format(head=HEAD)},
+    )
+    proc = _verify(runs)
+    assert proc.returncode == 0, (
+        "ambient GITHUB_EVENT_PATH must not fail synthetic estate verification:\n"
+        + proc.stdout
+        + proc.stderr
+    )
+    assert "THE ENV-FORGED HEAD" not in proc.stdout
+    assert "the head-stamp law holds" in proc.stdout
