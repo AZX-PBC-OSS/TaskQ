@@ -139,10 +139,10 @@ pytestmark = pytest.mark.integration
 _TIMESCALE_IMAGE = (
     os.environ.get("TASKQ_TEST_TIMESCALEDB_IMAGE") or "timescale/timescaledb:2.30.1-pg18"
 )
-# The progress SSE bridge needs a real broker. redis:8.10.2 is the same
+# The progress SSE bridge needs a real broker. redis:8.10.3 is the same
 # current pin the compose stacks use; the pubsub contract it serves is the
 # same one Dragonfly (the suite's shared broker) implements.
-_REDIS_IMAGE = "redis:8.10.2"
+_REDIS_IMAGE = "redis:8.10.3"
 
 # Every seeded timestamp derives from this one instant, computed once at
 # module import: the differential requires both engines to seed

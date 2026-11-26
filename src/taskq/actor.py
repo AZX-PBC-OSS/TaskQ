@@ -46,7 +46,7 @@ import inspect
 import typing
 from collections.abc import Awaitable, Callable
 from datetime import timedelta
-from typing import TYPE_CHECKING, Concatenate, Protocol, get_type_hints, overload
+from typing import TYPE_CHECKING, Any, Concatenate, Protocol, cast, get_type_hints, overload
 
 import structlog
 from pydantic import BaseModel, TypeAdapter
@@ -790,7 +790,9 @@ def _build_ref[P: BaseModel, R: BaseModel | None](  # pyright: ignore[reportInva
         del dependencies[ctx_param_name]
 
     result_annotation = hints["return"]
-    result_adapter: TypeAdapter[R] = TypeAdapter(result_annotation)
+    # Why: Pydantic 2.14+ types TypeAdapter.__init__(type: TypeForm[T]);
+    # get_type_hints() yields a runtime annotation object at this reflection seam.
+    result_adapter: TypeAdapter[R] = TypeAdapter(cast(Any, result_annotation))
 
     actor_name = name or fn.__qualname__
 

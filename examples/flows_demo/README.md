@@ -41,7 +41,7 @@ A reachable Postgres 18 — the only service. The two-minute one:
 
 ```bash
 docker run -d --name taskq-flows-demo -p 5432:5432 \
-  -e POSTGRES_USER=taskq -e POSTGRES_PASSWORD=taskq -e POSTGRES_DB=taskq postgres:18.6
+  -e POSTGRES_USER=taskq -e POSTGRES_PASSWORD=taskq -e POSTGRES_DB=taskq postgres:18.7
 ```
 
 ## Run it

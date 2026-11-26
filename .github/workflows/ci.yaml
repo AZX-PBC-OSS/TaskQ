@@ -859,7 +859,7 @@ jobs:
           --health-timeout 5s
           --health-retries 20
       redis:
-        image: redis:8.10.2
+        image: redis:8.10.3
         ports:
           - 6379:6379
         options: >-

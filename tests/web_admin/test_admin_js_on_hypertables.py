@@ -106,7 +106,7 @@ _TIMESCALE_IMAGE = (
     os.environ.get("TASKQ_TEST_TIMESCALEDB_IMAGE") or "timescale/timescaledb:2.30.1-pg18"
 )
 # Same pin as test_admin_on_hypertables.py: the current compose-stack Redis.
-_REDIS_IMAGE = "redis:8.10.2"
+_REDIS_IMAGE = "redis:8.10.3"
 
 # Every seeded timestamp derives from this fixed instant (the differential
 # requires both engines to seed byte-identical rows).

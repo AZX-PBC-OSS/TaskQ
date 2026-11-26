@@ -530,7 +530,9 @@ def type_adapter_for(param: object) -> Any:
     seam)."""
     adapter = _TYPE_ADAPTERS.get(param)
     if adapter is None:
-        built: Any = TypeAdapter(param)  # pyright: ignore[reportUnknownVariableType]  # Why: TypeAdapter's generic for arbitrary annotations is partially unknown by construction; the cache is the seam.
+        built: Any = TypeAdapter(
+            cast(Any, param)
+        )  # Why: Pydantic 2.14+ types TypeAdapter.__init__(type: TypeForm[T]); runtime annotations from get_type_hints() cross this reflection seam as object.
         _TYPE_ADAPTERS[param] = built
         adapter = built
     return adapter
