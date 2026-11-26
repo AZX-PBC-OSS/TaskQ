@@ -70,8 +70,11 @@ and returns the CLOSED UNION member:
   ``cancel_workflow_run``'s extension);
 * ``Expired`` — the JOIN's own patience expired (the hold's deadline,
   armed by ``wait(timeout_s=…)``; the face fires once per abandoned row
-  per attempt — the hold→expire→re-hold→∞ dragon's kill site, the
-  amendment verbatim).
+  per EXECUTION — the hold→expire→re-hold→∞ dragon's kill site, the
+  amendment verbatim). The replay slot is one per node row and attempt,
+  not one per child: when one execution observes two expired children, a
+  deliberate re-wait on the FIRST replays ``Expired`` again instead of
+  minting a new hold.
 
 The wait returns
 ``ChildOutcome[M] | Expired`` — a body that matches only the ``ChildOk``
@@ -88,9 +91,14 @@ from typing import TYPE_CHECKING, Final, Protocol
 from pydantic import BaseModel
 
 from taskq._ids import new_uuid
-from taskq._json import dumps_jsonb_str
 from taskq.backend._protocol import ConnLike, JobId
-from taskq.workflows.api._ctx_wait import Expired, NodeHeldError
+from taskq.workflows.api._ctx_wait import (
+    Expired,
+    NodeHeldError,
+    read_claim_marker,
+    require_claim_epoch,
+    write_claim_marker,
+)
 from taskq.workflows.api._runner_codec import decode_result_with_detail
 from taskq.workflows.api._runner_errors import (
     WorkflowResultDetailUnavailableError,
@@ -292,7 +300,14 @@ class ChildHandle[G: BaseModel]:
         ``timeout_s=`` arms the hold's deadline (the DB clock): the
         expiry sweep abandons the hold, the body resumes, and THIS site
         returns the :class:`Expired` member once per abandoned row per
-        attempt (the face-marker pattern). ``None`` waits as long as the
+        EXECUTION (the face-marker pattern: the marker is scoped to the
+        executing claim, so a re-claim at a refunded attempt ordinal
+        replays the member instead of minting a second join hold). The
+        slot is one per node row and attempt, not one per child: two
+        expired children observed in one execution share it, so a
+        deliberate re-wait on the FIRST replays ``Expired`` again rather
+        than minting a new hold.
+        ``None`` waits as long as the
         child lives — safe by the cascade (a cancelled parent cancels
         its children, so no join outlives its flow).
 
@@ -323,10 +338,12 @@ class ChildHandle[G: BaseModel]:
                 if status == "cancelled":
                     return ChildCancelled(flow_id=str(self.flow_id))
 
-                    # the Expired member, once per abandoned row per attempt (the face
-            # marker). the door marker rides the read: the sweep's rows read
-            # 'timeout', the operator abandon's payload marker reads
-            # 'operator' (the same member either way — the fail-close).
+            # the Expired member, once per abandoned row per execution (the
+            # face marker, scoped to the executing claim; one slot per node
+            # row and attempt, shared by that execution's children). the
+            # door marker rides the read: the sweep's rows read 'timeout',
+            # the operator abandon's payload marker reads 'operator' (the
+            # same member either way — the fail-close).
             abandoned = await conn.fetchrow(
                 render_sql(
                     "SELECT id, hold_epoch, "
@@ -341,24 +358,43 @@ class ChildHandle[G: BaseModel]:
                 signal_name,
             )
             if abandoned is not None:
-                face_key = f"child_join_face_{site.attempt}"
-                face_seen = await conn.fetchval(
-                    render_sql(
-                        "SELECT (metadata ->> $2)::int FROM {schema}.jobs WHERE id = $1",
-                        site.wsql.schema,
-                    ),
-                    site.job_id,
-                    face_key,
+                # the face marker is claim-scoped (the same document the wait
+                # and timer cursors carry): this join's Expired is surfaced
+                # once per abandoned row per EXECUTION, so a deliberate second
+                # ``wait()`` under this claim re-holds while a re-claim after
+                # a ``Snooze`` / free ``RetryAfter`` (a refunded attempt
+                # ordinal, a new epoch) replays Expired instead of minting a
+                # second join hold. The slot is one per node row and attempt,
+                # NOT one per child: an execution that observes two expired
+                # children leaves the second child's ``hold_epoch`` in the
+                # slot, so a deliberate re-wait on the first replays Expired
+                # again instead of minting a new hold. The key is this site's
+                # own (per attempt, beside the legacy bare-integer
+                # ``child_join_face_*`` the previous release wrote, which now
+                # reads as no marker at all).
+                face_key = f"child_join_replay_{site.attempt}"
+                marker = await read_claim_marker(
+                    conn,
+                    schema=site.wsql.schema,
+                    job_id=site.job_id,
+                    key=face_key,
+                    claim_epoch=site.claim_epoch,
                 )
-                if face_seen != int(abandoned["hold_epoch"]):
-                    await conn.execute(
-                        render_sql(
-                            "UPDATE {schema}.jobs SET metadata = metadata || $2::jsonb "
-                            "WHERE id = $1",
-                            site.wsql.schema,
-                        ),
-                        site.job_id,
-                        dumps_jsonb_str({face_key: int(abandoned["hold_epoch"])}),
+                hold_epoch = int(abandoned["hold_epoch"])
+                if marker.get("hold_epoch") != hold_epoch:
+                    require_claim_epoch(
+                        "ChildHandle.wait",
+                        flow_id=site.flow_id,
+                        node_key=site.node_key,
+                        claim_epoch=site.claim_epoch,
+                    )
+                    await write_claim_marker(
+                        conn,
+                        schema=site.wsql.schema,
+                        job_id=site.job_id,
+                        key=face_key,
+                        claim_epoch=site.claim_epoch,
+                        marker={"hold_epoch": hold_epoch},
                     )
                     return Expired(
                         signal=signal_name,

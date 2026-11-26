@@ -580,6 +580,10 @@ _EXEMPT: dict[str, tuple[str, str]] = {
         "slot claim — the ATOMIC increment-and-return; the "
         "write set is the ONE row the attempt claims)",
     ),
+    "_CLAIM_MARKER_WRITE_SQL": (
+        "WHERE id = $1",
+        "keyed single node row (claim-scoped replay marker write, fenced forward-only on epoch)",
+    ),
     "_HOLD_AWAITED_LEDGER_SQL": (
         "WHERE id = $1",
         "keyed single ledger row (the wait's awaited stamp)",

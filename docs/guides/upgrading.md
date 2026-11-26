@@ -1510,6 +1510,48 @@ raises, so nothing points you at the call site; audit for them explicitly.
   attempt 1 without burning the retry budget. Rename the key
   (`f"item-{i}"`) or drop `key=` to use the slot.
 
+* **The wait, timer and child-join replay cursors move from attempt-keyed
+  metadata to claim-scoped ones.** A wait site used to stamp
+  `hold_cursor_{attempt}_{seq}` (signal waits),
+  `hold_cursor_{attempt}_{signal_name}` (timers) or
+  `child_join_face_{attempt}` (child joins) in `jobs.metadata`. It now writes
+  `hold_replay_signal_*`, `hold_replay_timer_*` or `child_join_replay_*`: the
+  same cursor, but carrying the executing claim's epoch so a `Snooze` /
+  `RetryAfter(consume_budget=False)` refund cannot replay a cursor written by
+  another execution. The legacy keys stay on every row, inert and
+  unmigrated — nothing reads them, and deleting them is not required (row
+  retention is the only reclaimer). A worker on the previous release reads no
+  key under the new names, so it derives its cursor as 0 and replays the
+  answer queue from its start: the rollback read direction is inert, not an
+  error.
+
+  Until the upgrade wave reaches every worker, a wait node CLAIMED by a
+  still-running pre-upgrade worker keeps the old behaviour (the executing
+  binary chooses the key family; the claim does not carry it). **Your
+  action:** either drain in-flight HITL runs before rolling, or accept one
+  duplicate hold on a re-claimed wait node in that window. **Rollback
+  caveat:** rolling back re-activates the pre-fix defect on the exact rows
+  this release fixes — a legacy `hold_cursor_*` stamp left mid-refund is read
+  again by the older worker and can mint a second hold, because nothing
+  clears it. **Detection:** the old cursor families mark a row the previous
+  release stamped —
+
+  ```sql
+  -- wait/timer/join rows still carrying the older release's cursor keys
+  SELECT id, step_key, status, metadata->>'flow_id' AS flow_id
+  FROM jobs
+  WHERE step_key <> '__flow__'
+    AND status IN ('pending', 'scheduled', 'running')
+    AND EXISTS (
+      SELECT 1 FROM jsonb_object_keys(metadata) AS k
+      WHERE starts_with(k, 'hold_cursor_')
+         OR starts_with(k, 'child_join_face_')
+    );
+  ```
+
+  A count of zero means no in-flight wait row carries the old keys. See the
+  wait, timer and child-join faces in [Workflows](workflows.md).
+
 ### Terminal outcome writes raise on drift instead of falling through silently
 
 > **Unreleased.** Backend implementors and test-twin drivers see a new

@@ -2021,7 +2021,8 @@ async def investigate(ctx: StepContext, params: Probe) -> Digest:
         case Expired():
             # THE JOIN'S OWN PATIENCE EXPIRED (`timeout_s=` arms the
             # hold's deadline — the DB clock; the face fires ONCE per
-            # abandoned hold per attempt).
+            # abandoned hold per EXECUTION — one replay slot per node
+            # row and attempt, shared by that execution's children).
             return Digest(verdict="expired")
 
 
@@ -2555,8 +2556,11 @@ single-payload form is the one-member overload.
 the body re-executes **FROM THE TOP** on resume — there is NO
 determinism requirement on the body; pre-wait side effects are
 `ctx.substep`-ledgered and replay cheap. The delivered holds are the
-node's ANSWER QUEUE: each attempt's wait sequence consumes them in
-epoch order (the per-attempt cursor) — a RETRY replays the answers (the
+node's ANSWER QUEUE: each execution's wait sequence consumes them in
+epoch order (the per-call cursor, scoped to the executing claim: a
+resume or a retry re-executes from the top and replays the answers in
+order, while a step that waits twice in one execution takes the next
+answer) — a RETRY replays the answers (the
 operator never re-answers); a wait past the queue's end registers a NEW
 hold (a NEW epoch — the multi-hold: the same signal name can hold
 again, the chained gate works because the waits are sequential).
@@ -2758,8 +2762,12 @@ is. The operator door's failure is the same shape one door over —
 `SignalAbandonedError` raised by the body off the `Expired` member
 whose `abandoned_by` reads `"operator"`. A deliberate re-wait — the
 body matched the expiry member and
-waits again within the same attempt — is a NEW body decision: it
-registers a NEW hold with a NEW epoch. The other timer policies
+waits again within the same execution — is a NEW body decision: it
+registers a NEW hold with a NEW epoch. The one exception is the child
+join, which keeps one replay slot per node row and attempt rather than
+one per child: an execution that has already observed two expired
+children replays `Expired` for a re-wait on the first instead of minting
+a new hold. The other timer policies
 (`resume_with_default` / the escalation arm on the TIMER) are recorded
 LATER for v1 (the don't-pay law): the body-level escape — match the
 `Expired` member, return the default / enqueue the escalation

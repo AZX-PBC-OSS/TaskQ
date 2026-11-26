@@ -9,6 +9,7 @@ from __future__ import annotations
 from typing import Final, Literal, get_args
 
 __all__ = [
+    "ClaimEpochMissingError",
     "DuplicateSubstepError",
     "RootMissingSeat",
     "VanishedNodeError",
@@ -66,6 +67,18 @@ class WorkflowRunCancelledError(WorkflowRunError):
         self.status = "cancelled"
         self.reason = reason
         super().__init__(f"run {flow_id} was cancelled" + (f": {reason}" if reason else ""))
+
+
+class ClaimEpochMissingError(WorkflowRunError):
+    """A wait site was handed ``claim_epoch`` 0 — the executing claim's
+    identity was never supplied. Both claim doors grant at least 1, so 0
+    names a wiring defect, not a transient condition: a re-run cannot
+    supply the epoch the door never granted, and every stored marker would
+    compare unequal to it, so the re-executed site would treat its
+    already-delivered answer as spent.
+
+    DETERMINISTIC BY CONSTRUCTION (the ladder's deterministic route — the
+    retry budget is never spent on it)."""
 
 
 class VanishedNodeError(WorkflowRunError):

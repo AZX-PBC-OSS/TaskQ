@@ -320,7 +320,7 @@ compile's version of over-rejection.**
 | `W2-join-for-progress` | warning | a join SUNK for display only — the DAG still blocks on it; declare the map's `aggregate=` fn instead |
 | `W3-eternal-loop` | warning | a loop with no `until=` and neither wall set (`max_iterations`/`budget_s`) — a loop that can never stop on its own; declare the bound explicitly |
 | `W4-gate-timeout-split` | warning | the double-sourced gate timeout cross-checked where it is cross-checkable: the `GateDecl.timeout_s` and the body's statically-readable literal wait `timeout_s=` DISAGREE — both values named in the message. The precedence: the WAIT SITE's value arms the runtime (the hold's expiry), the DECLARATION feeds the compile surfaces (the Mermaid face, W1) and never arms the runtime |
-| `W5-loop-wait-shape` | warning | the loop's shape law, NAMED (never prose): a LOOP body whose `wait_signal` sits in a conditional interior mis-indexes the answer cursor (the row's iteration counter IS the cursor — an iteration that does not wait drifts the sequence). The unconditional wait is the shape kept — a plain STEP's conditional wait is the per-attempt cursor's honest replay |
+| `W5-loop-wait-shape` | warning | the loop's shape law, NAMED (never prose): a LOOP body whose `wait_signal` sits in a conditional interior mis-indexes the answer cursor (the row's iteration counter IS the cursor — an iteration that does not wait drifts the sequence). The unconditional wait is the shape kept — a plain STEP's conditional wait is the claim-scoped cursor's honest replay |
 
 The report is ONE-PASS (tsc-style): every rule's verdict, not the first
 failure alone. The mutation matrix (each mutation flips exactly one
