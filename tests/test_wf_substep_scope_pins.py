@@ -256,8 +256,8 @@ async def test_concurrent_nodes_sharing_a_substep_name_get_separate_records(
     by_key = {r["step_key"]: r for r in claimable}
     assert set(by_key) == {"sa", "sb"}, by_key
     await asyncio.gather(
-        runner._run_node(flow_id, by_key["sa"]),  # pyright: ignore[reportPrivateUsage]  # Why: see above.
-        runner._run_node(flow_id, by_key["sb"]),  # pyright: ignore[reportPrivateUsage]  # Why: see above.
+        runner._run_node(flow_id, by_key["sa"], run_priority=None),  # pyright: ignore[reportPrivateUsage]  # Why: see above.
+        runner._run_node(flow_id, by_key["sb"], run_priority=None),  # pyright: ignore[reportPrivateUsage]  # Why: see above.
     )
     assert await runner.drive(flow_id) == "terminal"
     assert await runner.result(flow_id) == {"a": "A", "b": "B"}
@@ -649,7 +649,7 @@ async def test_a_substep_recorded_on_the_direct_driver_replays_on_the_fleet_door
     direct = FlowRunner(app.get("substep_scope_cross_driver"), wf_pool, wf_schema)
     flow_id = (await direct.create_flow()).flow_id
     [row] = await direct._claimable(flow_id)  # pyright: ignore[reportPrivateUsage]  # Why: one attempt on the direct door; drive() would run attempt 2 there too.
-    await direct._run_node(flow_id, row)  # pyright: ignore[reportPrivateUsage]  # Why: see above.
+    await direct._run_node(flow_id, row, run_priority=None)  # pyright: ignore[reportPrivateUsage]  # Why: see above.
     assert calls == ["v"], calls
     node = await _node_row(wf_conn, wf_schema, flow_id, "solo")
     assert (node["attempt"], node["status"]) == (1, "scheduled"), dict(node)

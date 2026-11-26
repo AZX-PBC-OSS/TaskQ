@@ -150,7 +150,7 @@ async def _spawn_and_hold(runner: FlowRunner, flow_id: JobId) -> None:
     pass)."""
     rows = await runner._claimable(flow_id)
     assert len(rows) == 1, f"expected exactly the spawn_join node, got {rows}"
-    await runner._run_node(flow_id, rows[0])
+    await runner._run_node(flow_id, rows[0], run_priority=None)
 
 
 async def _node_row(
@@ -497,7 +497,7 @@ class TestCrashMidWait:
         # lands.
         rows = await runner._claimable(flow_id)
         assert len(rows) == 1
-        await runner._run_node(flow_id, rows[0])
+        await runner._run_node(flow_id, rows[0], run_priority=None)
         finished = await _node_row(wf_conn, wf_schema, flow_id, "spawn_join")
         assert finished["status"] == "succeeded"
 

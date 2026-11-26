@@ -1747,6 +1747,26 @@ def _attach_route[S](
             "downstream cacheable step (its deterministic, "
             "addressable subwork) carry the cache=True"
         )
+    if source_node.loop_spec is not None:
+        # A loop node is a PARTIAL fork builder: the loop driver's success
+        # finalizes build the MAP fork only (``_map_fork``), and they never
+        # supply the route's ``prebuilt_route_fork`` — so a typed route
+        # attached to a ``loop()`` source would never build its arms or its
+        # join, the declared consumers would never be claimable, and the run
+        # could report success over a route that routed nothing. Refused
+        # explicitly (not incidentally by the source-body door below: a loop
+        # node declares ``loop_body``, never ``body``, and that is not the
+        # author's mistake). The alternatives are named.
+        raise WorkflowBuildError(
+            f"route's source {source.key!r} is a loop node — a typed route "
+            "cannot attach to a loop() source: the loop driver never builds "
+            "a route fork (its success finalizes fork a map's children "
+            "only), so the route's arms and join would never be created, "
+            "its consumers would never be claimable, and the run would "
+            "report success having routed nothing. Attach a CALLABLE map "
+            "to the loop node (map_source(loop_node, body)), or route the "
+            "loop's output from a downstream step"
+        )
     # The union members, resolved (the same resolution E5 and the codec
     # read — the resolved-hints seam; the actor handle unwrapped first).
     source_body = source_node.body

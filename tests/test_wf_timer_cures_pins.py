@@ -711,7 +711,7 @@ async def test_the_zombie_run_s_status_names_the_stranded_nodes(
     flow_id = (await runner.create_flow()).flow_id
     rows = await runner._claimable(flow_id)  # pyright: ignore[reportPrivateUsage]  # Why: the pin stops the driver mid-flow — the claim loop's seam is the behavior under test.
     assert [r["step_key"] for r in rows] == ["first"], rows
-    await runner._run_node(flow_id, rows[0])  # pyright: ignore[reportPrivateUsage]
+    await runner._run_node(flow_id, rows[0], run_priority=None)  # pyright: ignore[reportPrivateUsage]
 
     # the registry carries the new code ('second' renamed away) — the
     # versioning pins' own swap seam (a new process's registry holds only the

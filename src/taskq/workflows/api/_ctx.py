@@ -2,7 +2,9 @@
 concerns-separate law): :class:`StepContext` is the annotation every
 workflow body declares — bodies read ``ctx.input`` and run side effects
 through ``ctx.step`` (the ledger's replay contract), report progress
-through ``ctx.progress``, and stream pages through ``ctx.emit_batch``.
+through ``ctx.progress``, and stream pages through ``ctx.emit_batch``
+(step bodies only: a loop body carries no emit claim view — see
+:func:`build_step_context`).
 
 The wait/deliver face (``wait_signal``/``signal`` — the HITL machinery)
 lives in ``_ctx_wait`` and composes in; the DURABLE TIMER
@@ -62,9 +64,25 @@ def build_step_context(
     run_priority: int | None = None,
     loop_iteration: int | None = None,
 ) -> StepContext:
-    """The one context construction (the claim seam's factory): the
-    runner's step path and the loop driver's iteration path build the
-    same field set through here — the two call sites never drift."""
+    """The one context construction (the claim seam's factory). Both the
+    runner's step path and the loop driver's iteration path build through
+    here, but they supply DIFFERENT field sets — deliberately:
+
+    * the STEP path (:meth:`FlowRunner._execute_claimed_tail`) supplies
+      the full claim view — ``worker_id``, ``physical_attempt``,
+      ``map_index``, ``max_in_flight`` and the run's resolved
+      ``run_priority`` — so ``ctx.emit_batch`` is available: its cursor
+      checkpoint fences on the claim, and each child it materializes
+      carries the run's override;
+    * the LOOP path (:meth:`LoopOps._drive_loop`) supplies the loop's own
+      state, the queue and the budget read, but carries NO claim view:
+      ``worker_id``, ``physical_attempt`` (the context falls back to
+      ``attempt``), ``map_index``, ``max_in_flight`` and ``run_priority``
+      stay unset. A loop body therefore cannot page through
+      ``ctx.emit_batch`` — the guard refuses loudly ("without this node's
+      claim view") before a single child row is written. A loop-sourced
+      map's children are forked by the driver's success finalizes, which
+      resolve the run's stamp there, not here."""
     return StepContext(
         flow_id=flow_id,
         job_id=job_id,

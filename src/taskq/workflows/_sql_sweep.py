@@ -382,17 +382,22 @@ JOIN {schema}.jobs root ON root.id = w.flow_id
 OUTBOX_FETCH_UNDELIVERED_SQL = """\
 SELECT o.id, o.join_job_id, o.flow_id, o.consumer_step_key, o.map_index, o.bindings,
        -- The run-priority stamp's resolution (the priority surface's
-       -- drain leg): the flow root's stamped per-call override, resolved
-       -- with the fleet door's own arithmetic mirrored in SQL — the
-       -- regex and the domain bounds below are the shared constants the
-       -- Python face's resolve_priority_stamp parses with
-       -- (taskq.constants.PRIORITY_STAMP_INT_PATTERN, SMALLINT_MIN/MAX;
-       -- unparseable or out-of-smallint-domain → NO override) and
-       -- COALESCEd to the column default's own value (0 — the unset
-       -- case binds the column default's own value, the pre-fix
-       -- byte-identical row). The escalation is an interactive run's
-       -- most latency-sensitive follow-up: its consumer row materializes
-       -- at the RUN's priority, never the default.
+       -- drain leg): the flow root's stamped per-call override. Python's
+       -- resolve_priority_stamp is the CONSUMER's authority (see
+       -- _sweep._outbox_priority: it resolves the stamp below first, and
+       -- this column is only a later fallback, behind the binding's own
+       -- declaration); this SQL is a second, narrower face. The regex
+       -- applied here is the shared
+       -- PRIORITY_STAMP_INT_PATTERN, while the Python face parses with
+       -- int() — a STRICT SUPERSET of the regex's accept set (int()
+       -- also takes surrounding whitespace, underscores, and non-ASCII
+       -- digits). So this CASE can resolve nothing where Python resolves
+       -- a value; the bounds are the shared SMALLINT_MIN/MAX. Unparseable
+       -- or out-of-smallint-domain → the COALESCEd column default (0 —
+       -- the unset case binds the column default's own value, the
+       -- pre-fix byte-identical row). The escalation is an interactive
+       -- run's most latency-sensitive follow-up: its consumer row
+       -- materializes at the RUN's priority, never the default.
        COALESCE(
            CASE
              WHEN root.metadata->>'wf_priority' ~ '{priority_stamp_int_pattern}'

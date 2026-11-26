@@ -582,7 +582,7 @@ async def test_flows_status_surfaces_the_version_drift(
     flow_id = (await runner.create_flow()).flow_id
     rows = await runner._claimable(flow_id)  # pyright: ignore[reportPrivateUsage]  # Why: the versioning pins' mid-flow stop seam — the claim loop's seam is the behavior under test.
     assert [r["step_key"] for r in rows] == ["first"], rows
-    await runner._run_node(flow_id, rows[0])  # pyright: ignore[reportPrivateUsage]  # Why: as above.
+    await runner._run_node(flow_id, rows[0], run_priority=None)  # pyright: ignore[reportPrivateUsage]  # Why: as above.
     # 'second' resolves to v2 from here on.
     _install_registry(name, {"first": _t5_first_v1, "second": _t5_second_v2})
     outcome = await runner.drive(flow_id)
@@ -641,7 +641,7 @@ async def test_a_vanished_node_key_terminal_fails_loudly(
     flow_id = (await runner.create_flow()).flow_id
     rows = await runner._claimable(flow_id)  # pyright: ignore[reportPrivateUsage]  # Why: the versioning pins' mid-flow stop seam.
     assert [r["step_key"] for r in rows] == ["first"], rows
-    await runner._run_node(flow_id, rows[0])  # pyright: ignore[reportPrivateUsage]  # Why: as above — 'first' terminal-succeeds, 'second' pends.
+    await runner._run_node(flow_id, rows[0], run_priority=None)  # pyright: ignore[reportPrivateUsage]  # Why: as above — 'first' terminal-succeeds, 'second' pends.
 
     # the registry and the compiled graph carry 'renamed', never 'second'.
     _install_registry(name, {"first": _t6_first, "renamed": _t6_renamed})

@@ -182,6 +182,23 @@ __all__ = ["FlowRunner", "StepContext", "VanishedNodeError", "WorkflowRunError"]
 logger: structlog.stdlib.BoundLogger = get_logger(__name__)
 
 
+class _UnsetPriority:
+    """Sentinel for :meth:`FlowRunner.tick`'s unresolved ``run_priority``.
+
+    ``None`` is a REAL resolved value (the run stamps no override), so the
+    two cannot share a default: ``drive`` resolves the stamp once per run
+    and passes it — ``None`` included — while a direct ``tick(flow_id)``
+    omits the argument and resolves the run's own stamp inside the tick.
+    Without the sentinel every tick of an un-overridden run would repeat
+    that primary-key read.
+    """
+
+    __slots__ = ()
+
+
+_UNSET_PRIORITY = _UnsetPriority()
+
+
 def _bounded_collect(values: list[object]) -> dict[str, object]:
     """the COLLECTED RESULT'S CAP (the F4 fix — one mechanism with the
     failures'-collect's own discipline, ``_sql_finalize.py``'s
@@ -357,14 +374,6 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
         # the child flow's runner resolved once per drive (the root's stamped
         # workflow name → the compile registry).
         self._child_runners: dict[str, FlowRunner] = {}
-        # the create-time per-call override (``create_flow(priority=…)``),
-        # echoed here so the dev door's fork builds (``_run_node``'s
-        # executions) resolve the run's own law without re-reading the root.
-        # The row stays the truth — the root's ``metadata.wf_priority`` stamp
-        # is the durable leg, and the fleet door (``execute_flow_job``) reads
-        # it from the row; this echo only spares the dev loop a per-node read.
-        # ``None`` = no override declared.
-        self._run_priority: int | None = None
         # Existing compiled declarations gate the bounded run's §4.1
         # terminal/park event rule. A source-free or explicitly unbounded
         # workflow performs no per-terminal probe SQL and pays no feature
@@ -440,15 +449,22 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
          child root's parent pointers land ATOMICALLY with the root —
          never a post-create UPDATE that would re-open the orphan window
          this seam closed). ``None`` (the default) = the shipped shape
-         byte-identical.
+         byte-identical. The key ``"wf_priority"`` is REFUSED: that is the
+         run's durable priority stamp, owned by the ``priority=`` argument
+         (domain-checked, and the leg every post-create reader resolves).
+         A caller-written stamp would skip the domain check and split the
+         run into two cohorts — the create-time rows at one level, every
+         later-materialized row at another, differently per door.
 
          the PER-CALL PRIORITY OVERRIDE (the priority surface — the
-         load-bearing face): *priority* is the run's explicit override —
+         run's ordering law): *priority* is the run's explicit override —
          every row this create materializes (the static nodes) lands at
          the value in the ``jobs.priority`` column, and the ROOT's
-         metadata stamps it (``wf_priority``) so the FLEET door's fork
-         builds resolve the same override for rows materialized later
-         (the map/route children a worker forks mid-run). The law's
+         metadata stamps it (``wf_priority``) so EVERY later reader
+         resolves the same override for rows materialized later — the
+         fleet door's fork builds (the map/route children a worker forks
+         mid-run), the adopt read, and ``drive``/``tick`` on any runner
+         handle (each resolves the driven run's own stamp). The law's
          precedence: this override > the step's declaration > the actor
          handle's > the column default. ``None`` (the default) = no
          override — the declarations (or the column default) speak, the
@@ -486,6 +502,17 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
                 f"create_flow: key={key!r} and run_key={run_key!r} are both given "
                 "and disagree — the run key is ONE value; pass key= only"
             )
+        if root_metadata_extra is not None and "wf_priority" in root_metadata_extra:
+            raise ValueError(
+                "create_flow: root_metadata_extra must not carry 'wf_priority' — the "
+                "key is the run's durable priority stamp, owned by the priority= "
+                "argument (the only place it is domain-checked and written to the "
+                "create's static rows). Pass priority= instead: a caller-written "
+                "stamp skips check_priority_domain and makes one run two cohorts — "
+                "the create-time rows at the default while every post-create reader "
+                "(the fleet door, the adopt door, the outbox drain) resolves the "
+                "caller's value"
+            )
         if priority is not None:
             root_metadata_extra = {**(root_metadata_extra or {}), "wf_priority": priority}
         try:
@@ -521,13 +548,7 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
                     # parents' results did not exist, the arg resolution
                     # crashed the worker), the flow's own wiring half-born. A
                     # transaction bounds the dispatch's visibility to the whole
-                    # wiring (the fork's atomicity law, create-time face). the
-                    # create-time echo (the dev door's own leg): the override
-                    # the drive's fork builds resolve — set only when this
-                    # create materialized the rows (an arbiter conflict returns
-                    # an existing run whose root stamp is its own truth; the
-                    # row is the law, never the echo).
-                    self._run_priority = priority
+                    # wiring (the fork's atomicity law, create-time face).
                     if claim.required_worker_schema is None:
                         # Preserve the long-standing private hook call shape for
                         # ordinary creates (including test crash-injection seams).
@@ -552,17 +573,6 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
                     # ('running'), never the insert's pre-start 'pending' (the
                     # envelope never lies about the state it handed back).
                     claim = replace(claim, status="running")
-                else:
-                    # the claim returned an existing run — the create-time echo
-                    # above never ran, so the per-call level resolves from the
-                    # root's stamp (one bounded pk read, the fleet door's own
-                    # SELECT shape): the row is the law at both doors. A
-                    # re-drive of a run created with ``priority=6`` forks its
-                    # rows at 6 even when the re-drive passes no kwarg — the
-                    # adopted run's stamp is its own truth, and the fork's
-                    # cohort never splits (the children riding the declarations
-                    # while the root says 6 would split the fork's cohort).
-                    self._run_priority = await self._adopted_run_priority(conn, claim.flow_id)
                 if self._emit_capacity and claim.created:
                     from taskq.workflows._emit import ensure_emit_capacity
 
@@ -601,6 +611,21 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
         )
         raw_priority: object | None = read["wf_priority"] if read is not None else None
         return resolve_priority_stamp(raw_priority)
+
+    async def _run_priority_for(self, flow_id: JobId) -> int | None:
+        """The GIVEN run's own priority stamp, resolved from its root (one
+        bounded primary-key read — :meth:`_adopted_run_priority`'s
+        arithmetic).
+
+        The driven doors resolve it PER DRIVEN RUN, never from handle
+        state: one runner can create or adopt several runs and drive any
+        of them, so a sibling run's override must never reach this run's
+        rows, and a resume on a runner that never created the run (the
+        operator's ``FlowRunner(...).drive(run_id)`` door) must still
+        find the stamp. ``None`` = no override stamped — the
+        declarations, or the column default, speak."""
+        async with self.pool.acquire() as conn:
+            return await self._adopted_run_priority(conn, flow_id)
 
     async def _node_census(self, conn: ConnLike, flow_id: JobId) -> int:
         """The run's node-row count — the orphan's census (a nodeless
@@ -832,8 +857,15 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
         Each new runner drive performs ONE initial flow backfill (§5.3's
         ``B`` term): the same promotion primitive, once, before the first
         tick — a crashed predecessor's committed but undrained intent is
-        observed from real rows, never from elapsed time."""
+        observed from real rows, never from elapsed time.
+
+        The driven run's OWN priority stamp is resolved here, ONCE (one
+        bounded primary-key read), and threaded to every node this drive
+        executes (:meth:`_run_node` → the fork legs). The row is the law:
+        a runner handle can create or adopt several runs and drive any of
+        them, so the stamp never rides handle state."""
         await self._refuse_guarded_direct_run(flow_id)
+        run_priority = await self._run_priority_for(flow_id)
         if self._emit_capacity:
             from taskq.workflows._emit import (
                 EmitCapacityCorruptionError,
@@ -865,13 +897,20 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
                 return "terminal"
             if until == "held" and await self._any_held(flow_id):
                 return "held"
-            ran = await self.tick(flow_id, execute=execute, _capability_checked=True)
+            ran = await self.tick(
+                flow_id, execute=execute, _capability_checked=True, run_priority=run_priority
+            )
             if not ran:
                 await asyncio.sleep(tick)
         return "max_ticks"
 
     async def tick(
-        self, flow_id: JobId, *, execute: bool = True, _capability_checked: bool = False
+        self,
+        flow_id: JobId,
+        *,
+        execute: bool = True,
+        _capability_checked: bool = False,
+        run_priority: int | _UnsetPriority | None = _UNSET_PRIORITY,
     ) -> bool:
         """One dispatch pass: claim + run + finalize every claimable node
         (``execute=True`` — the dev-loop driver); then the sweep arms
@@ -881,14 +920,23 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
         completes on the fleet, and the dead stamp a re-entered wait can
         leave is healed in-process instead of stranding the run). With
         ``execute=False`` the sweep arms only — the orchestration-only
-        pass. Returns whether any node ran."""
+        pass. Returns whether any node ran.
+
+        ``run_priority`` is the driven run's resolved priority stamp
+        (:meth:`drive` reads it once and passes it — a resolved ``None``
+        included, so the un-overridden run's ticks pay no repeat read).
+        OMITTING it — a direct ``tick(flow_id)`` — resolves the run's OWN
+        stamp here, so a direct tick can never fork a run's rows at a
+        different level than the run itself carries."""
         ran = False
-        if execute and not _capability_checked:
-            await self._refuse_guarded_direct_run(flow_id)
         if execute:
+            if not _capability_checked:
+                await self._refuse_guarded_direct_run(flow_id)
+            if isinstance(run_priority, _UnsetPriority):
+                run_priority = await self._run_priority_for(flow_id)
             for row in await self._claimable(flow_id):
                 ran = True
-                await self._run_node(flow_id, row)
+                await self._run_node(flow_id, row, run_priority=run_priority)
                 # the child is a real flow — the dev-loop driver walks the receipts
             # and claims its rows too (the fleet door needs nothing: the
             # child's rows are queue-dispatched like any flow's).
@@ -955,9 +1003,13 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
             if child is None or not execute:
                 continue
             await child._refuse_guarded_direct_run(fid)
+            # the CHILD run's own stamp, never the parent's (a spawned
+            # childflow run resolves its OWN declarations): resolved once per
+            # descendant, threaded through every node.
+            child_priority = await child._run_priority_for(fid)
             for row in await child._claimable(fid):
                 ran = True
-                await child._run_node(fid, row)
+                await child._run_node(fid, row, run_priority=child_priority)
         return ran
 
     async def _runner_for_flow(self, flow_id: JobId) -> FlowRunner | None:
@@ -1002,7 +1054,13 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
             rows = await conn.fetch(render_sql(CLAIMABLE_NODES_SQL_TEMPLATE, self.schema), flow_id)
         return [dict(r) for r in rows]
 
-    async def _run_node(self, flow_id: JobId, row: dict[str, Any]) -> None:
+    async def _run_node(
+        self, flow_id: JobId, row: dict[str, Any], *, run_priority: int | None
+    ) -> None:
+        """Run one claimable node row. ``run_priority`` is the driven run's
+        resolved priority stamp (``tick``/``drive`` supply it; required so
+        an omission cannot silently fork at the declarations) — the fork
+        legs this attempt builds resolve it as the law's first level."""
         required_worker_schema: object = row.get("required_worker_schema")
         if required_worker_schema is not None:
             raise direct_capability_refusal(
@@ -1083,7 +1141,7 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
             node,
             body,
             claim_epoch=claim_epoch_direct,
-            run_priority=self._run_priority,
+            run_priority=run_priority,
             ledger_claimed_at=ledger_claimed_at,
         )
 
@@ -1308,10 +1366,11 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
 
         ``run_priority`` is the RUN's per-call override (the wf-priority
         fix): the fork builds (the map's children, the route's arms)
-        resolve it as the law's first level — the dev door passes the
-        create-time echo, the fleet door the root's metadata stamp's
-        resolution. ``None`` = no override declared (the declarations —
-        or the column default — speak).
+        resolve it as the law's first level. Both doors resolve it from the
+        claiming run's OWN root stamp — the dev door per driven run in
+        ``drive``/``tick``, the fleet door in ``execute_flow_job`` — so a
+        runner's sibling run can never supply it. ``None`` = no override
+        stamped (the declarations — or the column default — speak).
 
         the STEP SPAN (the wf's face of the vanilla obs law — the
         contract lives in ``workflows/_obs.py``): THIS call is one
@@ -1489,6 +1548,11 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
                     emitter,
                     claim_epoch=claim_epoch,
                     ledger_claimed_at=ledger_claimed_at,
+                    # the run's per-call override rides into the driver — the
+                    # loop's success finalize forks the map's children, and
+                    # they resolve the run's stamped override like every
+                    # other forked row (the priority surface's first level).
+                    run_priority=run_priority,
                 )
             finally:
                 await emitter.aclose()
@@ -2348,7 +2412,12 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
         *,
         claim_epoch: int = 0,
         prebuilt_route_fork: ForkSpec | None = None,
-        run_priority: int | None = None,
+        # Required (no default): the fork build below resolves the run's
+        # per-call override as the law's first level, and an omission at a
+        # ``FlowRunner``-typed call site would bind ``None`` silently — the
+        # dropped-priority defect this surface repairs. Every production
+        # caller passes it.
+        run_priority: int | None,
         ledger_id: JobId | None = None,
         ledger_claimed_at: Any = None,
         collected: list[object] | None = None,

@@ -298,7 +298,7 @@ async def test_stale_direct_read_shape_maps_physical_refusal_before_body(
         stale_row["id"],
     )
     with pytest.raises(WorkflowWorkerCapabilityError) as caught:
-        await runner._run_node(claim.flow_id, stale_row)  # pyright: ignore[reportPrivateUsage]  # Why: direct old-read compatibility is the boundary under test.
+        await runner._run_node(claim.flow_id, stale_row, run_priority=None)  # pyright: ignore[reportPrivateUsage]  # Why: direct old-read compatibility is the boundary under test.
     cause = caught.value.__cause__
     assert isinstance(cause, asyncpg.PostgresError)
     assert cause.sqlstate == "WF001"

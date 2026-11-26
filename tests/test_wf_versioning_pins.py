@@ -105,7 +105,7 @@ async def test_redeploy_adopts_the_new_body_at_the_next_node_claim(
     rows = await runner._claimable(flow_id)  # pyright: ignore[reportPrivateUsage]  # Why: the pin stops the driver mid-flow — the claim loop's seam is the behavior under test.
     assert rows, "no claimable node (the create did not land the roots?)"
     assert [r["step_key"] for r in rows] == ["first"], rows
-    await runner._run_node(flow_id, rows[0])  # pyright: ignore[reportPrivateUsage]
+    await runner._run_node(flow_id, rows[0], run_priority=None)  # pyright: ignore[reportPrivateUsage]
 
     # the registry now carries the new code (the new process's map). The second
     # node's body is v2 from here on.
