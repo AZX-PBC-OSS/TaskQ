@@ -76,6 +76,24 @@ _WF_EMIT_PARK_CORE_RENDERED = (
 )
 
 
+def test_terminal_sql_set_is_the_statemachine_frozenset() -> None:
+    """``TERMINAL_SQL_SET``'s docstring claims the equivalence to
+    :data:`taskq.backend.statemachine.TERMINAL_STATUSES` is pinned; this is
+    that pin. A terminal-status addition edits the frozenset, and the SQL
+    literal must move with it or the statements that consume
+    ``{terminal}`` silently keep the old vocabulary."""
+    from taskq.backend.statemachine import TERMINAL_STATUSES
+
+    members = {
+        member.strip().strip("'") for member in TERMINAL_SQL_SET.strip("()").split(",") if member
+    }
+    assert members == set(TERMINAL_STATUSES), (
+        "TERMINAL_SQL_SET has drifted from statemachine.TERMINAL_STATUSES: "
+        f"SQL-only={sorted(members - set(TERMINAL_STATUSES))}, "
+        f"Python-only={sorted(set(TERMINAL_STATUSES) - members)}"
+    )
+
+
 def test_loop_render_is_the_direct_substitution() -> None:
     for schema in SCHEMAS:
         expected = (

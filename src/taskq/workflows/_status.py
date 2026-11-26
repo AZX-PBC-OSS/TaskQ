@@ -71,14 +71,6 @@ __all__ = [
 #: totality property). ``blocked`` covers held + join-wait + blocked rows.
 WorkflowStatus = Literal["running", "failed", "blocked", "complete", "cancelled", "pending"]
 
-#: The jobs-table terminal statuses (the statemachine's vocabulary) —
-#: the reconstruction's never-granted read draws the terminal classes
-#: from this set (``_NEVER_GRANTED_SQL``), and the derivation folds the
-#: terminal-crash class into the failed-class terminal.
-_TERMINAL: Final[frozenset[str]] = frozenset(
-    {"succeeded", "failed", "cancelled", "crashed", "abandoned"}
-)
-
 #: the terminal-crash class — the node statuses that fold into the failed-class
 #: terminal: both are deterministic deaths with zero outbound transitions in
 #: the state machine's totality table, and no sweep arm ever reclaims them.
@@ -217,14 +209,25 @@ def derive_workflow_status(nodes: tuple[NodeView, ...]) -> WorkflowStatus:
 # integration test (the reconstruction helper the fixture calls; the docs
 # state the rule).
 
-_NEVER_GRANTED_SQL = """\
+#: The terminal classes the never-granted read re-draws from the row itself:
+#: ``cancelled`` plus the terminal-crash class. Rendered into
+#: ``_NEVER_GRANTED_SQL`` from this set, so a class added to
+#: ``_TERMINAL_CRASH_CLASS`` reaches the read instead of drifting from a
+#: hand-spelled literal.
+_NEVER_GRANTED_CLASS: Final[frozenset[str]] = frozenset({"cancelled"}) | _TERMINAL_CRASH_CLASS
+
+_NEVER_GRANTED_SQL = (
+    """\
 SELECT id, step_key, status
 FROM {schema}.jobs
 WHERE (metadata->>'flow_id')::uuid = $1::uuid
   AND metadata ? 'flow_id'
   AND step_key <> '__flow__'
-  AND status IN ('cancelled', 'crashed', 'abandoned')
+  AND status IN ("""
+    + ", ".join(f"'{status}'" for status in sorted(_NEVER_GRANTED_CLASS))
+    + """)
 """
+)
 
 
 async def reconstruct_workflow_status(

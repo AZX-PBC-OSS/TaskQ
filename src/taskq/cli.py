@@ -4472,6 +4472,11 @@ async def _flows_list(settings: TaskQSettings, limit: int) -> None:
         derive_flow_status,
         format_flow_list,
     )
+    from taskq.workflows._sql_status import absorbed_projection
+
+    # The projection's EXISTS carries the schema token; render it once here
+    # (the surrounding statement's other braces are f-string fields).
+    absorbed_sql = absorbed_projection("n").format(schema=settings.schema_name)
 
     conn = await asyncpg.connect(_dsn_of(settings))
     try:
@@ -4488,14 +4493,7 @@ async def _flows_list(settings: TaskQSettings, limit: int) -> None:
                    n.status AS node_status, n.deps_pending,
                    n.metadata->>'blocking_reason' AS blocking_reason,
                    n.step_key,
-                   EXISTS (
-                       SELECT 1
-                       FROM "{settings.schema_name}".wf_edge e
-                       JOIN "{settings.schema_name}".jobs j2 ON j2.id = e.child_id
-                       WHERE e.parent_id = n.id
-                         AND e.failure_policy IN ('collect', 'maybe')
-                         AND NOT (j2.status = 'pending' AND j2.metadata->>'blocking_reason' IN ('failed_parent', 'orphan_parent', 'flow_dead'))
-                   ) AS absorbed,
+                   {absorbed_sql} AS absorbed,
                    s.id AS hold_id, s.signal_name, s.map_index AS hold_map_index,
                    s.expires_at AS hold_expires_at
             FROM runs r

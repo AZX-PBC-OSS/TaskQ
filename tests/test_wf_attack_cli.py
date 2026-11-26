@@ -316,6 +316,66 @@ async def test_f_cli_1_list_and_status_agree_for_an_absorbed_run(
     )
 
 
+async def test_f_cli_1_list_and_status_agree_for_a_cancelled_collect_edge(
+    cli_settings: Any, wf_conn: asyncpg.Connection, wf_schema: str
+) -> None:
+    """The narrowing's shape: a CANCELLED node that parents a collect edge.
+
+    ``WORKFLOW_NODES_SQL``'s ``absorbed`` is failure-class gated (only
+    failed/crashed/abandoned can be absorbed), so both ``flows status`` and
+    the reconstruction derive ``cancelled`` for this run. ``flows list`` used
+    to hand-roll a status-blind copy of the absorption predicate, mark the
+    cancelled parent absorbed, and print ``complete`` for the same run at
+    the same instant. The list now renders ``absorbed_projection`` — the one
+    gate — so the surfaces agree."""
+    # A live root over a cancelled child (the ordinary mid-cancel shape).
+    flow_id = await seed_flow(
+        wf_conn, wf_schema, status="running", workflow="atkcli_cancelled_collect"
+    )
+    join_id = new_uuid()
+    await wf_conn.execute(
+        f'INSERT INTO "{wf_schema}".jobs (id, actor, queue, payload, max_attempts, '
+        "retry_kind, status, step_key, metadata, fairness_key) VALUES ($1, 'wf', "
+        "'default', '{}', 3, 'transient', 'succeeded', 'collect_join', $2::jsonb, $3)",
+        join_id,
+        json.dumps({"flow_id": str(flow_id)}),
+        str(flow_id),
+    )
+    cancelled_id = new_uuid()
+    await wf_conn.execute(
+        f'INSERT INTO "{wf_schema}".jobs (id, actor, queue, payload, max_attempts, '
+        "retry_kind, status, step_key, metadata, fairness_key) VALUES ($1, 'wf', "
+        "'default', '{}', 3, 'transient', 'cancelled', 'cancelled_child', "
+        "$2::jsonb, $3)",
+        cancelled_id,
+        json.dumps({"flow_id": str(flow_id)}),
+        str(flow_id),
+    )
+    await wf_conn.execute(
+        f'INSERT INTO "{wf_schema}".wf_edge (child_id, parent_id, flow_id, failure_policy) '
+        "VALUES ($1, $2, $3, 'collect')",
+        join_id,
+        cancelled_id,
+        flow_id,
+    )
+    status_res = await to_thread(runner.invoke, app, ["flows", "status", str(flow_id)])
+    assert status_res.exit_code == 0, status_res.output
+    list_res = await to_thread(runner.invoke, app, ["flows", "list"])
+    assert list_res.exit_code == 0, list_res.output
+    status_verdict = _status_verdict(status_res.output)
+    list_verdict = _list_verdict(list_res.output, str(flow_id))
+    assert status_verdict == "cancelled", (
+        f"the status verb derived {status_verdict!r} for a cancelled child on a "
+        "collect edge (expected 'cancelled')"
+    )
+    assert list_verdict == status_verdict, (
+        f"The surfaces disagree on a cancelled child with a collect edge — "
+        f"status derives {status_verdict!r} but list prints {list_verdict!r} for "
+        f"run {flow_id}: a status-blind absorption copy marks the cancelled row "
+        "absorbed and the derivation grants 'complete'"
+    )
+
+
 # ── ghost-cancel is a silent no-op (landed) ─────────────────────
 
 

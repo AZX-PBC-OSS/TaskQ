@@ -334,11 +334,12 @@ def _sampler_read_failed(
 ) -> None:
     """Report a gauge sampler whose read did not complete.
 
-    A sampler failure is the one failure in this module that leaves no trace
-    an alert rule can read: the gauge it feeds keeps serving its last value,
-    so depth stops rising and age stops growing, the same flat picture a
-    drained queue paints. No job fails and nothing is retried, so the warning
-    below is the only other signal, and warnings are not alertable. Every
+    A sampler failure leaves the gauge it feeds serving its last value, so
+    depth stops rising and age stops growing, the same flat picture a drained
+    queue paints. No job fails and nothing is retried, so the alertable
+    signal is the sweep-timeout counter: this function increments
+    ``taskq_maintenance_leader_sweep_timeouts_total{sweep_name=...}`` (the
+    ``TaskQSweepTimeouts`` alert) and logs the warning beside it. Every
     failure is counted, not just the deadline family a completed-but-aborted
     sweep reports: for a detector, "the read did not happen" is the whole
     fault regardless of which error carried it.

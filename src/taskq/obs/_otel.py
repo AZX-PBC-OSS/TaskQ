@@ -2661,7 +2661,8 @@ _sweep_timeouts = get_meter().create_counter(
         "Sweep calls aborted by a deadline or server-side statement cancel, "
         "and gauge-sampler reads that did not complete for ANY reason (the "
         "sampler sweep_names are queue_depth / backlog_detection / "
-        "actor_backlog / reservation_slots), labeled by sweep_name. A "
+        "actor_backlog / reservation_slots / wf_progress / cancel_pending / "
+        "retry_ladder / ratelimit_buckets), labeled by sweep_name. A "
         "non-zero rate means work is being aborted or going unobserved, "
         "not completing slowly."
     ),
