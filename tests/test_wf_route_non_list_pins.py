@@ -564,6 +564,7 @@ async def test_route_success_without_prebuilt_fork_fails_closed(
             1,
             compiled.nodes["media"],
             {"value": []},
+            run_priority=None,
         )
 
 

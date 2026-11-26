@@ -729,9 +729,15 @@ def check_priority_domain(value: int, *, what: str = "priority") -> None:
         )
 
 
-#: The ``wf_priority`` stamp's own integer grammar — the SQL face's
-#: regex (the drain's fetch resolves the stamp in SQL with the same
-#: accept/refuse shape the Python parse below runs).
+#: The ``wf_priority`` stamp's integer grammar — the SQL face's regex.
+#: The SQL face (the drain's fetch) applies THIS pattern; the Python face
+#: (:func:`resolve_priority_stamp` below) parses with ``int()``, a STRICT
+#: SUPERSET of this regex's accept set (``int()`` also accepts surrounding
+#: whitespace, ``_`` separators, and non-ASCII digits). The two faces are
+#: deliberately NOT the same accept set, and nothing compares them: the
+#: Python resolution is the consumer's authority (the drain reads it first,
+#: the SQL-computed column being only the fallback), so the SQL pattern may
+#: narrow what the fallback sees but never widens the run's resolved stamp.
 PRIORITY_STAMP_INT_PATTERN: Final[str] = r"^[+-]?[0-9]+$"
 
 

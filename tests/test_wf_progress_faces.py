@@ -386,7 +386,7 @@ async def test_midflight_read_side_aggregate_writes_nothing(
     rows = await runner._claimable(flow_id)  # pyright: ignore[reportPrivateUsage]
     assert rows, "the fork's children are claimable"
     for row in rows[: len(rows) // 2]:
-        await runner._run_node(flow_id, row)  # pyright: ignore[reportPrivateUsage]
+        await runner._run_node(flow_id, row, run_priority=None)  # pyright: ignore[reportPrivateUsage]
 
     done = await wf_conn.fetchval(
         f"""SELECT count(*) FROM "{wf_schema}".jobs

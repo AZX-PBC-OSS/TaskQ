@@ -28,7 +28,9 @@ rows; no 100k simulation), and the vanilla surface's untouched face.
 
 from __future__ import annotations
 
+import inspect
 import json
+from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import UUID
@@ -41,6 +43,7 @@ from taskq._ids import new_uuid
 from taskq.backend._dispatch_sql import DISPATCH_STRICT_FIFO_SQL, dispatch_batch
 from taskq.backend._protocol import JobId
 from taskq.client._args import build_enqueue_args
+from taskq.exceptions import Snooze
 from taskq.workflows import (
     Done,
     FlowRunner,
@@ -49,9 +52,12 @@ from taskq.workflows import (
     RouteArm,
     StepContext,
     WorkflowApp,
+    WorkflowBuildError,
+    WorkflowRunError,
     build,
     loop,
     map_source,
+    route,
     run,
     sink,
     step,
@@ -60,6 +66,7 @@ from taskq.workflows._worker_execution import (
     execute_flow_job,
     project_workflow_actor_configs,
 )
+from taskq.workflows.api._runner_loop import LoopOps
 
 # ── the shared fixtures' vocabulary (the capacity pins' own shapes) ──────
 
@@ -1335,3 +1342,469 @@ async def test_loop_map_without_override_honors_the_map_body_declaration(
         expected_child=4,
         expected_join=0,
     )
+
+
+# ── (j) the loop fork resolves the DRIVEN run's own stamp ───────────────
+#
+# The pin set above drives one run, serially, through the door that created
+# it. These pins attack the interruption shapes: a runner handle that holds
+# two runs (a sibling's override must never reach this run's rows), and a
+# loop node deferred and resumed (same runner, the fleet door, the packaged
+# ``run(key=…)`` adopt door), plus a run resumed by a runner instance that
+# never created it. The stamp is resolved per DRIVEN RUN — never from
+# handle state that a sibling create overwrites or that a fresh runner
+# never had.
+
+_LOOP_MAP_CHILD_PRIO = 4
+_LOOP_MAP_RUN_PRIO = 7
+
+
+def _loop_map_app(name: str, body: Any) -> WorkflowApp:
+    """A loop-sourced map whose item body declares ``priority=4`` — the
+    declaration level the run's override must beat."""
+    app = WorkflowApp()
+
+    @app.actor(priority=_LOOP_MAP_CHILD_PRIO)
+    async def declared_item_body(ctx: StepContext, item: str) -> str:
+        return item
+
+    @app.workflow(name)
+    def _decl() -> Promise[object]:
+        src = loop("src", body, max_iterations=3)
+        return build(map_source(src, declared_item_body))
+
+    return app
+
+
+@pytest.mark.integration
+async def test_loop_map_does_not_inherit_a_sibling_runs_priority_override(
+    wf_schema: str, wf_pool: asyncpg.Pool
+) -> None:
+    """One runner handle, two runs: A is created with NO override, then B is
+    created WITH one, then A is driven. A's loop cohort must land on A's own
+    law — the loop row and the join at the column default, the children at
+    the map body's declared 4 — never on B's 9.
+
+    The rejected variant: the fork read a per-runner field that the second
+    ``create_flow`` overwrote, so A's late-materialized children and join
+    took B's number (one run, another run's cohort)."""
+
+    async def done_immediately(ctx: StepContext, carry: object) -> object:
+        return Done(["a", "b"])
+
+    app = _loop_map_app("loop-map-sibling-override-flow", done_immediately)
+    compiled = app.get("loop-map-sibling-override-flow")
+
+    runner = FlowRunner(compiled, wf_pool, wf_schema)
+    run_a = (await runner.create_flow(run_key=f"prio-a:{new_uuid()}")).flow_id
+    run_b = (await runner.create_flow(run_key=f"prio-b:{new_uuid()}", priority=9)).flow_id
+    assert run_a != run_b
+
+    state = await runner.drive(run_a, until="terminal", max_ticks=500)
+    assert state == "terminal", state
+
+    _assert_loop_map_priorities(
+        await _flow_rows(wf_pool, wf_schema, run_a),
+        loop_key="src",
+        expected_items=2,
+        expected_loop=0,
+        expected_child=_LOOP_MAP_CHILD_PRIO,
+        expected_join=0,
+    )
+
+
+@pytest.mark.integration
+async def test_loop_map_resumed_by_a_runner_that_never_created_the_run(
+    wf_schema: str, wf_pool: asyncpg.Pool
+) -> None:
+    """A run created WITH the override, then resumed by a fresh runner that
+    only drives it (no ``create_flow`` on that instance — the documented
+    operator pattern: ``FlowRunner(...)`` then ``drive(run_id)`` for
+    existing runs) forks the loop's cohort at the run's own stamp, read
+    from the root row."""
+
+    async def done_immediately(ctx: StepContext, carry: object) -> object:
+        return Done(["a", "b"])
+
+    app = _loop_map_app("loop-map-fresh-drive-flow", done_immediately)
+    compiled = app.get("loop-map-fresh-drive-flow")
+
+    creator = FlowRunner(compiled, wf_pool, wf_schema)
+    flow_id = (await creator.create_flow(priority=_LOOP_MAP_RUN_PRIO)).flow_id
+
+    resumer = FlowRunner(compiled, wf_pool, wf_schema)
+    state = await resumer.drive(flow_id, until="terminal", max_ticks=500)
+    assert state == "terminal", state
+
+    _assert_loop_map_priorities(
+        await _flow_rows(wf_pool, wf_schema, flow_id),
+        loop_key="src",
+        expected_items=2,
+        expected_loop=_LOOP_MAP_RUN_PRIO,
+        expected_child=_LOOP_MAP_RUN_PRIO,
+        expected_join=_LOOP_MAP_RUN_PRIO,
+    )
+
+
+@pytest.mark.integration
+async def test_loop_map_deferred_then_resumed_on_the_same_runner(
+    wf_schema: str, wf_pool: asyncpg.Pool
+) -> None:
+    """The deferral leg: the loop body snoozes on its first iteration (the
+    loop node re-pends, the counters untouched), then the drive resumes the
+    same iteration and the fork happens on the SECOND entry into the
+    driver. The run's override must survive that re-entry."""
+    calls = 0
+
+    async def snooze_once(ctx: StepContext, carry: object) -> object:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise Snooze(timedelta(0))
+        return Done(["a", "b"])
+
+    app = _loop_map_app("loop-map-defer-same-runner-flow", snooze_once)
+    compiled = app.get("loop-map-defer-same-runner-flow")
+
+    runner = FlowRunner(compiled, wf_pool, wf_schema)
+    flow_id = (await runner.create_flow(priority=_LOOP_MAP_RUN_PRIO)).flow_id
+    state = await runner.drive(flow_id, until="terminal", max_ticks=500)
+    assert state == "terminal", state
+    assert calls == 2, calls
+
+    _assert_loop_map_priorities(
+        await _flow_rows(wf_pool, wf_schema, flow_id),
+        loop_key="src",
+        expected_items=2,
+        expected_loop=_LOOP_MAP_RUN_PRIO,
+        expected_child=_LOOP_MAP_RUN_PRIO,
+        expected_join=_LOOP_MAP_RUN_PRIO,
+    )
+
+
+@pytest.mark.integration
+async def test_loop_map_deferred_then_resumed_on_the_fleet_door(
+    wf_schema: str,
+    wf_conn: asyncpg.Connection,
+    wf_pool: asyncpg.Pool,
+    module_pg_pool: asyncpg.Pool,
+) -> None:
+    """The cross-door resume: the loop node defers under the dev door, then
+    a FLEET worker re-claims the same node and finishes it — the second
+    drive resolves the override from the root's stamp. The two doors land
+    the cohort on the same number."""
+    calls = 0
+
+    async def snooze_once(ctx: StepContext, carry: object) -> object:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise Snooze(timedelta(0))
+        return Done(["a", "b"])
+
+    app = _loop_map_app("loop-map-defer-fleet-flow", snooze_once)
+    compiled = app.get("loop-map-defer-fleet-flow")
+
+    creator = FlowRunner(compiled, wf_pool, wf_schema)
+    flow_id = (await creator.create_flow(priority=_LOOP_MAP_RUN_PRIO)).flow_id
+    # exactly one tick: the loop node claims, the body snoozes, the row
+    # re-pends — the interruption, without spinning to the terminal.
+    state = await creator.drive(flow_id, max_ticks=1)
+    assert state == "max_ticks", state
+    assert calls == 1, calls
+
+    # the leader's scheduler turns the due deferred row back into a
+    # dispatchable one. The deferral floor arms the row 1s out, so move the
+    # wall: the only stand-in for elapsed time in the pin.
+    from taskq.backend._sweeps import sweep_scheduled_to_pending
+
+    await wf_conn.execute(
+        f"UPDATE \"{wf_schema}\".jobs SET scheduled_at = clock_timestamp() - interval '5 seconds' "  # noqa: S608
+        "WHERE id = $1 AND status = 'scheduled'",
+        await wf_conn.fetchval(
+            f"SELECT id FROM \"{wf_schema}\".jobs WHERE (metadata->>'flow_id')::uuid = $1 "  # noqa: S608
+            "AND step_key = 'src'",
+            flow_id,
+        ),
+    )
+    assert await sweep_scheduled_to_pending(wf_conn, schema=wf_schema) >= 1
+
+    for config in project_workflow_actor_configs():
+        await wf_conn.execute(
+            f'INSERT INTO "{wf_schema}".actor_config (actor, queue) VALUES ($1, $2) '  # noqa: S608
+            "ON CONFLICT (actor) DO NOTHING",
+            config.actor,
+            config.queue,
+        )
+    worker_id = new_uuid()
+    await wf_conn.execute(
+        f'INSERT INTO "{wf_schema}".workers (id, hostname, pid, queues, metadata) '  # noqa: S608
+        "VALUES ($1, 'loop-map-defer-pin', 1, '{default}', $2::jsonb)",
+        worker_id,
+        json.dumps({"workflow_execution": True}),
+    )
+    dispatched = await dispatch_batch(
+        wf_conn,
+        sql=DISPATCH_STRICT_FIFO_SQL.format(schema=wf_schema),
+        queues=["default"],
+        limit_n=5,
+        worker_id=worker_id,
+        lock_lease=timedelta(seconds=30),
+    )
+    loop_claims = [row for row in dispatched if row["step_key"] == "src"]
+    assert len(loop_claims) == 1, [(row["step_key"], row["status"]) for row in dispatched]
+
+    from taskq.backend._records import _job_row_from_record
+
+    await execute_flow_job(
+        pool=module_pg_pool,
+        schema=wf_schema,
+        worker_id=JobId(worker_id),
+        job=_job_row_from_record(loop_claims[0]),
+    )
+    assert calls == 2, calls
+
+    _assert_loop_map_priorities(
+        await _flow_rows(module_pg_pool, wf_schema, flow_id),
+        loop_key="src",
+        expected_items=2,
+        expected_loop=_LOOP_MAP_RUN_PRIO,
+        expected_child=_LOOP_MAP_RUN_PRIO,
+        expected_join=_LOOP_MAP_RUN_PRIO,
+    )
+
+
+@pytest.mark.integration
+async def test_loop_map_deferred_then_adopted_by_the_run_door(
+    wf_schema: str, wf_pool: asyncpg.Pool
+) -> None:
+    """The other resume door: the run defers, and a later ``run(key=…)``
+    call (the packaged create+drive — its ``create_flow`` hits the arbiter
+    and adopts) finishes it with no override kwarg. The adopted run's stamp
+    is the law — the cohort lands at the run's override."""
+    calls = 0
+
+    async def snooze_once(ctx: StepContext, carry: object) -> object:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise Snooze(timedelta(0))
+        return Done(["a", "b"])
+
+    app = _loop_map_app("loop-map-defer-adopt-flow", snooze_once)
+    compiled = app.get("loop-map-defer-adopt-flow")
+    key = f"loop-map-adopt:{new_uuid()}"
+
+    creator = FlowRunner(compiled, wf_pool, wf_schema)
+    flow_id = (await creator.create_flow(run_key=key, priority=_LOOP_MAP_RUN_PRIO)).flow_id
+    state = await creator.drive(flow_id, max_ticks=1)
+    assert state == "max_ticks", state
+
+    result = await run(compiled, wf_pool, wf_schema, key=key)
+    assert result.outcome == "terminal", result.outcome
+    assert result.result == ["a", "b"], result.result
+
+    _assert_loop_map_priorities(
+        await _flow_rows(wf_pool, wf_schema, flow_id),
+        loop_key="src",
+        expected_items=2,
+        expected_loop=_LOOP_MAP_RUN_PRIO,
+        expected_child=_LOOP_MAP_RUN_PRIO,
+        expected_join=_LOOP_MAP_RUN_PRIO,
+    )
+
+
+# ── (k) the create door's priority-stamp trust boundary ──────────────────
+
+
+@pytest.mark.integration
+async def test_root_metadata_extra_cannot_write_the_priority_stamp(
+    wf_schema: str, wf_pool: asyncpg.Pool
+) -> None:
+    """``create_flow`` REFUSES the reserved ``"wf_priority"`` key in
+    ``root_metadata_extra``: the run's durable stamp has exactly one
+    writer, the domain-checked ``priority=`` argument.
+
+    The rejected variant (the metadata hatch): with ``priority is None`` the
+    caller's dict rode into the root's stamp unvalidated, so the root
+    reported one level (every post-create reader — the fleet door, the adopt
+    door, the outbox drain — resolved it) while the create's own static rows
+    sat at the default: one run, two cohorts. And a beyond-int4 stamp
+    written there made the drain's documented wedge API-reachable.
+
+    The refusal precedes the create transaction: the run key is untouched,
+    and ``priority=`` still stamps the root and the rows consistently."""
+    app = WorkflowApp()
+
+    @app.workflow("stamp-hatch-prio-flow")
+    def stamp_hatch_prio_flow() -> Promise[object]:
+        source = step(_list_source, Ingest(doc_id="d"), key="src")
+        mapped = map_source(source, _item_body)
+        return build(mapped)
+
+    runner = FlowRunner(app.get("stamp-hatch-prio-flow"), wf_pool, wf_schema)
+    run_key = f"stamp-hatch:{new_uuid()}"
+    with pytest.raises(ValueError, match="wf_priority"):
+        await runner.create_flow(run_key=run_key, root_metadata_extra={"wf_priority": 5})
+    # the refusal wins even when the kwarg is also given — the reserved key
+    # is refused, never silently overwritten.
+    with pytest.raises(ValueError, match="wf_priority"):
+        await runner.create_flow(
+            run_key=run_key, root_metadata_extra={"wf_priority": 3}, priority=5
+        )
+
+    # the key is untouched (no partial create) and priority= is the one
+    # validated writer: the root's stamp and the run's own rows agree.
+    claim = await runner.create_flow(run_key=run_key, priority=5)
+    assert claim.created, claim
+    root = await wf_pool.fetchrow(
+        f'SELECT metadata FROM "{wf_schema}".jobs WHERE id = $1',  # noqa: S608
+        claim.flow_id,
+    )
+    assert root is not None
+    assert _meta(root["metadata"]).get("wf_priority") == 5, _meta(root["metadata"])
+    assert _rows_priority(await _flow_rows(wf_pool, wf_schema, claim.flow_id)) == {"src": 5}
+
+
+# ── (l) the loop driver's static guard on ``run_priority`` ───────────────
+
+
+def _run_priority_default(method: Callable[..., object]) -> object:
+    parameters = inspect.signature(method).parameters
+    assert "run_priority" in parameters, (method.__qualname__, parameters)
+    return parameters["run_priority"].default
+
+
+def test_the_loop_driver_seam_requires_the_run_priority() -> None:
+    """The guard is real on the ``LoopOps`` face: all three declarations
+    (the protocol's ``_finalize_success`` — inherited by ``LoopOps`` — and
+    the two widened driver methods) refuse an omission, so a loop finalize
+    written without the argument is a static error."""
+    for method in (LoopOps._finalize_success, LoopOps._run_loop_node, LoopOps._drive_loop):
+        assert _run_priority_default(method) is inspect.Parameter.empty, method.__qualname__
+
+
+def test_the_concrete_finalize_refuses_an_omitted_run_priority() -> None:
+    """The concrete finalize refuses an omission too — the seam at which the
+    dropped priority surfaced, and the one the protocol cannot reach (a call
+    on a ``FlowRunner``-typed ``self`` types against the concrete signature).
+
+    The rejected variant: ``run_priority: int | None = None`` let an
+    omission bind ``None`` silently, forking the children and join at the
+    map body's declaration or the column default. Every caller already
+    passes the argument, so requiring it costs nothing."""
+    default = _run_priority_default(FlowRunner._finalize_success)
+    assert default is inspect.Parameter.empty, (
+        "FlowRunner._finalize_success still defaults run_priority to None "
+        f"(default={default!r}): an omission at a FlowRunner-typed call site "
+        "binds silently to None instead of raising, so the forked children and "
+        "join resolve the map body's declaration or the column default — the "
+        "dropped-priority defect this surface repairs."
+    )
+
+
+# ── (m) a typed route cannot attach to a loop source ─────────────────────
+
+
+async def _refining_body(ctx: StepContext, carry: object) -> object:
+    return Done(["a"])
+
+
+def test_a_typed_route_over_a_loop_source_is_refused() -> None:
+    """``map_source(loop(...), {T: fn})`` cannot build, and the refusal names
+    the real reason — the loop driver never builds a route fork — rather than
+    the incidental "declares no body" door (a loop node declares
+    ``loop_body``; nothing was left unwired)."""
+    app = WorkflowApp()
+
+    @app.workflow("prio-loop-route-flow")
+    def prio_loop_route_flow() -> Promise[object]:
+        src = loop("src", _refining_body, initial=0, max_iterations=2)
+        routed = map_source(src, {str: RouteArm(body=_item_body)})
+        return build(routed)
+
+    with pytest.raises(WorkflowBuildError) as raised:
+        app.get("prio-loop-route-flow")
+    message = str(raised.value)
+    assert "route's source 'src' is a loop node" in message, message
+    assert "cannot attach to a loop() source" in message, message
+    assert "map_source(loop_node, body)" in message, message
+    # the explicit door fires BEFORE the source-body door: the misleading
+    # diagnosis must not be what the author reads.
+    assert "declares no body" not in message, message
+
+
+def test_the_route_verb_spelling_is_refused_the_same_way() -> None:
+    """The ``route(...)`` verb lowers through the same attachment — the same
+    explicit refusal."""
+    app = WorkflowApp()
+
+    @app.workflow("prio-loop-route-verb-flow")
+    def prio_loop_route_verb_flow() -> Promise[object]:
+        src = loop("src", _refining_body, initial=0, max_iterations=2)
+        routed = route(src, {str: RouteArm(body=_item_body)})
+        return build(routed)
+
+    with pytest.raises(WorkflowBuildError) as raised:
+        app.get("prio-loop-route-verb-flow")
+    message = str(raised.value)
+    assert "is a loop node" in message, message
+    assert "declares no body" not in message, message
+
+
+# ── (n) a loop body carries no emit claim view ───────────────────────────
+
+
+@pytest.mark.integration
+async def test_a_loop_body_cannot_reach_emit_batch(wf_schema: str, wf_pool: asyncpg.Pool) -> None:
+    """The loop driver's iteration context carries no claim view, so
+    ``ctx.emit_batch`` — the only reader of ``StepContext._run_priority`` —
+    refuses before a single child row is written: the leg a loop body might
+    mis-prioritize cannot produce a child row at all. The loop-sourced map
+    still forks at the run's override (the driver's finalizes, not the
+    body)."""
+    from taskq.workflows._types import EmitChild
+
+    refused: list[Exception] = []
+
+    async def paging_body(ctx: StepContext, carry: object) -> object:
+        try:
+            await ctx.emit_batch(
+                [
+                    EmitChild(
+                        step_key="page",
+                        actor="wf",
+                        queue="default",
+                        payload={"n": 0},
+                        trace_id="page-0",
+                        map_index=0,
+                    )
+                ],
+                cursor={"page": 0},
+            )
+        except Exception as exc:  # the pin records the refusal it observes
+            refused.append(exc)
+        return Done(["a", "b"])
+
+    app = WorkflowApp()
+
+    @app.workflow("loop-emit-refusal-flow")
+    def loop_emit_refusal_flow() -> Promise[object]:
+        src = loop("src", paging_body, max_iterations=2)
+        return build(map_source(src, _item_body))
+
+    result = await run(app.get("loop-emit-refusal-flow"), wf_pool, wf_schema, priority=7)
+    assert result.outcome == "terminal", result.outcome
+    assert result.result == ["a", "b"], result.result
+
+    assert len(refused) == 1, refused
+    assert isinstance(refused[0], WorkflowRunError), refused
+    assert "without this node's claim view" in str(refused[0]), refused
+
+    rows = await _flow_rows(wf_pool, wf_schema, result.flow_id)
+    assert not [row for row in rows if row["step_key"] == "page"], (
+        "the loop body's emit wrote a child row despite the refusal"
+    )
+    # the map fork still forked at the override (the loop driver's leg).
+    item_rows = [row for row in rows if row["step_key"] == "src.item"]
+    assert item_rows and {int(row["priority"]) for row in item_rows} == {7}, rows

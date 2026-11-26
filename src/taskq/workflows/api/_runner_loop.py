@@ -102,14 +102,13 @@ class _LoopHost(Protocol):
         ledger_claimed_at: datetime | None = None,
         collected: list[object] | None = None,
         # Required here (no default) so the loop driver cannot finalize a
-        # loop-sourced fork without the run's per-call override — the
-        # concrete ``FlowRunner._finalize_success`` satisfies the protocol
-        # with its defaulted parameter. The guard's scope is THIS driver:
-        # inside ``LoopOps`` ``self`` types against this signature, so a
-        # loop finalize that omits it fails Pyright. A call on a
-        # ``FlowRunner``-typed ``self`` types against the concrete default
-        # and is not caught statically — the runner's own finalize sites
-        # are held by the priority pins, not by this protocol.
+        # loop-sourced fork without the run's per-call override — and the
+        # concrete ``FlowRunner._finalize_success`` now declares the same
+        # required parameter, so an omission is a static error at BOTH
+        # receivers. Inside ``LoopOps`` ``self`` types against this
+        # signature; a call on a ``FlowRunner``-typed ``self`` types
+        # against the concrete signature, which refuses the omission the
+        # same way (the priority pins hold the call sites themselves).
         run_priority: int | None,
     ) -> FinalizeResult: ...
 

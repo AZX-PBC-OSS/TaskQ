@@ -195,7 +195,7 @@ async def _spawn_and_hold(runner: FlowRunner, flow_id: JobId) -> None:
     resume)."""
     rows = await runner._claimable(flow_id)
     assert len(rows) == 1, f"expected exactly the spawn_join node, got {rows}"
-    await runner._run_node(flow_id, rows[0])
+    await runner._run_node(flow_id, rows[0], run_priority=None)
 
 
 async def _descendants(
@@ -472,7 +472,7 @@ class TestSpawnDepthBound:
         )
 
         rows = await runner._claimable(flow_id)
-        await runner._run_node(flow_id, rows[0])
+        await runner._run_node(flow_id, rows[0], run_priority=None)
 
         # the deterministic failure terminal-fails the node with the bound's
         # own class (the walk refused; the ladder unburned).

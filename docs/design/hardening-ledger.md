@@ -99,9 +99,10 @@ holes fixes ship with when nobody looks:
   link at 0, the silent-drop shape the priority surface's other faces
   refuse at their declaration sites. COVERED by the priority surface:
   the rows the OUTBOX DRAIN materializes resolve the run's stamped
-  `wf_priority` (the drain's root-metadata join + COALESCE, the fleet
-  door's parse-and-degrade arithmetic mirrored in SQL; pinned in
-  `tests/test_wf_priority_pins.py`, which fails on the unfixed engine):
+  `wf_priority` (the drain's root-metadata join, with the Python
+  `resolve_priority_stamp` as the authority and the SQL case as its
+  fallback; pinned in `tests/test_wf_priority_pins.py`, which fails on
+  the unfixed engine):
   the escalation lands at the run's override, a malformed or
   out-of-domain stamp degrades to the column default, never wedges the
   drain. OPEN: a `priority=` on the chain's links (the `EmitChild`
@@ -120,11 +121,14 @@ holes fixes ship with when nobody looks:
   whole drain statement - where the fleet door's Python parse degrades
   the same stamp to no-override (Python's int is arbitrary-precision;
   `check_priority_domain` is the clamp). The two doors diverge on
-  exactly the stamp a hand-crafted row can carry. CORRUPTION-ONLY and
-  unreachable via the API: `create_flow`/`run` validate the kwarg
-  (`check_priority_domain`) before the stamp is ever written - only a
-  hand-crafted row renders the shape. Blast radius if hit: one bad root
-  parks EVERY flow's consumer drain behind it (the fetch is a shared
+  exactly the stamp a hand-crafted row can carry. NOT REACHABLE THROUGH
+  THE API: `create_flow`/`run` validate the `priority=` kwarg
+  (`check_priority_domain`) before the stamp is ever written, and
+  `create_flow` REFUSES the reserved key in `root_metadata_extra` (a
+  `ValueError` directs the caller to `priority=`), so the metadata hatch
+  cannot write the stamp unvalidated - only a hand-crafted or
+  foreign-written row renders the shape. Blast radius if hit: one bad
+  root parks EVERY flow's consumer drain behind it (the fetch is a shared
   batch - the raise kills the pass). OPEN (either arm): length-bound
   the regex so the cast cannot see a digit string past int4 (a
   `{1,9}`-shaped digit cap), or cast `::numeric` FIRST and put the
@@ -135,6 +139,22 @@ holes fixes ship with when nobody looks:
   raises (the drain wedges), post-hardening the consumer lands at the
   column default 0 and the outbox flips delivered (the same
   degrade-to-default law the in-domain malformed stamps already pin).
+  Beside it, the refusal is pinned in `tests/test_wf_priority_pins.py`
+  (a `root_metadata_extra={"wf_priority": ...}` create raises; the
+  `priority=` kwarg remains the one validated writer).
+- **A consumer binding's `priority` is type-checked, not domain-clamped.**
+  `_types.py::_consumer_binding` decodes the binding's declared priority
+  as `raw.get("priority") if type(raw.get("priority")) is int else None`
+  - an int, but any int - while the docstring promises a malformed value
+  degrades to None. An out-of-smallint value in a binding row
+  (`99999`) therefore survives the decode and kills the whole drain pass
+  at the `$N::smallint[]` bind: the same shared-batch blast radius as the
+  beyond-int4 stamp above. CORRUPTION-ONLY in practice (every in-tree
+  declaration site is domain-checked; the shape needs a hand-written or
+  foreign-written row), so it is recorded, not fixed. OPEN: clamp the
+  decode through the smallint domain
+  (`_stamp_in_smallint_domain(raw.get("priority"))`, degrading to None
+  like `resolve_priority_stamp` already does).
 
 ## Deferred, with the judgment stated
 
