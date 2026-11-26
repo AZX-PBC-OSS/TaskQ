@@ -2,9 +2,10 @@
 #
 # Base is the 3.14/trixie canary — one interpreter ahead of the production
 # Dockerfile's 3.13/trixie pair, so the example stack exercises the next
-# Python before production adopts it; uv pinned to the repo's validated
-# 0.12.x line (pyproject required-version is >=0.12.7,<0.13), so the sync
-# below cannot run on an unvetted uv release.
+# Python before production adopts it (3.15 waits on asyncpg 0.32+ adoption,
+# as asyncpg 0.31.x publishes wheels through cp314); uv pinned to the repo's
+# validated 0.13.x line (pyproject required-version is >=0.13.0,<0.14), so
+# the sync below cannot run on an unvetted uv release.
 FROM python:3.14-slim-trixie
 
 # UV_PYTHON_PREFERENCE=only-system: build the venv on THIS image's
@@ -18,7 +19,7 @@ FROM python:3.14-slim-trixie
 ENV UV_PYTHON_PREFERENCE=only-system \
     UV_PYTHON=3.14
 
-RUN pip install --no-cache-dir uv==0.12.21
+RUN pip install --no-cache-dir uv==0.13.10
 
 WORKDIR /app
 

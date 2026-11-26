@@ -1,6 +1,6 @@
 services:
   postgres:
-    image: postgres:18.6
+    image: postgres:18.7
     container_name: taskq-postgres
     restart: unless-stopped
     environment:
@@ -36,7 +36,7 @@ services:
       start_period: 5s
 
   redis:
-    image: redis:8.10.2
+    image: redis:8.10.3
     container_name: taskq-redis
     restart: unless-stopped
     command: ["redis-server", "--appendonly", "no", "--save", ""]
@@ -52,7 +52,7 @@ services:
     # uv version-pinned to match pyproject's required-version (>=0.12.7,<0.13)
     # and the root Dockerfile's builder — a floating uv tag would let the
     # admin container resolve on any future release.
-    image: ghcr.io/astral-sh/uv:0.12.24-python3.13-trixie-slim
+    image: ghcr.io/astral-sh/uv:0.13.10-python3.13-trixie-slim
     container_name: taskq-admin
     working_dir: /app
     environment:

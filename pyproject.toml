@@ -18,7 +18,15 @@ classifiers = [
     "Topic :: Software Development :: Libraries",
 ]
 dependencies = [
-    "asyncpg>=0.31.0,<1",
+    # Cap <0.32 until TaskQ adopts asyncpg 0.32's breaking pool/copy changes:
+    # - #1323 changed min_size from an initial-connection count into a
+    #   maintained floor that retains idle connections past
+    #   max_inactive_connection_lifetime (breaking credential rotation /
+    #   idle-connection expiry) and spawns background replacement tasks.
+    # - #1360 enabled statement caching on copy_records_to_table()
+    #   introspection, raising ProtocolViolationError across DDL migrations
+    #   that alter columns between copies.
+    "asyncpg>=0.31.0,<0.32",
     "croniter>=6.2.4",
     "dotenvmodel>=1.1.0,<2",
     # 1.30.0 is the real floor for TaskQ's import surface, not a
@@ -177,18 +185,14 @@ vault = [
     "hvac>=2.4.0,<3",
 ]
 [tool.uv]
-# Pin the uv toolchain to the validated 0.12.x line: setup-uv reads
+# Pin the uv toolchain to the validated 0.13.x line: setup-uv reads
 # required-version from pyproject and installs the highest match in CI.
-# A range (not ==) so contributors on any 0.12.x patch can run uv locally —
+# A range (not ==) so contributors on any 0.13.x patch can run uv locally —
 # an exact pin hard-fails every local uv command on any other version —
-# while <0.13 keeps CI and local on the same validated minor line.
+# while <0.14 keeps CI and local on the same validated minor line.
 # Trade-off vs. an exact pin: setup-uv must consult the versions manifest to
 # resolve the range (the fetch an exact pin skips); accepted per review.
-# Lower bound is 0.12.7 (not 0.12.8): Dependabot's uv updater currently caps
-# at 0.12.7, and a floor above that fails every uv update with
-# tool_version_not_supported. CI still resolves to the newest 0.12.x, while
-# Dependabot can use its supported 0.12.7 — both satisfy this range.
-required-version = ">=0.12.7,<0.13"
+required-version = ">=0.13.0,<0.14"
 # Supply-chain hardening: never resolve to distributions published within the
 # last 24 hours, giving time for malicious releases to be detected and yanked.
 exclude-newer = "24 hours"
@@ -994,7 +998,7 @@ exclude_lines = [
 [dependency-groups]
 dev = [
     "anyio>=4.14.2",
-    "asyncpg-stubs>=0.31.3",
+    "asyncpg-stubs>=0.31.3,<0.32",
     "authlib>=1.7.2",
     "fakeredis>=2.37.0",
     "filelock>=3.32.4",

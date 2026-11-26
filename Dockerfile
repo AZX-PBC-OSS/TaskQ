@@ -15,10 +15,10 @@
 # syntax=docker/dockerfile:1
 
 # ── builder ─────────────────────────────────────────────────────────────
-# uv version-pinned to match pyproject's required-version (>=0.12.7,<0.13);
+# uv version-pinned to match pyproject's required-version (>=0.13.0,<0.14);
 # its python3.13-trixie-slim image matches .python-version, so the sync
 # below never downloads a second interpreter.
-FROM ghcr.io/astral-sh/uv:0.12.21-python3.13-trixie-slim AS builder
+FROM ghcr.io/astral-sh/uv:0.13.10-python3.13-trixie-slim AS builder
 
 ENV UV_COMPILE_BYTECODE=1 \
     UV_LINK_MODE=copy
