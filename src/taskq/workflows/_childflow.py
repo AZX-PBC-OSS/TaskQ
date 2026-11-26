@@ -122,6 +122,7 @@ __all__ = [
     "ChildOk",
     "ChildOutcome",
     "ChildResultContractError",
+    "ChildWorkflowNoTerminalError",
     "ChildWorkflowUnknownError",
     "SpawnDepthExceededError",
     "SpawnKeyReservedError",
@@ -147,7 +148,29 @@ _BARE_DECIMAL_KEY_RE: Final = re.compile(r"[0-9]+")
 class ChildWorkflowUnknownError(RuntimeError):
     """``ctx.spawn_flow`` named a workflow the registry does not carry —
     the typed refusal (the registration door — ``app.get(name)`` — is
-    the only body source, D1)."""
+    the only body source, D1).
+
+    Raised directly for an unregistered NAME, and the base of
+    :class:`ChildWorkflowNoTerminalError`, whose child IS registered —
+    so ``except ChildWorkflowUnknownError:`` keeps matching both spawn
+    target refusals."""
+
+
+class ChildWorkflowNoTerminalError(ChildWorkflowUnknownError):
+    """``ctx.spawn_flow`` named a child workflow that is REGISTERED and
+    compiled in this process but declares no terminal node — the join
+    could never read a result, so the spawn refuses before any child row
+    or spawn cursor is written.
+
+    A DETERMINISTIC authoring failure (the ladder's own routing): the
+    compiled graph of a registered name cannot gain a terminal by
+    re-running, so the node terminal-fails on attempt 1 with this class
+    on the record and no ``on_exhaustion`` effect. Distinct from its base
+    :class:`ChildWorkflowUnknownError` because the workflow is neither
+    unknown nor missing — reusing that class would record a registered
+    workflow as unregistered. The remedy: give the child workflow a
+    terminal (return its step promise, or ``build(...)`` it) rather than
+    sinking it."""
 
 
 class ChildFlowLostError(RuntimeError):
@@ -524,7 +547,7 @@ class ChildHandle[G: BaseModel]:
         fails LOUDLY instead of returning a 64 KiB prefix or validating a
         ``None`` into a pydantic ``ValidationError``."""
         if self._terminal_key is None:  # pragma: no cover - the spawn refuses a terminal-less child
-            raise ChildWorkflowUnknownError(
+            raise ChildWorkflowNoTerminalError(
                 f"the child flow {self.flow_id} names no terminal — the spawn "
                 "refuses a terminal-less child (the join could never read a result)"
             )
@@ -597,10 +620,11 @@ class ChildHandle[G: BaseModel]:
 # ── the spawn (the ctx mixin) ───────────────────────────────────────────
 
 
-#: The persisted refusal message's name budget. The loop boundary keeps only
-#: the first 200 characters of the body's exception (``api/_runner_loop.py``),
-#: so the display name is bounded to keep the diagnosis and the remedy inside
-#: that window for any registry key — nothing else bounds a workflow name.
+#: The persisted refusal message's name budget. The ladder and the loop
+#: boundary keep only the first ``MESSAGE_TERMINAL_MAX`` characters of the
+#: body's exception (``_progress``), so the display name is bounded to keep
+#: the diagnosis and the remedy inside that window for any registry key —
+#: nothing else bounds a workflow name.
 _SPAWN_NAME_DISPLAY_MAX: Final[int] = 40
 
 
@@ -655,7 +679,10 @@ class CtxSpawnOps(_SpawnHost):
         :class:`ChildResultContractError` at the join (deterministic: the
         retry ladder never burns).
         The spawn refuses a terminal-less child (the join could never read a
-        result). ``key=`` overrides the slot (the author's identity, the
+        result) with :class:`ChildWorkflowNoTerminalError` — a deterministic
+        authoring failure, so the retry ladder never burns and no
+        ``on_exhaustion`` effect fires.
+        ``key=`` overrides the slot (the author's identity, the
         same key in every loop iteration unless the author puts the
         iteration in it); the default slot is the per-claim spawn cursor
         (every execution restarts at slot 0, so a retry or a deferral's
@@ -724,9 +751,13 @@ class CtxSpawnOps(_SpawnHost):
 
         assert isinstance(compiled_obj, CompiledWorkflow), type(compiled_obj)
         if compiled_obj.terminal is None:
-            raise ChildWorkflowUnknownError(
-                f"workflow {name!r} names no terminal — the spawn refuses a "
-                "terminal-less child (the join could never read a result)"
+            # the name is bounded so the diagnosis and the remedy stay inside
+            # the persisted message window for any registry key.
+            raise ChildWorkflowNoTerminalError(
+                f"ctx.spawn_flow({_display_spawn_name(name)!r}): the named child "
+                "workflow is registered but declares no terminal node — the join "
+                "could never read a result; return the child's step promise (or "
+                "build(...) it) instead of sink-ing it"
             )
 
         # The fail-close: a dangling child pointer on the

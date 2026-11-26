@@ -135,3 +135,19 @@ def test_spawn_key_reserved_error_is_a_top_level_workflow_export() -> None:
     assert "SpawnKeyReservedError" in wf.__all__
     assert SpawnKeyReservedError is childflow.SpawnKeyReservedError
     assert issubclass(SpawnKeyReservedError, ValueError)
+
+
+def test_child_workflow_no_terminal_error_is_a_top_level_workflow_export() -> None:
+    """``ChildWorkflowNoTerminalError`` is a top-level ``taskq.workflows``
+    export by the sibling error classes' convention: the guide documents the
+    terminal-less spawn refusal, so the package surface carries the class.
+    Importable from the root, IDENTICAL to its defining-module class, in
+    ``__all__``, and a ``ChildWorkflowUnknownError`` subclass (a caller that
+    guarded the older spawn-target refusal keeps working)."""
+    import taskq.workflows as wf
+    import taskq.workflows._childflow as childflow
+    from taskq.workflows import ChildWorkflowNoTerminalError, ChildWorkflowUnknownError
+
+    assert "ChildWorkflowNoTerminalError" in wf.__all__
+    assert ChildWorkflowNoTerminalError is childflow.ChildWorkflowNoTerminalError
+    assert issubclass(ChildWorkflowNoTerminalError, ChildWorkflowUnknownError)

@@ -2178,6 +2178,25 @@ does not fire (a deterministic refusal is not an exhaustion). Inside a
 loop body the loop exhausts with `LoopBodyFailure`, and the class name is
 in the message.
 
+**The spawn target.** The child workflow is resolved from the compile
+registry in THIS process, so the spawn's two target refusals are
+`ChildWorkflowUnknownError` when the named workflow is not registered
+(the definitions must be imported here) and `ChildWorkflowNoTerminalError`
+when it IS registered but its compiled graph declares no terminal node (a
+workflow whose step promises are explicitly sunk with `sink(...)`, so the
+join could never read a result). The terminal-less refusal is a
+DETERMINISTIC authoring failure — its class subclasses
+`ChildWorkflowUnknownError`, so `except ChildWorkflowUnknownError:` catches
+both — and it fires before any child flow row, spawn cursor, or receipt is
+written: the node terminal-fails on attempt 1 without spending the retry
+ladder, and a declared `on_exhaustion` effect does not fire. The
+`error_class` this case records changes with it, so an alert, dashboard, or
+query that matched `ChildWorkflowUnknownError` exactly must now match both
+names (or the base's) to keep catching it. Its remedy is to give the child
+a terminal by returning its step promise (or `build(...)` it) instead of
+sinking it. Inside a loop body the loop exhausts with `LoopBodyFailure`,
+and the class name is in the message.
+
 **The retention interplay (the operator's rule).** The cancel cascade
 cancels the family; the retention purge must WALK THE PARENT LINKS the
 same way — purging a child's rows while its parent still runs leaves a
