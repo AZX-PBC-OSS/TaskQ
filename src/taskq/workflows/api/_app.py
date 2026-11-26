@@ -51,6 +51,7 @@ from taskq.workflows.api._graph import (
 from taskq.workflows.definitions import DuplicateWorkflowError
 
 if TYPE_CHECKING:
+    from taskq.workflows.api._deps_factory import DepsFactory
     from taskq.workflows.api._validate import WorkflowValidationError
     from taskq.workflows.chain import Chain
 
@@ -258,6 +259,14 @@ class CompiledWorkflow:
     #: — no behavior change.
     def_actor: str = "workflow"
     def_queue: str = "default"
+    #: the app's FACTORY binding (``WorkflowApp(deps_factory=…)``) — the lazy
+    #: arm of the same seam: nothing is created until a body executes on a
+    #: running loop, and the resolved instance then reaches every body the
+    #: static binding reaches. E12 checks the bodies' declarations against the
+    #: factory's product type. ``None`` = no factory declared (the static
+    #: ``deps`` or nothing at all). Kept after every existing field so the
+    #: public dataclass's positional constructor remains compatible.
+    deps_factory: DepsFactory | None = None
 
     def node_keys(self) -> list[str]:
         """The compiled node keys (the wiring's census)."""
@@ -333,17 +342,36 @@ class WorkflowApp:
     the runner — the runner never inspects it; the TYPING is proven at
     the body's own declaration (the checker verifies the body's
     ``deps.*`` reads against the declared type) and at build (E12's
-    runtime check of the binding against the declared type)."""
+    runtime check of the binding against the declared type).
+
+    ``WorkflowApp(deps_factory=…)`` is the same door's LAZY arm: the
+    factory is declared here, invoked only on the running event loop at
+    the first body execution, and reused by every body (see
+    :mod:`taskq.workflows.api._deps_factory` for the supported shapes and
+    the single-owner teardown precedence). The two arms are mutually
+    exclusive — a door binds ONE deps instance."""
 
     def __init__(
         self,
         *,
         actor: str = "wf",
         deps: object | None = None,
+        deps_factory: Callable[..., object] | None = None,
+        deps_teardown: Callable[[object], object] | None = None,
         queues_strict: bool = False,
     ) -> None:
+        from taskq.workflows.api._deps_factory import deps_factory_declaration
+
         self._actor = actor
         self._deps: object | None = deps
+        # the factory arm of the same door: nothing is invoked here — the
+        # declaration only records the callable, the optional teardown owner,
+        # and the product type E12 reads (lazy, on the running loop, at the
+        # first body execution; the mutual-exclusion and teardown-shape
+        # refusals are raised HERE, at the declaration site).
+        self._deps_factory = deps_factory_declaration(
+            deps=deps, deps_factory=deps_factory, deps_teardown=deps_teardown
+        )
         # the app's own definition carries the strict contract in code — the
         # fleet that needs this face cannot coordinate a fleet-wide env var
         # (its workers each subscribe to a queue subset), but every worker
@@ -634,9 +662,11 @@ class WorkflowApp:
 
     @property
     def deps(self) -> object | None:
-        """The app's bound deps instance (``None`` = none bound — a body
-        declaring the deps shape is E12's refusal). the instance: every
-        body invocation receives this object, never a copy."""
+        """The app's STATIC deps instance (``None`` when none is bound —
+        either no binding at all, where a body declaring the deps shape is
+        E12's refusal, or a ``deps_factory=`` binding whose instance exists
+        only on the running loop). The instance: every body invocation
+        receives this object, never a copy."""
         return self._deps
 
     def has(self, name: str) -> bool:
@@ -711,6 +741,7 @@ class WorkflowApp:
             terminal=graph.terminal,
             channel=channel,
             deps=self._deps,
+            deps_factory=self._deps_factory,
             smuggled=graph.smuggles,
             known_queues=self._known_queues(),
             chains=tuple(graph.chains),

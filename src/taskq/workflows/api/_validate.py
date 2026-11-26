@@ -774,22 +774,28 @@ def _rule_deps_contract(compiled: CompiledWorkflow) -> list[WorkflowValidationEr
     at build against the binding the compile carries:
 
     * a body declaring the deps shape where the app binds no deps
-      (``compiled.deps is None``) is refused — the message names the fix
-      (bind one instance at the door, or drop the parameter);
+      (``compiled.deps`` and ``compiled.deps_factory`` both ``None``) is
+      refused — the message names the fix (bind one instance at the door,
+      or drop the parameter);
     * a body whose deps annotation the bound instance does not SATISFY
-      is refused — both type names in the message.
+      is refused — both type names in the message;
+    * a body whose deps annotation the FACTORY's product type does not
+      satisfy is refused the same way, against the product type read from
+      the factory's return annotation (never by invoking it).
 
     The walk covers every body invocation the runner can inject into:
     the step bodies, the map's item children, and the loop driver's
     bodies (the escalation body rides the same shape — wired 1). An
     unresolvable-annotations body (``body_hints`` → ``{}``) is SKIPPED —
     the zero-false-positive doctrine (a guess is never rejected); the
-    runner's positional read is the shape's runtime face, and E10's own
-    arithmetic owns the true mismatches."""
-    from taskq.workflows.api._deps import deps_satisfied
+    same doctrine skips a factory whose product type the annotation
+    cannot prove. The runner's positional read is the shape's runtime
+    face, and E10's own arithmetic owns the true mismatches."""
+    from taskq.workflows.api._deps import deps_satisfied, deps_type_satisfied
 
     diagnostics: list[WorkflowValidationError] = []
     deps = compiled.deps
+    factory = compiled.deps_factory
     checks: list[tuple[str, Callable[..., object], int]] = []
     for node in compiled.nodes.values():
         if node.body is not None:
@@ -831,7 +837,7 @@ def _rule_deps_contract(compiled: CompiledWorkflow) -> list[WorkflowValidationEr
             continue  # not the deps shape — E10 owns the arity
         deps_param = params[-1]
         declared = hints[deps_param]
-        if deps is None:
+        if deps is None and factory is None:
             diagnostics.append(
                 WorkflowValidationError(
                     "E12-deps-contract",
@@ -839,12 +845,35 @@ def _rule_deps_contract(compiled: CompiledWorkflow) -> list[WorkflowValidationEr
                     f"{owner!r}'s body declares a deps parameter "
                     f"({deps_param!r}) but this workflow's app binds no "
                     "deps — bind ONE instance at the door "
-                    "(WorkflowApp(deps=…), or FlowRunner(…, deps=…) / "
-                    "run(…, deps=…) for the direct doors), or drop the "
-                    "parameter: one param beyond ctx + the wired sources "
+                    "(WorkflowApp(deps=…), or deps_factory= for a resource "
+                    "created lazily on the running loop; FlowRunner(…, "
+                    "deps=…) / run(…, deps=…) for the direct doors), or drop "
+                    "the parameter: one param beyond ctx + the wired sources "
                     "IS the deps contract, never a fourth data source",
                 )
             )
+            continue
+        if factory is not None and deps is None:
+            # The factory arm: E12 reads the PRODUCT TYPE the return annotation
+            # proves. A hand-built compile carrying BOTH validates the static
+            # instance (the one the runner hands the body — the doors refuse the
+            # pairing at every declaration site).
+            verdict = deps_type_satisfied(factory.product_type, declared)
+            if verdict is False:
+                declared_name = getattr(declared, "__name__", declared)
+                produced_name = getattr(factory.product_type, "__name__", factory.product_type)
+                diagnostics.append(
+                    WorkflowValidationError(
+                        "E12-deps-contract",
+                        "error",
+                        f"{owner!r}'s body declares its deps as "
+                        f"{declared_name!r} but the workflow's deps_factory "
+                        f"produces {produced_name!r} — the factory's product "
+                        "must SATISFY the body's declared deps type: return "
+                        "the declared type (or a subtype) from the factory, "
+                        "or fix the body's annotation",
+                    )
+                )
             continue
         verdict = deps_satisfied(deps, declared)
         if verdict is False:

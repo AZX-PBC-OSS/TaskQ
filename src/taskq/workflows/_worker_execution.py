@@ -1085,11 +1085,14 @@ def _runner_for(
     if cached is not None and cached[0] is pool:
         return cached[1]
     compiled = get_compiled_workflow(name)
-    # the compiled carries the app's bound instance (bound once at
-    # WorkflowApp(deps=…)) — the worker-hosted runner hands the same instance
-    # to every body invocation the vanilla door does (the E12 contract checked
-    # the bodies' declarations against this binding at the projection's
-    # compile).
+    # the compiled carries the app's deps binding — the static instance bound at
+    # ``WorkflowApp(deps=…)``, or the factory declared at
+    # ``WorkflowApp(deps_factory=…)`` that the runner resolves lazily on THIS
+    # worker's loop (E12 checked the bodies' declarations against that binding
+    # at the projection's compile). The worker-lifetime scope and the
+    # shutdown teardown of a resolved factory instance are the worker deps
+    # lifecycle's. The explicit ``deps=`` keeps the static arm's long-standing
+    # call shape; ``None`` lets the runner fall back to the compile's binding.
     runner = FlowRunner(
         compiled,
         pool,
