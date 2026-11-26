@@ -40,6 +40,7 @@ from taskq.workflows.ledger import LedgerClaim
 
 if TYPE_CHECKING:
     from taskq.workflows._sql import WorkflowSql
+    from taskq.workflows._types import ForkSpec
 
 __all__ = ["LoopOps"]
 
@@ -86,8 +87,11 @@ class _LoopHost(Protocol):
         emitter: ProgressEmitter | None = None,
         *,
         claim_epoch: int = 0,
+        prebuilt_route_fork: ForkSpec | None = None,
+        run_priority: int | None = None,
         ledger_id: JobId | None = None,
         ledger_claimed_at: datetime | None = None,
+        collected: list[object] | None = None,
     ) -> FinalizeResult: ...
 
 

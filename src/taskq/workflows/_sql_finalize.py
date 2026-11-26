@@ -443,6 +443,14 @@ SELECT * FROM unnest($1::uuid[], $2::uuid[], $3::uuid[], $4::text[])
 # replay disposition: a committed page converts the reservation — the next
 # derived charge changes by W' - W; unreserved emits carry no key and are
 # unchanged).
+#
+# The root condition is deliberately the NEGATIVE form: this fences an
+# in-flight COMMIT, never a claim. Root absent → NOT EXISTS holds → the
+# checkpoint succeeds (a vanished root must not freeze an already-admitted
+# source). Flipping it to a positive root test would also need an error
+# route: _emit.py reads a LEFT JOIN and would misdiagnose the vanished root
+# as EmitStaleClaimError, sending corruption to the ladder instead of the
+# root-missing vocabulary.
 EMIT_CURSOR_SQL = """\
 UPDATE {schema}.jobs
 SET metadata = (metadata - 'wf_emit_reservation') || $2::jsonb

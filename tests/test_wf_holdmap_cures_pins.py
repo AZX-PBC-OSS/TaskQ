@@ -282,6 +282,10 @@ async def test_the_substep_does_not_hold_the_pool_connection_across_the_body(
                 job_id=jid,
                 node_key=f"item:{i}",
                 attempt=1,
+                # no row claim here: the substep path under test fences on
+                # neither the hold nor the spawn cursor, so the minimum
+                # well-formed epoch is the honest value.
+                claim_epoch=1,
                 input=None,
                 pool=pool,
                 wsql=wsql,
@@ -318,6 +322,7 @@ async def test_the_substep_does_not_hold_the_pool_connection_across_the_body(
             job_id=jid,
             node_key="item:0",
             attempt=1,
+            claim_epoch=1,
             input=None,
             pool=pool,
             wsql=wsql,

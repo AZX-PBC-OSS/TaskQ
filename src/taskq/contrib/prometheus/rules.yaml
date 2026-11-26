@@ -437,17 +437,21 @@ groups:
             Pending/scheduled jobs that cannot make progress, sustained for 5
             minutes, with the reason on the label: no_actor_config (the actor
             has no actor_config row — deregistered, or never registered by a
-            worker; the row is invisible to every dispatch round) or
+            worker; the row is invisible to every dispatch round),
             unserved_queue (the queue dispatch routes the actor on has no live
-            worker subscribed — likewise never dispatched). For these two
+            worker subscribed — likewise never dispatched), or
+            stamp_unresolved (the row carries a metadata.hold stamp whose hold
+            is no longer held, so the dispatch fence refuses it until the
+            leader's hold-stamp reconcile clears the stamp). For these three
             dispatch-invisible reasons neither dispatch nor the deadline sweep
-            will ever touch the rows. The third reason, workflow_root_missing,
-            is control-plane data corruption, not a routing condition: the row's
-            own run has lost its __flow__ root row — the row may dispatch and
-            run, but the run can never progress; no worker knob repairs it, and
-            the remedy is the runbook's restore-or-quarantine recovery. The
-            leader's detector is the only signal. Runbook:
-            docs/guides/runbooks.md#taskqstrandedjobs.
+            will ever touch the rows. The fourth reason,
+            workflow_root_missing, is control-plane data corruption, not a
+            routing condition: the row's own run has lost its __flow__ root
+            row — no claim fence admits the row because its body resolves from
+            the root's workflow stamp, and the run can never progress; no
+            worker knob repairs it, and the remedy is the runbook's
+            restore-or-quarantine recovery. The leader's detector is the only
+            signal. Runbook: docs/guides/runbooks.md#taskqstrandedjobs.
 
       - alert: TaskQWorkflowBlockedStuck
         expr: taskq_wf_progress_nodes_total{state="blocked"} > 0

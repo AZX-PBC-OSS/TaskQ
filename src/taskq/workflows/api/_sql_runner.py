@@ -34,6 +34,60 @@ __all__ = ["wf_conn_fetchval"]
 _TERMINAL_FLOW_SQL_SET: str = "('" + "','".join(sorted(TERMINAL_STATUSES)) + "')"
 
 
+#: The root-existence half of the in-process fence, shared by the claim CAS
+#: and the flow-scoped enumeration. Both doors must ask the same question —
+#: the run's ``__flow__`` root must be PRESENT (the retired negative form
+#: admitted a row whose root had been archived or deleted) — and the
+#: escalation / after-terminal exemptions ride INSIDE the EXISTS so they pass
+#: on a terminal root that is present and are refused once it is gone. Every
+#: candidate-row column is qualified to the outer row: the inner scan's alias
+#: shadows an unqualified ``step_key`` / ``metadata``.
+_ROOT_EXISTENCE_FENCE_CORE = """\
+      EXISTS (
+        SELECT 1 FROM {schema}.jobs wf_flow
+        WHERE wf_flow.id = ({schema}.jobs.metadata->>'flow_id')::uuid
+          AND wf_flow.step_key = '__flow__'
+          AND (
+            wf_flow.status NOT IN __WF_TERMINAL__
+            OR {schema}.jobs.step_key = '__WF_ESCALATION_STEP__'
+            OR {schema}.jobs.metadata ? 'wf_after_terminal_effect'
+          )
+      )"""
+
+#: The claim CAS is generic over ``jobs``: a vanilla row must stay claimable,
+#: so the null-safe ``IS NULL`` arm stays (an equality/NOT wrapper would make
+#: a NULL ``step_key`` evaluate to unknown and refuse every vanilla row).
+_CLAIM_ROOT_FENCE = (
+    """\
+  AND (
+    {schema}.jobs.step_key IS NULL
+    OR (
+      {schema}.jobs.step_key <> '__flow__'
+      AND """
+    + _ROOT_EXISTENCE_FENCE_CORE
+    + """
+    )
+  )"""
+)
+
+#: The enumeration is flow-scoped (``metadata->>'flow_id' = $1``) and carries
+#: an unconditional ``step_key <> '__flow__'`` pre-filter, so its rows can
+#: never be vanilla: the ``IS NULL`` arm would be dead text here (``<>`` on a
+#: NULL step_key yields unknown, excluding the row before the fence sees it).
+#: The fragment therefore states only the flow-scoped conjuncts, and the
+#: pre-filter's redundancy is deliberate: it is the enumeration's own
+#: node-only contract, not a fence leg that may be deleted.
+_ENUM_ROOT_FENCE = (
+    """\
+  AND (
+    {schema}.jobs.step_key <> '__flow__'
+    AND """
+    + _ROOT_EXISTENCE_FENCE_CORE
+    + """
+  )"""
+)
+
+
 def _render_fence_tokens(template: str) -> str:
     """The in-process fence's token substitution (the fleet's
     ``_wf_dispatch_fence``'s shape, mirrored): the terminal-status set
@@ -60,7 +114,8 @@ WF_ARGS_KEY = "wf_args"
 #: The map child's single-arg key (the fork's per-item identity).
 ITEM_KEY = "wf_item"
 
-NODE_CLAIM_SQL_TEMPLATE = _render_fence_tokens("""
+NODE_CLAIM_SQL_TEMPLATE = _render_fence_tokens(
+    """
 UPDATE {schema}.jobs
 SET status = 'running', locked_by_worker = $2, lock_expires_at = now() + interval '90 seconds',
     started_at = COALESCE(started_at, clock_timestamp()),
@@ -84,8 +139,8 @@ WHERE id = $1
   AND NOT ({wf_emit_park_core})
   AND deps_pending = 0
   -- THE HOLD-STAMP LEG (the fence's last word — the two-driver race's
-  -- wedged-hold fix, the same leg the worker's claimable fence carries
-  -- since the D2 soak's wedge): the claimable SELECT's snapshot can
+  -- wedged-hold fix, the same leg the fleet's dispatch fence carries,
+  -- _WF_DISPATCH_FENCE_TEMPLATE): the claimable SELECT's snapshot can
   -- PREDATE the hold's mint (the other driver's body minted the hold
   -- between this driver's SELECT and this WRITE) — a stamp that rides
   -- the mint's OWN transaction (the signal row + the held representation
@@ -107,17 +162,21 @@ WHERE id = $1
   -- pages-a-human duty: the exhaust tx commits the escalation's outbox
   -- row and the flow's terminal TOGETHER, so the consumer row is BORN
   -- into a terminal flow; the two fences may not disagree).
-  AND (
-    step_key = '__WF_ESCALATION_STEP__'
-    OR metadata ? 'wf_after_terminal_effect'
-    OR NOT EXISTS (
-      SELECT 1 FROM {schema}.jobs wf_flow
-      WHERE wf_flow.id = ({schema}.jobs.metadata->>'flow_id')::uuid
-        AND wf_flow.status IN __WF_TERMINAL__
-    )
-  )
+  -- The ROOT-EXISTENCE leg is the fleet fence's own, fail-closed: the
+  -- run's ``__flow__`` root must be in ``jobs``. The negative terminal
+  -- form this replaces admitted a row whose root had been archived or
+  -- deleted (the subquery found nothing, so the negation held) and the
+  -- tick claimed and executed a body whose workflow stamp no longer
+  -- existed anywhere. The exemptions ride INSIDE the EXISTS, so an
+  -- escalation / after-terminal row stays claimable on a terminal root
+  -- that is present and is refused with every other row once it is
+  -- gone. The predicate is one constant shared with the enumeration
+  -- (``_ROOT_EXISTENCE_FENCE_CORE``); every candidate-row column is
+  -- qualified to the outer row.
+  __WF_ROOT_FENCE__
 RETURNING attempt, claim_epoch
-""")
+""".replace("__WF_ROOT_FENCE__", _CLAIM_ROOT_FENCE)
+)
 
 # The ordinary re-pend statement lives with its claim/ledger transaction
 # in ``api._attempt``; no weaker claimant-only statement remains here.
@@ -222,20 +281,39 @@ UNION ALL
 SELECT 'cancel_fenced'::text AS verdict, id FROM cancel_fenced
 """
 
+# The detail re-read's PARENT ROWS (the bounded collect's ``detail_home``):
+# ``metadata`` rides every level so the recursive re-read knows each parent's
+# own node kind from the durable ``wf_node_kind`` stamp
+# (``_runner_codec.WF_NODE_KIND_KEY``) rather than from a workflow registry a
+# runner-less reader does not have. ``result_expired`` is the definite,
+# two-valued "this row holds no durable value": a NULL result never is a
+# collected ``None`` (a body returning ``None`` is stored as the empty
+# document, never SQL NULL), so the flag is plain ``p.result IS NULL``. The
+# TTL comparison is deliberately NOT part of the predicate: a row re-pended by
+# the operator retry carries no expiry stamp at all, and ``NULL <
+# clock_timestamp()`` is SQL NULL — a three-valued flag would read as "not
+# expired" and let that row's lost value through the count check as a
+# fabricated item.
 PARENT_RESULTS_BY_KEY_SQL_TEMPLATE = """
-SELECT p.id, p.step_key, p.result
+SELECT p.id, p.step_key, p.result, p.metadata,
+       (p.result IS NULL) AS result_expired
 FROM {schema}.wf_edge e
 JOIN {schema}.jobs p ON p.id = e.parent_id
 WHERE e.child_id = $1
   -- THE ABSORBED PARENT'S SLOT (the barrier fix — the envelope must
-  -- not lie in the sum): on an ABSORBING edge (collect | maybe) a
-  -- terminal-FAILED parent contributes NO result item to the packed
-  -- join — its absence is ON THE RECORD (the join's metadata.failures
-  -- array carries the typed FailureInfo + the policy that ran), never a
-  -- junk {} slot the consumer's decode cannot honor. A fail_closed
-  -- edge's consumer never runs over a failed parent (the cascade), so
-  -- this filter changes no other face.
-  AND NOT (p.status = 'failed' AND e.failure_policy IN ('collect', 'maybe'))
+  -- not lie in the sum): on an ABSORBING edge (collect | maybe) only a
+  -- SUCCEEDED parent contributes a result item to the packed join. A
+  -- terminal-FAILED parent's absence is ON THE RECORD (the join's
+  -- metadata.failures array carries the typed FailureInfo + the policy
+  -- that ran), never a junk {} slot the consumer's decode cannot honor —
+  -- and a parent the per-node retry re-pends AFTER the join packed stays
+  -- excluded too: the pack summed the succeeded set, so re-reading the
+  -- parent's LIVE status must not re-open a count the marker already
+  -- recorded. A fail_closed edge's consumer never runs over a failed
+  -- parent (the cascade), so this filter changes no other face — and a
+  -- re-pended parent behind that edge is read (and fails closed on its
+  -- NULL result) exactly as the re-pend left it.
+  AND NOT (p.status <> 'succeeded' AND e.failure_policy IN ('collect', 'maybe'))
 ORDER BY p.id
 """
 
@@ -273,7 +351,8 @@ SET deps_pending = deps_pending + 1,
 WHERE id = $1
 """
 
-CLAIMABLE_NODES_SQL_TEMPLATE = _render_fence_tokens("""
+CLAIMABLE_NODES_SQL_TEMPLATE = _render_fence_tokens(
+    """
 SELECT id, step_key, map_index, attempt, trace_id, payload, start_to_close, metadata,
        required_worker_schema, max_attempts, retry_kind,
        retry_base_seconds, retry_cap_seconds, retry_backoff, retry_jitter
@@ -295,6 +374,12 @@ WHERE (metadata->>'flow_id')::uuid = $1
   -- with the reservation it installs.
   AND NOT ({wf_emit_park_core})
   AND deps_pending = 0
+  -- THE NODE-ONLY PRE-FILTER: this statement is the run's node enumeration,
+  -- so the root row is excluded here unconditionally. The root-existence
+  -- fence below repeats step_key <> '__flow__'; that repetition is
+  -- deliberate (the fence reads as the fleet fence does) and this line is
+  -- the enumeration's own node-only contract, not a removable duplicate:
+  -- without it the fence would be the only thing keeping the root out.
   AND step_key <> '__flow__'
   AND NOT metadata ? 'hold'
   -- THE TERMINAL-FLOW FENCE (the fleet's dispatch fence's parity —
@@ -306,18 +391,17 @@ WHERE (metadata->>'flow_id')::uuid = $1
   -- included: the pages-a-human duty is the ONE thing that survives a
   -- flow's terminality — the two fences may not disagree, a probe that
   -- disagrees with its claim is the worker-sleeps-the-page-never-runs
-  -- shape).
-  AND (
-    step_key = '__WF_ESCALATION_STEP__'
-    OR metadata ? 'wf_after_terminal_effect'
-    OR NOT EXISTS (
-      SELECT 1 FROM {schema}.jobs wf_flow
-      WHERE wf_flow.id = ({schema}.jobs.metadata->>'flow_id')::uuid
-        AND wf_flow.status IN __WF_TERMINAL__
-    )
-  )
+  -- shape). The exemptions ride INSIDE the root-existence EXISTS (the
+  -- fail-closed leg: a run whose ``__flow__`` root is gone has no
+  -- workflow stamp left to resolve, so none of its rows is work).
+  -- The fence is the flow-scoped variant: the enumeration cannot see a
+  -- vanilla row (its WHERE pins the flow link and the pre-filter above
+  -- excludes a NULL step_key), so the claim CAS's null-safe ``IS NULL``
+  -- arm would be dead text here. See ``_ROOT_EXISTENCE_FENCE_CORE``.
+  __WF_ROOT_FENCE__
 ORDER BY id
-""")
+""".replace("__WF_ROOT_FENCE__", _ENUM_ROOT_FENCE)
+)
 
 #: the run's node-row count — a nodeless root (the orphan's signature: pending
 #: + zero nodes, the pre-fix debris shape) counts zero. The same
@@ -359,8 +443,19 @@ SELECT error_class, error_message FROM {schema}.jobs
 WHERE id = $1 AND status = 'cancelled'
 """
 
+# The skip-predicate's view: every succeeded row's identity + result, with
+# its ``metadata`` — the detail re-read
+# (``_runner_codec.decode_result_with_detail``) needs the row id and the
+# durable node-kind stamp when the entry is a bounded collect's truncated
+# summary. ``result_expired`` carries the row's own "no durable value" fact
+# (``result IS NULL``) so a swept entry row refuses at the read instead of
+# decoding as a collected ``None``. The run's own ``__flow__`` root row is
+# excluded from that flag: it is the run, not a node result, and it holds no
+# ``result`` by construction.
 SUCCEEDED_RESULTS_SQL_TEMPLATE = """
-SELECT step_key, result FROM {schema}.jobs
+SELECT id, step_key, result, metadata,
+       (result IS NULL AND step_key <> '__flow__') AS result_expired
+FROM {schema}.jobs
 WHERE (metadata->>'flow_id')::uuid = $1 AND status = 'succeeded'
 """
 
@@ -531,10 +626,17 @@ SELECT count(*) FROM flipped
     _rebrace(validated_reservation_width("j")) + " AS released_emit_reservation_width",
 )
 
+#: The terminal read: the run's status + the terminal node's row. The
+#: node's own ``result_expired`` is the row's definite "no durable value"
+#: fact (``result IS NULL``), so a swept terminal join row refuses at the
+#: read instead of decoding as ``None`` — which is this reader's answer for
+#: "not terminal yet". ``n.id IS NOT NULL`` keeps the LEFT JOIN's miss a
+#: plain "no terminal row", never a stale expiry flag.
 TERMINAL_RESULT_SQL_TEMPLATE = """
 SELECT r.status AS run_status,
        n.id AS node_id, n.step_key AS node_key, n.result AS node_result,
-       n.status AS node_status
+       n.metadata AS node_metadata, n.status AS node_status,
+       (n.id IS NOT NULL AND n.result IS NULL) AS result_expired
 FROM {schema}.jobs r
 LEFT JOIN {schema}.jobs n
   ON (n.metadata->>'flow_id')::uuid = r.id AND n.step_key = $1

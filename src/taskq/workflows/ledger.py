@@ -98,7 +98,16 @@ class FlowEntry(Protocol):
     """The flow definition's registered shape the run-key claim needs (the
     typed door — a bare ``int`` or attribute-less object is a checker
     error, the negative type probes pin it). ``name`` namespaces the
-    arbiter's scope (``workflow-run:<name>``)."""
+    arbiter's scope (``workflow-run:<name>``).
+
+    ``actor`` is where the run's root row is written. Dispatch's root-cap
+    subtraction scopes to the literal ``'wf'`` (``capped_running`` in
+    ``backend/_dispatch_sql.py``), so a root written on any other actor is
+    never subtracted and fills that actor's ``max_concurrent`` — the #747
+    shape for that actor. The engine's own runner writes every root on
+    ``wf`` (``FlowEntryShim``'s default); this protocol accepts any actor
+    because it is an exported ledger API, not because a non-``wf`` root is
+    supported."""
 
     name: str
     actor: str
@@ -341,7 +350,11 @@ async def insert_flow_run(
 
     *entry* is the flow definition's registered shape (the API; the
     TYPED door — :class:`FlowEntry`, the protocol the negative probes
-    pin). *extra_metadata* rides the same insert (the child flow's provenance
+    pin). The root is written on ``entry.actor``: dispatch's root-cap
+    subtraction scopes to the literal ``'wf'``, so a caller passing any
+    other actor writes a root that never gets subtracted and fills that
+    actor's cap (see :class:`FlowEntry`). *extra_metadata* rides the same
+    insert (the child flow's provenance
     stamps — the child root's parent pointers land in the create's one
     transaction; ``None`` = the shipped shape byte-identical).
     """

@@ -501,7 +501,7 @@ _POPULATION_SUBJECT_RE: Final = re.compile(
 #: still does not match.
 _SENTENCE_MENTION_RE: Final = re.compile(
     r"(?<![\w-])(?:stranded(?:-jobs)?"
-    r"|no_actor_config|unserved_queue|workflow_root_missing"
+    r"|no_actor_config|unserved_queue|stamp_unresolved|workflow_root_missing"
     r"|pending/scheduled"
     r"|taskq_jobs_stranded)(?![\w-])"
 )
@@ -632,17 +632,22 @@ _PARITY_RE: Final = re.compile(
 _REQUIRED_HOMES: tuple[tuple[str, tuple[str, ...], str], ...] = (
     (
         "docs/guides/runbooks.md",
-        ("workflow_root_missing", "stranded-jobs-workflow-root-missing"),
-        "the stranded-jobs runbook's third reason + its own event/remedy",
+        (
+            "workflow_root_missing",
+            "stamp_unresolved",
+            "stranded-jobs-workflow-root-missing",
+            "stranded-jobs-stamp-unresolved",
+        ),
+        "the stranded-jobs runbook's reasons + their own events/remedies",
     ),
     (
         "docs/guides/ops.md",
-        ("workflow_root_missing",),
+        ("workflow_root_missing", "stamp_unresolved"),
         "the ops metric row + the no-knob row's third reason",
     ),
     (
         "docs/guides/workers.md",
-        ("workflow_root_missing",),
+        ("workflow_root_missing", "stamp_unresolved"),
         "the leader loop's detector description names all three reasons",
     ),
     (
@@ -662,39 +667,44 @@ _REQUIRED_HOMES: tuple[tuple[str, tuple[str, ...], str], ...] = (
     ),
     (
         "docs/guides/observability.md",
-        ("workflow_root_missing",),
+        ("workflow_root_missing", "stamp_unresolved"),
         "the canonical metric row's three meanings",
     ),
     (
         "docs/guides/insights.md",
-        ("workflow_root_missing",),
+        ("workflow_root_missing", "stamp_unresolved"),
         "the insights table's third-reason distinction",
     ),
     (
         "docs/guides/cli.md",
-        ("workflow_root_missing",),
+        ("workflow_root_missing", "stamp_unresolved"),
         "the doctor parity paragraph's scope names the third leg",
     ),
     (
         "docs/guides/admin-ui.md",
-        ("workflow_root_missing",),
+        ("workflow_root_missing", "stamp_unresolved"),
         "the Stranded column's scope names the third leg",
     ),
     ("docs/architecture.md", ("workflow_root_missing",), "the leader-detector's three shapes"),
     (
         "docs/guides/configuration.md",
-        ("workflow_root_missing",),
+        ("workflow_root_missing", "stamp_unresolved"),
         "the interval row's closed reason set",
     ),
     (
         "src/taskq/settings.py",
-        ("workflow_root_missing",),
+        ("workflow_root_missing", "stamp_unresolved"),
         "the interval Field description's closed reason set",
     ),
     (
         "src/taskq/worker/_leader_sweeps.py",
-        ("workflow_root_missing", "stranded-jobs-workflow-root-missing"),
-        "the detector's third leg + its own warning event",
+        (
+            "workflow_root_missing",
+            "stamp_unresolved",
+            "stranded-jobs-workflow-root-missing",
+            "stranded-jobs-stamp-unresolved",
+        ),
+        "the detector's legs + their own warning events",
     ),
     (
         "src/taskq/worker/run.py",
@@ -703,7 +713,7 @@ _REQUIRED_HOMES: tuple[tuple[str, tuple[str, ...], str], ...] = (
     ),
     (
         "src/taskq/obs/_otel.py",
-        ("workflow_root_missing",),
+        ("workflow_root_missing", "stamp_unresolved"),
         "the StrandedReason type's third member + the gauge prose",
     ),
     (
@@ -713,18 +723,23 @@ _REQUIRED_HOMES: tuple[tuple[str, tuple[str, ...], str], ...] = (
     ),
     (
         "src/taskq/web/admin/queues.py",
-        ("workflow_root_missing",),
+        ("workflow_root_missing", "stamp_unresolved"),
         "the queue roll-up's scope comment names the third leg",
     ),
     (
         "src/taskq/contrib/prometheus/rules.yaml",
-        ("workflow_root_missing",),
+        ("workflow_root_missing", "stamp_unresolved"),
         "the shipped alert description's third reason",
     ),
     (
         "src/taskq/contrib/kubernetes/prometheus_rule.yaml",
-        ("workflow_root_missing",),
-        "the shipped k8s alert description's third reason",
+        ("workflow_root_missing", "stamp_unresolved"),
+        "the shipped k8s alert description's reasons",
+    ),
+    (
+        "src/taskq/_doctor.py",
+        ("workflow_root_missing", "stamp_unresolved"),
+        "the doctor's read scope names both unmirrored legs",
     ),
 )
 
@@ -1753,6 +1768,7 @@ def _unit_mentions_detector(unit: Unit) -> bool:
             "stranded",
             "no_actor_config",
             "unserved_queue",
+            "stamp_unresolved",
             "workflow_root_missing",
             "pending/scheduled",
             "pending/schedu" + "led jobs",
@@ -1945,14 +1961,14 @@ def rule_closed_enumeration(unit: Unit) -> bool:
     prose two-member form, OR the single-member definition (the
     settings-description class: defining the entire check by no-config
     alone is the same defect; the rule never requires the word 'two').
-    A corrected unit either includes `workflow_root_missing` and its
-    distinct meaning, or its defining claim is expressly scoped (a
-    genuine scope statement in the unit, or the defining claim's own
-    subject is one reason's rows)."""
+    A corrected unit includes BOTH `workflow_root_missing` and
+    `stamp_unresolved` with their distinct meanings, or its defining
+    claim is expressly scoped (a genuine scope statement in the unit, or
+    the defining claim's own subject is one reason's rows)."""
     if not _unit_mentions_detector(unit):
         return False
     lowered = _lowered(unit)
-    if "workflow_root_missing" in lowered:
+    if "workflow_root_missing" in lowered and "stamp_unresolved" in lowered:
         return False
     mentions_old = (
         "no_actor_config" in lowered
@@ -1994,14 +2010,14 @@ def rule_whole_detector_parity(unit: Unit) -> bool:
 
 def rule_structural_closed_enumeration(unit: Unit) -> bool:
     """Rule 4: a `Literal[...]`/tuple/list/set DECLARATION of the reason
-    family lacking `workflow_root_missing` — the typed face of the closed
-    enumeration. A genuine subset fixture (a test's own old-label tuple)
-    passes only when the span is allowlisted or the same file carries the
-    third-reason positive coverage."""
+    family lacking `workflow_root_missing` or `stamp_unresolved` — the
+    typed face of the closed enumeration. A genuine subset fixture (a
+    test's own old-label tuple) passes only when the span is allowlisted
+    or the same file carries the full-vocabulary positive coverage."""
     if not _unit_mentions_detector(unit):
         return False
     text = unit.text
-    if "workflow_root_missing" in text:
+    if "workflow_root_missing" in text and "stamp_unresolved" in text:
         return False
     has_labels = "no_actor_config" in text and "unserved_queue" in text
     if not has_labels:
@@ -2389,6 +2405,7 @@ def test_required_vocabulary_homes_carry_the_third_reason() -> None:
 _WILDCARD_VOCABULARY: Final[tuple[str, ...]] = (
     "no_actor_config",
     "unserved_queue",
+    "stamp_unresolved",
     "workflow_root_missing",
     "workflow-root-missing",
     "WorkflowRootMissingError",
@@ -2726,7 +2743,9 @@ def test_positive_corpus_all_three_and_scoped_forms_pass() -> None:
     all_three = (
         "The stranded detector's reason set: no_actor_config (the row is "
         "invisible to every dispatch round — no dispatch or deadline touch), "
-        "unserved_queue (likewise dispatch-invisible), and "
+        "unserved_queue (likewise dispatch-invisible), stamp_unresolved (a "
+        "dead metadata.hold stamp the dispatch fence refuses until the "
+        "reconcile clears it — likewise dispatch-invisible), and "
         "workflow_root_missing (the row may dispatch and run when served, "
         "but the run cannot progress — control-plane corruption, the "
         "runbook's remedy)."
@@ -2746,7 +2765,7 @@ def test_positive_corpus_all_three_and_scoped_forms_pass() -> None:
         "the deadline fails is dispatched before it dies."
     )
     for name, text in (
-        ("all-three", all_three),
+        ("all-four", all_three),
         ("scoped-subset", scoped_subset),
         ("scoped-parity", scoped_parity),
         ("deadline-subject", deadline_subject),
@@ -2754,11 +2773,11 @@ def test_positive_corpus_all_three_and_scoped_forms_pass() -> None:
         hits = _corpus_matches(f"virtual/{name}.md", text)
         assert not hits, f"the positive corpus's {name} must pass: {hits}"
 
-    # The typed all-three face passes structurally.
+    # The typed full-vocabulary face passes structurally.
     py_positive = (
         "from typing import Literal\n"
         "type StrandedReason = Literal['no_actor_config', 'unserved_queue', "
-        "'workflow_root_missing']\n"
+        "'stamp_unresolved', 'workflow_root_missing']\n"
         '"""The stranded detector\'s own closed reason set."""\n'
     )
     assert not _corpus_matches("virtual/positive.py", py_positive)
@@ -3051,8 +3070,9 @@ def test_markdown_structural_siblings_are_their_own_units() -> None:
         "pending/scheduled rows that cannot make progress, with three "
         "meanings: `" + frag_reasons + "` (the row is invisible to every "
         "dispatch round), `" + frag_unserved + "` (likewise never "
-        "dispatched), and `workflow_root_missing` (the row may dispatch "
-        "and run; the runbook owns the remedy)."
+        "dispatched), `stamp_unresolved` (a dead metadata.hold stamp the "
+        "reconcile clears), and `workflow_root_missing` (the row may "
+        "dispatch and run; the runbook owns the remedy)."
     )
     gloss_item = (
         "12. **Stranded rows**: The stranded gauge: rows that " + "can never " + "be dispatched."

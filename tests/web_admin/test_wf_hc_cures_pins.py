@@ -881,6 +881,77 @@ def test_the_wiring_key_refuses_the_affordance_hostile_charset() -> None:
         _compile_with_key("bad.key")
 
 
+def test_the_wiring_key_refuses_the_engine_reserved_root_marker() -> None:
+    """W8: the engine's reserved run-root marker is refused by every wiring
+    door that can mint a node key — ``step()``, ``loop()``,
+    ``chain_source()`` (through ``BuildGraph.add``) and a ``Chain``'s step
+    map. A node sharing ``step_key = '__flow__'`` is never claimed (the
+    dispatch fence excludes it) and is invisible to the nodeless-root
+    reap's node-existence check, so the run wedges and then fails under a
+    false "create did not commit atomically" story."""
+    from taskq.workflows import Chain, Done, WorkflowBuildError, chain_source, loop
+    from taskq.workflows.chain import Step
+
+    async def body(ctx: Any, params: Any) -> str:
+        return "ok"
+
+    async def loop_body(ctx: Any, carry: object) -> Done[int]:
+        return Done(1)
+
+    def _assert_reserved_root_refusal(exc: BaseException) -> None:
+        message = str(exc)
+        assert "__flow__" in message, message
+        assert "reserved" in message, message
+        assert "rename" in message, message
+
+    # step(...)
+    step_app = WorkflowApp()
+
+    @step_app.workflow("hc8_reserved_step_key_flow")
+    def reserved_step_key_flow() -> Promise[object]:
+        return build(step(body, key="__flow__"))
+
+    with pytest.raises(WorkflowBuildError) as step_exc:
+        step_app.get("hc8_reserved_step_key_flow")
+    _assert_reserved_root_refusal(step_exc.value)
+
+    # loop(...)
+    loop_app = WorkflowApp()
+
+    @loop_app.workflow("hc8_reserved_loop_key_flow")
+    def reserved_loop_key_flow() -> Promise[object]:
+        return build(loop("__flow__", loop_body, max_iterations=2))
+
+    with pytest.raises(WorkflowBuildError) as loop_exc:
+        loop_app.get("hc8_reserved_loop_key_flow")
+    _assert_reserved_root_refusal(loop_exc.value)
+
+    # chain_source(..., key="__flow__")
+    chain = Chain(
+        name="hc8_reserved_chain_source",
+        start="only",
+        steps={"only": Step(body=body, outcomes=object)},
+    )
+    chain_app = WorkflowApp()
+
+    @chain_app.workflow("hc8_reserved_chain_source_flow")
+    def reserved_chain_source_flow() -> Promise[object]:
+        return build(chain_source(chain, body, key="__flow__"))
+
+    with pytest.raises(WorkflowBuildError) as chain_source_exc:
+        chain_app.get("hc8_reserved_chain_source_flow")
+    _assert_reserved_root_refusal(chain_source_exc.value)
+
+    # Chain(steps={"__flow__": ...}) — the declaration door's own refusal.
+    with pytest.raises(ValueError) as chain_exc:
+        Chain(
+            name="hc8_reserved_chain_step",
+            start="__flow__",
+            steps={"__flow__": Step(body=body, outcomes=object)},
+        )
+    _assert_reserved_root_refusal(chain_exc.value)
+
+
 def test_the_mermaid_label_writer_escapes_quotes_and_newlines() -> None:
     """H-C8 (the rows half): the mermaid label writer escapes ``"`` and
     newlines in labels — a hostile row's key can neither KILL the render

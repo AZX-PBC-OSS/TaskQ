@@ -49,10 +49,12 @@ from taskq._json import dumps_jsonb_str
 from taskq._json import loads as _json_loads
 from taskq._sql_render import render as shared_render
 from taskq.backend._protocol import ConnLike, JobId
+from taskq.backend.statemachine import TERMINAL_STATUSES
 from taskq.exceptions import ReservedTimerNamespaceError
 from taskq.obs import get_logger
 from taskq.workflows._capture import redact_hold_context
 from taskq.workflows._types import duration_seconds, validate_map_index_identity
+from taskq.workflows.api._runner_errors import WorkflowRunError
 
 if TYPE_CHECKING:
     from taskq.workflows._sql import WorkflowSql
@@ -301,6 +303,59 @@ def delivery_refused(reason: str) -> DeliveryResult:
     return DeliveryResult(status="refused", reason=reason)
 
 
+async def _resume_refusal_reason(conn: ConnLike, schema: str, node_id: str | None) -> str:
+    """The refused delivery's TRUE cause, read from the row the resume missed.
+
+    The resume's gate is ``AND status = 'pending'``: a node the flow is
+    CURRENTLY RUNNING matches nothing while the flow is alive, so naming "the
+    flow died" for that shape sends the responder to abandon or re-run a live
+    run. The held hold's answer is already committed and replays from the
+    queue; the row simply is not claimable yet.
+
+    The dead-flow wording survives only for a row that is GONE, or a node whose
+    flow is actually terminal — the shape the original message was written for.
+    A NULL flow status (a malformed/absent ``metadata.flow_id``, or a root row
+    that is gone) is not proof of death, so it reports the node's own state
+    instead: the cast is fail-isolated and never raises."""
+    if node_id is None:
+        return (
+            "the held node is not resumable (the hold's node row was not found by "
+            "its stamp — a cleared stamp, or a corrupted metadata.flow_id; the "
+            "answer is recorded and stands)"
+        )
+    row = await conn.fetchrow(
+        _render(
+            # The flow link's cast is fail-isolated: a malformed/absent
+            # ``flow_id`` must not turn a typed refusal into an exception.
+            "SELECT j.status AS node_status, j.claim_epoch AS claim_epoch, "
+            "f.status AS flow_status FROM {schema}.jobs j "
+            "LEFT JOIN {schema}.jobs f ON f.id = CASE "
+            "WHEN j.metadata->>'flow_id' ~* "
+            "'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' "
+            "THEN (j.metadata->>'flow_id')::uuid END "
+            "WHERE j.id = $1",
+            schema,
+        ),
+        node_id,
+    )
+    if row is None:
+        return "the held node is not resumable (the flow died)"
+    flow_status = row["flow_status"]
+    if flow_status is not None and flow_status in TERMINAL_STATUSES:
+        return "the held node is not resumable (the flow died)"
+    node_status = str(row["node_status"])
+    flow_part = (
+        f"its flow is {flow_status!r}"
+        if flow_status is not None
+        else "its flow status is unreadable (metadata.flow_id)"
+    )
+    return (
+        f"the held node is not resumable (the node row is {node_status!r} under "
+        f"claim epoch {int(row['claim_epoch'])} while {flow_part}; the answer is "
+        "recorded and the run resumes once the row is claimable)"
+    )
+
+
 # ── the statements (named constants — the schema is the only
 #    interpolation, validated via require_schema; values all $N-bound) ──
 
@@ -322,6 +377,7 @@ SET status = 'pending',
     budget_paused = CASE WHEN metadata @> '{"kind": "loop"}'::jsonb THEN true ELSE budget_paused END
 WHERE id = $1
   AND status = 'running'
+  AND ($4::bigint IS NULL OR claim_epoch = $4::bigint)
 RETURNING id
 """
 
@@ -349,10 +405,15 @@ RETURNING id
 # the hold id the register stamped into the node's metadata — one hold, one
 # node. The pre-fix lookup matched `metadata ? 'hold'` alone, which every
 # holding sibling satisfied: a resolve woke an arbitrary one (the map siblings'
-# shared step key made the match ambiguous).
+# shared step key made the match ambiguous). The flow link's cast is
+# fail-isolated (the same CASE guard as `_resume_refusal_reason`): a corrupted
+# `metadata.flow_id` makes this lookup find NO node — a typed refusal — instead
+# of raising an asyncpg cast error on the deliver path.
 _HELD_NODE_BY_HOLD_SQL = """\
 SELECT id FROM {schema}.jobs WHERE step_key = $1 \
-AND (metadata->>'flow_id')::uuid = $2 \
+AND CASE WHEN (metadata->>'flow_id') ~*
+  '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+  THEN (metadata->>'flow_id')::uuid END = $2::uuid \
 AND metadata->>'hold' = $3 \
 """
 
@@ -507,6 +568,53 @@ async def mark_awaited(conn: ConnLike, schema: str, ledger_id: JobId) -> None:
     await conn.execute(_render(_HOLD_AWAITED_LEDGER_SQL, schema), ledger_id)
 
 
+async def reassert_hold(
+    conn: ConnLike,
+    *,
+    schema: str,
+    node_id: JobId,
+    hold_id: JobId,
+    signal_name: str,
+    expires_at: datetime | None,
+    claim_epoch: int,
+) -> None:
+    """A re-entered wait's half of the held representation: the body found
+    its own standing hold, so the node is parked onto it exactly as the mint
+    parked it (pending, unlocked, the stamp, the hold's deadline, a loop's
+    budget paused). Claim-fenced: a row that already rests held, or that a
+    newer claim now runs (a stale body whose lease lapsed), matches nothing.
+    A delivery that lands between the caller's standing-hold read and this
+    park leaves a dead stamp; the leader's hold-stamp reconcile (and the
+    dev driver's own tick) clears it.
+
+    ``claim_epoch`` is required and must be positive: at 0 the fence
+    (``claim_epoch = $4``) matches no executing row — both claim doors grant
+    at least 1 — so the park would silently write nothing while the caller
+    asserts the row is held. An unsupplied epoch is a loud defect."""
+    if claim_epoch <= 0:
+        raise WorkflowRunError(
+            f"reassert_hold on node {node_id} (hold {hold_id}) was handed "
+            f"claim_epoch={claim_epoch!r}: an executing claim's epoch is at least 1 "
+            "(both claim doors increment it). The fence would match nothing and "
+            "leave the row running with nothing executing it; pass the claim's "
+            "granted epoch."
+        )
+    parked = await conn.fetchval(
+        _render(_HOLD_HOLD_NODE_SQL, schema),
+        node_id,
+        dumps_jsonb_str({"hold": str(hold_id), "held_signal": signal_name}),
+        expires_at,
+        claim_epoch,
+    )
+    if parked is None:
+        logger.debug(
+            "wf-hold-reassert-fenced",
+            node_id=str(node_id),
+            hold_id=str(hold_id),
+            claim_epoch=claim_epoch,
+        )
+
+
 async def register_hold(
     conn: ConnLike,
     *,
@@ -622,13 +730,29 @@ async def register_hold(
             deadline,
         )
         # the held representation + the held marker (the claimable
-        # query's exclusion — the worker releases the slot).
-        await conn.execute(
+        # query's exclusion — the worker releases the slot). The park is a
+        # CONDITIONAL write (`AND status = 'running'`): a body whose lease
+        # lapsed, or whose node a concurrent resume/cancel already moved,
+        # matches nothing while the signal INSERT commits — a live 'held' row
+        # no node stands on. The result is read, not discarded, so the miss is
+        # a named event instead of a hold the approval queue shows for a node
+        # that is not waiting.
+        parked = await conn.fetchval(
             _render(_HOLD_HOLD_NODE_SQL, schema),
             node_id,
             dumps_jsonb_str({"hold": str(hold_id), "held_signal": signal_name}),
             deadline,
+            None,  # no claim fence on the mint: only the re-entry's re-park carries one
         )
+        if parked is None:
+            logger.warning(
+                "wf-hold-mint-park-missed",
+                kind="wf_hold_mint_park_missed",
+                flow_id=str(workflow_id),
+                node_id=str(node_id),
+                hold_id=str(hold_id),
+                signal_name=signal_name,
+            )
         # transactional: the NOTIFY rides this tx, so a rolled-back hold-create
         # is silent; the payload carries the schema + the pointer, never the
         # payload. . the timer's exclusion: this leg is the approval broadcast
@@ -952,10 +1076,11 @@ async def deliver_payload(
             # UPDATE rides the lock this tx holds).
             resumed = await conn.fetchval(_render(_DELIVER_RESUME_SQL, schema), node_id)
         if resumed is None:
-            # The CAS won but the node is gone (a cancelled flow killed
-            # the held representation): the row is the truth — the
-            # delivered row stands, the resume is refused.
-            return delivery_refused("the held node is not resumable (the flow died)")
+            # The CAS won but the node did not take the resume: the row is
+            # the truth — the delivered row stands, the resume is refused
+            # with the row's actual state (a live running node is not a
+            # dead flow).
+            return delivery_refused(await _resume_refusal_reason(conn, schema, node_id))
         logger.info(
             "signal.delivered",
             run_id=str(workflow_id),
@@ -1542,10 +1667,11 @@ class HitlClient:
                 # rides the lock this tx holds).
                 resumed = await conn.fetchval(_render(_DELIVER_RESUME_SQL, self._schema), node_id)
             if resumed is None:
-                # The CAS won but the node is gone (a cancelled flow
-                # killed the held representation): the row is the truth
-                # — the delivered row stands, the resume is refused.
-                return delivery_refused("the held node is not resumable (the flow died)")
+                # The CAS won but the node did not take the resume: the row
+                # is the truth — the delivered row stands, the resume is
+                # refused with the row's actual state (a live running node is
+                # not a dead flow).
+                return delivery_refused(await _resume_refusal_reason(conn, self._schema, node_id))
             logger.info(
                 "signal.resolved",
                 run_id=str(cas["workflow_id"]),
@@ -1792,10 +1918,11 @@ class HitlClient:
                 # so the resume's UPDATE rides the lock this tx holds).
                 resumed = await conn.fetchval(_render(_DELIVER_RESUME_SQL, self._schema), node_id)
             if resumed is None:
-                # The CAS won but the node is gone (a cancelled flow
-                # killed the held representation): the row is the truth
-                # — the abandoned row stands, the resume is refused.
-                return delivery_refused("the held node is not resumable (the flow died)")
+                # The CAS won but the node did not take the resume: the row
+                # is the truth — the abandoned row stands, the resume is
+                # refused with the row's actual state (a live running node is
+                # not a dead flow).
+                return delivery_refused(await _resume_refusal_reason(conn, self._schema, node_id))
             logger.info(
                 "signal.abandoned",
                 run_id=str(cas["workflow_id"]),
