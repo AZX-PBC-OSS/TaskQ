@@ -401,6 +401,13 @@ _EXEMPT: dict[str, tuple[str, str]] = {
         "row the conflict target keys (the full ledger arbiter + attempt + "
         "claim epoch) — keyed, one row per claim",
     ),
+    "LEDGER_SUBSTEP_CLAIM_SQL": (
+        "ON CONFLICT (flow_id, step_key, COALESCE(map_index, -1), attempt, claim_epoch)",
+        "the ctx.substep claim: same shape and same arbiter as "
+        "LEDGER_CLAIM_SQL (ONE keyed row per claim); its conflict arm "
+        "additionally re-opens the caller's own 'failed' row — still the "
+        "one row the conflict target keys",
+    ),
     "LEDGER_TERMINAL_BY_ID_SQL": (
         "WHERE id = $1",
         "keyed single ledger row (the claim's own RETURNING id + its own "
