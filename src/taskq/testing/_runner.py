@@ -39,6 +39,7 @@ from taskq.exceptions import PayloadValidationError, Snooze
 from taskq.obs import bind_job_context
 from taskq.retry import OnCancel, OnRetryExhausted, OnSuccess, RetryClassifierHook, RetryPolicy
 from taskq.testing._reads import _event_read_copy, _read_copy
+from taskq.worker._cancel_delivery import deliver_first_cancel
 
 if TYPE_CHECKING:
     # taskq.actor stays TYPE_CHECKING here: a runtime import would pull
@@ -789,8 +790,8 @@ async def tick_cancel_polling(backend: "InMemoryBackend") -> None:
             # cancel_phase==2 guard is satisfied by the condition above.
             abandoned = await backend.mark_abandoned(job_id)
             # Production phase 2 terminates a non-cooperative attempt by
-            # hard-cancelling the actor task once the graces elapse
-            # (cancel.py's active.task.cancel()); the cooperative event
+            # delivering the shared first-delivery cancel once the graces
+            # elapse (cancel.py's deliver_first_cancel); the cooperative event
             # alone cannot reach an attempt that never reads it, and the
             # runner awaits attempts inline, so without this cancel the
             # drain parks forever beside a row that already says
@@ -802,7 +803,7 @@ async def tick_cancel_polling(backend: "InMemoryBackend") -> None:
             if abandoned:
                 inflight = backend._inflight_attempt  # pyright: ignore[reportPrivateUsage]  # Why: test runner helper intentionally accesses private InMemoryBackend state; this module is co-located with the backend and owns this access pattern.
                 if inflight is not None and inflight[0] == job_id:
-                    inflight[1].cancel()
+                    deliver_first_cancel(inflight[1])
 
     # Cleanup: remove cancel-tracking state for terminal jobs to prevent
     # unbounded growth of _cancel_events and _cancel_observed_at.
@@ -1066,12 +1067,13 @@ async def run_until_drained(backend: "InMemoryBackend", *, cancel_polling: bool 
             # The in-flight attempt registration: tick_cancel_polling's
             # both-graces arm cancels this task to terminate a
             # non-cooperative attempt (the mirror of production's
-            # active.task.cancel()). Keyed by job id so only the abandon of
-            # the job actually executing can cancel the drain. The cancel
-            # count at registration is this dispatch's baseline: the
-            # CancelledError classification below reads every elevation
-            # relative to it, the way asyncio.timeout compares against the
-            # cancelling() count it captured at __aenter__.
+            # first-delivery cancel, cancel.py's deliver_first_cancel). Keyed
+            # by job id so only the abandon of the job actually executing can
+            # cancel the drain. The cancel count at registration is this
+            # dispatch's baseline: the CancelledError classification below
+            # reads every elevation relative to it, the way asyncio.timeout
+            # compares against the cancelling() count it captured at
+            # __aenter__.
             current_task = asyncio.current_task()
             registration: tuple[JobId, asyncio.Task[object]] | None = None
             baseline_cancelling = 0

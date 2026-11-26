@@ -22,6 +22,7 @@ resumes with both tasks done.
 import asyncio
 from datetime import UTC, datetime
 from typing import cast
+from uuid import UUID
 
 import pytest
 
@@ -81,6 +82,9 @@ class _DepsStub:
             }
         )
         self.drain_failures = 0
+        self.disowned_jobs: set[UUID] = set()
+        self.redis_client = None
+        self.progress_buffers: dict[UUID, object] = {}
         # The consumer loops read the draining signal off deps; the real
         # WorkerDeps always carries it. Unset here: these tests exercise
         # the shutdown_event-only both-done turn.

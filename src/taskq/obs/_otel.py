@@ -377,9 +377,13 @@ def record_cancel_actored(actor: str) -> None:
     (``worker/cancel.py``): the phase-1 cooperative observation, the
     PG-observation fast-advance when the local phase was still NONE, and
     the phase-2 escalation that proves a request appeared between the poll
-    and its write. A re-issue arm or a later tick walking an
-    already-observed row records nothing, so one cancel request is one
-    increment no matter how many heartbeat ticks it spans.
+    and its write. The shutdown orchestrator's FORCING probe is the fourth
+    site (``worker/shutdown.py``): its escalation landing on a row still at
+    ``cancel_phase = 1`` proves an operator asked, and no later tick can
+    record that request once the probe restamps the origin OPERATOR. A
+    re-issue arm or a later tick walking an already-observed row records
+    nothing, so one cancel request is one increment no matter how many
+    heartbeat ticks it spans.
 
     Unconditional (not gated by ``_otel_enabled``), like the other
     cancel-plane counters: a cancel the operator asked for and the fleet

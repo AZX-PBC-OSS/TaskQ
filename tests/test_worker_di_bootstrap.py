@@ -124,6 +124,8 @@ def _backend_methods_stub() -> Backend:
             self,
             job_id: object,
             worker_id: object,
+            progress_seq: int = 0,
+            progress_state: dict[str, object] | None = None,
             *,
             attempt: int | None = None,
             claim_epoch: int | None = None,
@@ -1469,12 +1471,20 @@ async def test_di_consumer_loop_terminalises_an_operator_cancelled_unstarted_row
     async def _spy_mark_cancelled(
         job_id: object,
         worker_id: object,
+        progress_seq: int = 0,
+        progress_state: dict[str, object] | None = None,
         *,
         attempt: int | None = None,
         claim_epoch: int | None = None,
     ) -> bool:
         cancel_calls.append(
-            {"job_id": job_id, "worker_id": worker_id, "attempt": attempt, "epoch": claim_epoch}
+            {
+                "job_id": job_id,
+                "worker_id": worker_id,
+                "attempt": attempt,
+                "epoch": claim_epoch,
+                "progress_seq": progress_seq,
+            }
         )
         cancelled.set()
         return True
@@ -1521,6 +1531,10 @@ async def test_di_consumer_loop_terminalises_an_operator_cancelled_unstarted_row
     assert cancel_calls[0]["epoch"] == job.claim_epoch, (
         "the cancel write must carry the claim's epoch: an unfenced write could "
         "terminalise a row a peer re-claimed"
+    )
+    assert cancel_calls[0]["progress_seq"] == job.progress_seq + 1, (
+        "the cancel write must carry the consumed seq (one past the row's durable "
+        "head): the publish that follows uses it as the wire event's seq"
     )
     assert job.id not in deps.disowned_jobs, (
         "the row terminalised, so nothing is left for the lock-lease reclaim "

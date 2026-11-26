@@ -28,7 +28,8 @@ Key correctness invariants ():
   a coroutine boundary that breaks the atomicity guarantee.
 - ``cancel_observed_at`` uses ``asyncio.get_running_loop().time()`` (monotonic
   event-loop clock), never ``time.time()`` or ``datetime.now()``.
-- Phase-2 PG write (``conn.execute``) happens before ``task.cancel()`` in
+- Phase-2 PG write (``conn.execute``) happens before the cancel delivery
+  (``deliver_first_cancel(active.task)``) in
   code order with no intervening ``await`` (PG-first invariant).
 - No ``try/except`` inside the phase-2 block, PG-write failures propagate
   to ``heartbeat_loop``'s outer handler.
@@ -156,9 +157,10 @@ class _CancelController:
     2. Phase 1, set ``cancel_event``, record ``cancel_observed_at``,
        set local ``cancel_phase=1`` (no PG write).
     3. PG-observation fast-advance, if PG is already at phase 2, skip
-       ahead locally (no PG write, no ``task.cancel()``).
+       ahead locally (no PG write, no cancel delivery).
     4. Phase 2, after cancel grace, write ``cancel_phase=2`` to PG,
-       then ``task.cancel()`` (PG-first, no intervening ``await``).
+       then ``deliver_first_cancel(active.task)`` (PG-first, no intervening
+       ``await``).
     5. Phase 3, after cleanup grace, queue job into ``_pending_abandons``
        (``cancel_phase`` sentinel set to 3).  Actual ``mark_abandoned`` +
        deregister runs in ``run_post_tx`` after the transaction commits.
@@ -274,10 +276,11 @@ class _CancelController:
             ):
                 active.ctx.cancel_event.set()
                 active.ctx._abort_requested.set()  # pyright: ignore[reportPrivateUsage]  # Why: cancel controller intentionally accesses the private _abort_requested Event to signal sync actors.
-                # An already-running shutdown grace clock keeps its stamp: the
-                # shutdown's own phases measure from the signal they received,
-                # and re-stamping here would restart that clock on every tick
-                # the operator's request is re-observed.
+                # A grace clock the orchestrator already started keeps its
+                # stamp: the CANCELLING pass primes the ladder's clock from
+                # the signal it received, and re-stamping here would restart
+                # that clock on every tick the operator's request is
+                # re-observed.
                 if active.cancel_observed_at is None:
                     active.cancel_observed_at = loop.time()
                 if active.cancel_phase < CancelPhase.COOPERATIVE:
@@ -634,7 +637,7 @@ class _CancelController:
 
         The drain also OWNS the cancellation for an abandon queued by
         run_in_tx's same-tick fast path: that arm sets the ABANDON_PENDING
-        sentinel and queues the job without delivering task.cancel(), so a
+        sentinel and queues the job without delivering the cancel, so a
         heartbeat-transaction rollback after the arm cannot strand a
         deregistered entry against a row still at cancel_phase 1 (the
         consumer's unconditional finally would have removed the entry the

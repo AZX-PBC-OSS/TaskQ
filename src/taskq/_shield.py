@@ -39,17 +39,22 @@ __all__ = ["shield_until_complete", "shield_with_retrieval"]
 logger = get_logger(__name__)
 
 
-def _log_detached_failure(task: "asyncio.Task[object]") -> None:
-    """Retrieve a detached shield task's outcome, logging any failure.
+def _retrieve_and_log_failure(task: "asyncio.Task[object]", *, event: str, mechanism: str) -> None:
+    """Retrieve an inner task's outcome, logging a failure under ``event``.
 
-    Nobody awaits the detached task afterwards, so its outcome must be
-    retrieved here or asyncio reports "Task exception was never
-    retrieved", but unlike the minimal consumer-side variant this also
-    LOGS the exception: the failure is a real infra signal, not noise.
-    ``task.exception()`` raises ``CancelledError`` when the task ended
-    cancelled, the only outcome suppressed here (asyncio already exempts
-    cancelled tasks from the retrieval warning, and there is no error to
-    surface).
+    Used by both cancellation shapes with a name that says which one owns
+    the write. ``task.exception()`` raises ``CancelledError`` when the task
+    ended cancelled, the only outcome suppressed here (asyncio already
+    exempts cancelled tasks from the retrieval warning, and there is no
+    error to surface). A real exception is retrieved - nobody is left to
+    await the task - and LOGGED because it is an infra signal, not noise.
+
+    ``mechanism`` is ``"detached"`` when the caller returned and the write
+    ran on (``shield_with_retrieval``), or ``"held"`` when the caller waited
+    for the write to finish and then re-raised (``shield_until_complete``).
+    The two have different remedies: a detached failure may still land and
+    can have raced a closing pool, while a held failure leaves the row with
+    no writer at all.
     """
     try:
         exc = task.exception()
@@ -57,11 +62,33 @@ def _log_detached_failure(task: "asyncio.Task[object]") -> None:
         return
     if exc is not None:
         logger.warning(
-            "shield-detached-task-failed",
+            event,
+            mechanism=mechanism,
             error_type=type(exc).__name__,
             error=repr(exc),
             exc_info=exc,
         )
+
+
+def _log_detached_failure(task: "asyncio.Task[object]") -> None:
+    """Retrieve a detached shield task's outcome, logging any failure.
+
+    Nobody awaits the detached task afterwards (the caller returned), so its
+    outcome must be retrieved here or asyncio reports "Task exception was
+    never retrieved"; a failure is emitted as ``shield-detached-task-failed``.
+    """
+    _retrieve_and_log_failure(task, event="shield-detached-task-failed", mechanism="detached")
+
+
+def _log_held_failure(task: "asyncio.Task[object]") -> None:
+    """Retrieve a held task's outcome after the caller's cancellation.
+
+    The caller waited for this write before re-raising, so the failure is
+    not an abandoned write: it is the row's only writer failing on a path
+    that already absorbed the cancellation. Emitted as
+    ``shield-held-task-failed`` so the two mechanisms stay distinguishable.
+    """
+    _retrieve_and_log_failure(task, event="shield-held-task-failed", mechanism="held")
 
 
 async def shield_until_complete[T](aw: Awaitable[T]) -> T:
@@ -81,10 +108,19 @@ async def shield_until_complete[T](aw: Awaitable[T]) -> T:
     completes before the deps teardown closes the pools) also owns the whole
     operation.
 
-    The wait is bounded by the operation's own timeouts, not by this helper:
-    finishing means finishing. A failure the inner operation raises after the
-    cancellation is retrieved and logged (the caller is already unwinding and
-    cannot receive it) rather than left for asyncio to report as never
+    Finishing means finishing, and the only bound this helper has is the
+    operation's own. ``pool.acquire(timeout=...)`` bounds pool acquisition,
+    but an in-flight Postgres statement carries no ``command_timeout`` on the
+    worker pool, so a wedged dependency (a partitioned socket, a server-side
+    lock wait, a black-holing pooler) can keep the statement from returning.
+    The remaining backstop is ``ShutdownWatchdog``: once the termination
+    budget is exhausted it dumps the task stacks and calls
+    ``os._exit(EXIT_WATCHDOG)``, which is why a held write survives a normal
+    teardown but cannot be bounded by a caller-side timeout.
+
+    A failure the inner operation raises after the cancellation is retrieved
+    and logged as ``shield-held-task-failed`` (the caller is already unwinding
+    and cannot receive it) rather than left for asyncio to report as never
     retrieved, or re-raised as an exception the cancelled caller never asked
     for. The non-cancelled path is plain ``asyncio.shield`` semantics: the
     result is returned and an inner exception re-raises to the caller.
@@ -106,7 +142,7 @@ async def shield_until_complete[T](aw: Awaitable[T]) -> T:
     if cancellation is None:
         return task.result()
     if not task.cancelled():
-        _log_detached_failure(task)
+        _log_held_failure(task)
     raise cancellation
 
 

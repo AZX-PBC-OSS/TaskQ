@@ -207,12 +207,20 @@ async def test_sigterm_mid_body_interrupts_and_the_successor_completes(
         assert rc == 0, f"generation A exited rc={rc} - the drain was not graceful"
 
         # The successor picks the work up: generation B claims and
-        # completes everything (the bound is B's boot plus its poll floor,
-        # covered by the settle cap inside assert_balanced).
+        # completes everything (the bound is B's boot plus its poll floor).
         worker_b = spawn_worker(pg_dsn, schema, tag="req-b")
         wait_worker_ready(worker_b)
 
-        counts = await assert_balanced(conn, schema, _TAG)
+        # settle_terminal's cap is the "no permanently-stuck state" bound, and
+        # generation B is live here: `assert_balanced`'s own settle budget
+        # (240s against a two-minute fleet stretch) would collide with this
+        # scenario's pytest-timeout and cut the run off inside it, taking the
+        # stuck-row diagnostic and the ledger teardown with it. Give the
+        # settle its own explicit budget, then run the invariants over the
+        # settled population (`settle=False` only says the terminal wait
+        # already happened above).
+        counts = await settle_terminal(conn, schema, _TAG, cap_secs=90.0)
+        await assert_balanced(conn, schema, _TAG, settle=False)
         assert counts.get("succeeded", 0) == len(handles), (
             f"the successor must complete every interrupted job: {counts}"
         )

@@ -108,14 +108,20 @@ def main() -> None:
         # and rely on process exit for cleanup.
         cred = DefaultAzureCredential()
         provider = EntraIdProvider(cred)
-        worker_main(
-            settings,
-            actor_registry=ACTORS,
-            connections=build_connections(settings, provider),
-            # This process's next act is its own death, so the worker's
-            # teardown may ignore SIGTERM: a redundant stop-signal landing
-            # after the drain must not replace the exit status with -15.
-            ignore_sigterm_on_exit=True,
+        # The return value is the container's exit status: 3 means jobs failed
+        # during the drain and 4 means idle_max_runtime was exceeded, so a
+        # supervisor sees a failed drain instead of a successful one.
+        raise SystemExit(
+            worker_main(
+                settings,
+                actor_registry=ACTORS,
+                connections=build_connections(settings, provider),
+                # This process's next act is its own death, so the worker's
+                # teardown may ignore SIGTERM: a redundant stop-signal
+                # landing after the drain must not replace the exit status
+                # with -15.
+                ignore_sigterm_on_exit=True,
+            )
         )
     elif mode == "serve":
         try:

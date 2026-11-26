@@ -17,7 +17,7 @@ from typing import Any
 __all__ = ["deliver_first_cancel"]
 
 
-def deliver_first_cancel(task: asyncio.Task[Any]) -> None:
+def deliver_first_cancel(task: asyncio.Task[Any]) -> bool:
     """Deliver a cancellation to an in-flight attempt, first delivery only.
 
     A second ``task.cancel()`` is not a no-op. A task already cancelling is
@@ -32,6 +32,13 @@ def deliver_first_cancel(task: asyncio.Task[Any]) -> None:
     ``cancelling() == 0`` is the guard rather than ``done()`` alone because a
     consumer that has taken its cancellation is still running: it is awaiting
     its terminal write, which is exactly what a second cancel would destroy.
+
+    Returns whether this call delivered the cancellation. A ``False`` is a
+    deliberate refusal (the attempt is already cancelling or done), which the
+    caller can surface: a refused FORCING delivery and a delivered one that
+    the actor swallowed have opposite remedies.
     """
     if not task.done() and task.cancelling() == 0:
         task.cancel()
+        return True
+    return False

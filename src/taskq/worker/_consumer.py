@@ -34,7 +34,7 @@ import contextlib
 from collections.abc import Awaitable, Callable, Sequence
 from datetime import timedelta
 from time import monotonic
-from typing import TYPE_CHECKING, Any, Final, Protocol, cast
+from typing import TYPE_CHECKING, Any, Final, Literal, Protocol, cast
 from uuid import UUID
 
 import asyncpg
@@ -894,7 +894,36 @@ async def _acquire_rate_limits_or_route_denial(
     return acquired, validated_payload, None
 
 
-async def _cancel_fenced_unstarted(
+def _consumed_terminal_seq(job: JobRow) -> int:
+    """The seq a terminal write consumes: one past the row's durable seq.
+
+    A state-change event is a new event on the job's stream, so the row's
+    durable ``progress_seq`` is the head and the terminal write/event consume
+    ``head + 1``. Publishing the head itself would be dropped by a seq-cursor
+    subscriber, which discards every event with ``seq <= last_emitted_seq``.
+    """
+    return job.progress_seq + 1
+
+
+async def _mark_cancelled_unstarted(
+    backend: Backend, job: JobRow, worker_id: UUID, *, terminal_seq: int
+) -> bool:
+    """Fenced terminal write for a row that never reached a registry entry.
+
+    ``terminal_seq`` is one past the row's durable ``progress_seq`` (see
+    :func:`_consumed_terminal_seq`), so the write SETs the consumed value and
+    the publish that follows carries exactly the same seq.
+    """
+    return await backend.mark_cancelled(
+        job.id,
+        worker_id,
+        progress_seq=terminal_seq,
+        attempt=job.attempt,
+        claim_epoch=job.claim_epoch,
+    )
+
+
+async def _settle_unstarted_cancel(
     backend: Backend,
     job: JobRow,
     worker_id: UUID,
@@ -904,7 +933,9 @@ async def _cancel_fenced_unstarted(
     settings: WorkerSettings | None,
     progress_buffers: "dict[UUID, _ProgressBuffer] | None",
     disowned_jobs: set[UUID] | None,
-) -> bool:
+    failed_event: str,
+    failed_kind: str,
+) -> Literal["cancelled", "noop", "failed"]:
     """Terminalise a never-started row a release write's fence declined.
 
     The pre-dispatch arms that hand a claimed row back (the take-to-register
@@ -920,30 +951,25 @@ async def _cancel_fenced_unstarted(
     The fenced ``mark_cancelled`` the consumer's other cancellation arms use
     settles it: it lands on a cancel-carrying row this worker still owns, and
     every other shape (terminal already, reclaimed, re-owned) no-ops its
-    fence. Returns whether this write landed; no ``on_cancel`` hook runs - the
-    body never started.
+    fence. A landed write publishes the terminal transition with the consumed
+    seq (``job.progress_seq + 1``) as ``_override_seq`` so a seq-cursor
+    subscriber keeps it. An infra failure is logged with its cause, the
+    ``kind`` taxonomy, and ``error_class="infra"``, and the row is disowned so
+    the lease reclaim is the backstop.
 
-    Its callers own the whole release through cancellation
-    (:func:`taskq._shield.shield_until_complete`), so this write is never
-    detached from the pool it needs.
+    Returns ``"cancelled"`` when the write landed, ``"failed"`` when it raised
+    (disowned), and ``"noop"`` when the fence declined a row another writer
+    owns.
     """
+    terminal_seq = _consumed_terminal_seq(job)
     try:
-        landed = await backend.mark_cancelled(
-            job.id,
-            worker_id,
-            attempt=job.attempt,
-            claim_epoch=job.claim_epoch,
-        )
+        landed = await _mark_cancelled_unstarted(backend, job, worker_id, terminal_seq=terminal_seq)
     except Exception:
-        log.exception(
-            "cancel-fenced-release-failed",
-            kind="cancel_fenced_release_failed",
-            error_class="infra",
-        )
+        log.exception(failed_event, kind=failed_kind, error_class="infra")
         _disown_job(disowned_jobs, job)
-        return False
+        return "failed"
     if not landed:
-        return False
+        return "noop"
     log_state_change(log, from_state="running", to_state="cancelled")
     if redis_client is not None and settings is not None:
         await _publish_state_change_event(
@@ -954,8 +980,43 @@ async def _cancel_fenced_unstarted(
             progress_buffers,
             status="cancelled",
             terminal=True,
+            _override_seq=terminal_seq,
         )
-    return True
+    return "cancelled"
+
+
+async def _cancel_fenced_unstarted(
+    backend: Backend,
+    job: JobRow,
+    worker_id: UUID,
+    *,
+    log: structlog.stdlib.BoundLogger,
+    redis_client: "redis_async.Redis | None",
+    settings: WorkerSettings | None,
+    progress_buffers: "dict[UUID, _ProgressBuffer] | None",
+    disowned_jobs: set[UUID] | None,
+) -> bool:
+    """Terminalise a never-started row a release write's fence declined.
+
+    See :func:`_settle_unstarted_cancel` for the write, the publish and the
+    failure law. Returns whether this call terminalised the row; no
+    ``on_cancel`` hook runs because the body never started.
+    """
+    return (
+        await _settle_unstarted_cancel(
+            backend,
+            job,
+            worker_id,
+            log=log,
+            redis_client=redis_client,
+            settings=settings,
+            progress_buffers=progress_buffers,
+            disowned_jobs=disowned_jobs,
+            failed_event="cancel-fenced-release-failed",
+            failed_kind="cancel_fenced_release_failed",
+        )
+        == "cancelled"
+    )
 
 
 async def _with_acquire_cancel_fallback(
@@ -976,6 +1037,122 @@ async def _with_acquire_cancel_fallback(
     return outcome
 
 
+async def _release_unstarted_row(
+    backend: Backend,
+    job: JobRow,
+    worker_id: UUID,
+    *,
+    event_prefix: str,
+    snooze_for: timedelta,
+    metadata_update: dict[str, object],
+    log: structlog.stdlib.BoundLogger,
+    redis_client: "redis_async.Redis | None",
+    settings: WorkerSettings | None,
+    progress_buffers: "dict[UUID, _ProgressBuffer] | None",
+    disowned_jobs: set[UUID] | None,
+    release_failed_event: str,
+    cancel_failed_event: str,
+    noop_event: str,
+    noop_kind: str,
+    released_event: str | None,
+    released_kind: str | None,
+) -> str | None:
+    """Release a pre-registration row and finish any cancel fall-through.
+
+    One implementation for the shutdown seam and the dispatch-side arms. A
+    ``mark_snoozed`` whose ``cancel_phase = 0`` predicate declines an
+    operator-cancelled row falls through to the same fenced ``mark_cancelled``
+    the consumer's other cancellation arms use, and a landed cancel publishes
+    the terminal transition. Keeping one source of truth is what stops the two
+    copies drifting on the return value, the wire event, and the failure
+    taxonomy.
+
+    Both writes consume ``job.progress_seq + 1``: a state-change event is a new
+    event on the job's stream, so the write SETs that value durably and the
+    publish carries exactly it. A deadline-exceeded snooze (``"failed"``) is
+    itself terminal in that write, so its publish must say ``status="failed",
+    terminal=True`` rather than advertising a non-terminal ``"scheduled"`` move
+    at ``seq=0``.
+
+    ``event_prefix`` names the arm for the arm-specific events. The failure
+    events are passed as literals so every release failure is enumerable:
+    each carries its cause at ``log.exception`` level, a
+    ``kind=f"{prefix}_release_failed"`` / ``_cancel_failed`` field, and
+    ``error_class="infra"``.
+
+    Returns the snooze outcome on success, ``"cancelled"`` when the
+    fall-through terminalised the row, ``"noop"`` when the fence declined it,
+    or ``None`` when a write failed and the row was disowned.
+
+    The caller owns this whole sequence through cancellation
+    (:func:`taskq._shield.shield_until_complete`); neither write is detached
+    from the pool it needs.
+    """
+    kind_prefix = event_prefix.replace("-", "_")
+    terminal_seq = _consumed_terminal_seq(job)
+    try:
+        release_outcome = await backend.mark_snoozed(
+            job.id,
+            worker_id,
+            snooze_for,
+            metadata_update=metadata_update,
+            progress_seq=terminal_seq,
+            attempt=job.attempt,
+            claim_epoch=job.claim_epoch,
+        )
+    except Exception:
+        log.exception(
+            release_failed_event,
+            kind=f"{kind_prefix}_release_failed",
+            error_class="infra",
+            job_id=str(job.id),
+            actor=job.actor,
+        )
+        _disown_job(disowned_jobs, job)
+        return None
+    if release_outcome != "noop":
+        if released_event is not None:
+            log.info(
+                released_event,
+                kind=released_kind,
+                released_outcome=release_outcome,
+                job_id=str(job.id),
+                actor=job.actor,
+            )
+        if redis_client is not None and settings is not None:
+            # Match the ordinary snooze path: publish the transition the write
+            # actually made. A "failed" snooze is the deadline arm's terminal
+            # write, so its event is terminal; "scheduled" is non-terminal. A
+            # noop must not advertise a move the row never made.
+            await _publish_state_change_event(
+                redis_client,
+                settings,
+                job.id,
+                job.actor,
+                progress_buffers,
+                status=release_outcome,
+                terminal=release_outcome == "failed",
+                _override_seq=terminal_seq,
+            )
+        return release_outcome
+    log.debug(noop_event, kind=noop_kind, job_id=str(job.id), actor=job.actor)
+    outcome = await _settle_unstarted_cancel(
+        backend,
+        job,
+        worker_id,
+        log=log,
+        redis_client=redis_client,
+        settings=settings,
+        progress_buffers=progress_buffers,
+        disowned_jobs=disowned_jobs,
+        failed_event=cancel_failed_event,
+        failed_kind=f"{kind_prefix}_cancel_failed",
+    )
+    if outcome == "cancelled":
+        return "cancelled"
+    return None if outcome == "failed" else "noop"
+
+
 async def _release_shutdown_unstarted(
     backend: Backend,
     job: JobRow,
@@ -987,72 +1164,35 @@ async def _release_shutdown_unstarted(
     progress_buffers: "dict[UUID, _ProgressBuffer] | None",
     disowned_jobs: set[UUID] | None,
 ) -> AttemptOutcome:
-    """Release a pre-registration row and finish any cancel fall-through.
+    """Release a pre-registration row at the take-to-register shutdown seam.
 
-    This is one operation, not two independent awaits: teardown can cancel
-    the consumer while the release is on the wire, and cancelling at that
-    point must not skip the fenced cancel write that the noop arms need. The
-    row has no registry entry, so this release is its only writer, and its
+    The row has no registry entry, so this release is its only writer, and its
     caller keeps the consumer alive until the operation returns
     (:func:`taskq._shield.shield_until_complete`) - the TaskGroup join that
     owns the consumer therefore completes before the deps teardown closes the
-    pool this writes through.
+    pool this writes through. See :func:`_release_unstarted_row` for the
+    shared write sequence.
     """
-    try:
-        release_outcome = await backend.mark_snoozed(
-            job.id,
-            worker_id,
-            timedelta(seconds=10),
-            metadata_update={"released_reason": "shutdown"},
-            attempt=job.attempt,
-            claim_epoch=job.claim_epoch,
-        )
-    except Exception:
-        log.warning(
-            "shutdown-release-failed",
-            kind="shutdown_release_failed",
-            error_class="infra",
-        )
-        _disown_job(disowned_jobs, job)
-    else:
-        if release_outcome == "noop":
-            # The row moved, or it carries an operator's cancel that
-            # mark_snoozed's cancel_phase = 0 predicate never matches. No
-            # registry entry exists yet for the cancel ladder to reach.
-            log.debug(
-                "shutdown-release-noop",
-                kind="shutdown_release_noop",
-            )
-            if await _cancel_fenced_unstarted(
-                backend,
-                job,
-                worker_id,
-                log=log,
-                redis_client=redis_client,
-                settings=settings,
-                progress_buffers=progress_buffers,
-                disowned_jobs=disowned_jobs,
-            ):
-                return "cancelled"
-        else:
-            log.info(
-                "shutdown-released-before-body",
-                kind="shutdown_released_before_body",
-                released_outcome=release_outcome,
-            )
-        # Match the ordinary snooze path: publish only a transition that
-        # actually landed; a noop must not advertise a move the row never made.
-        if release_outcome != "noop" and redis_client is not None and settings is not None:
-            await _publish_state_change_event(
-                redis_client,
-                settings,
-                job.id,
-                job.actor,
-                progress_buffers,
-                status="scheduled",
-                terminal=False,
-            )
-    return "scheduled"
+    outcome = await _release_unstarted_row(
+        backend,
+        job,
+        worker_id,
+        event_prefix="shutdown",
+        snooze_for=timedelta(seconds=10),
+        metadata_update={"released_reason": "shutdown"},
+        log=log,
+        redis_client=redis_client,
+        settings=settings,
+        progress_buffers=progress_buffers,
+        disowned_jobs=disowned_jobs,
+        release_failed_event="shutdown-release-failed",
+        cancel_failed_event="cancel-fenced-release-failed",
+        noop_event="shutdown-release-noop",
+        noop_kind="shutdown_release_noop",
+        released_event="shutdown-released-before-body",
+        released_kind="shutdown_released_before_body",
+    )
+    return "cancelled" if outcome == "cancelled" else "scheduled"
 
 
 async def consume_one_job(

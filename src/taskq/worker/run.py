@@ -60,7 +60,6 @@ from taskq.obs import (
     ConsumedOutcome,
     bind_job_context,
     get_logger,
-    log_state_change,
     record_consumed_message,
     record_ratelimit_denial,
 )
@@ -73,6 +72,7 @@ from taskq.worker._bootstrap import run_worker_to_exit, worker_main, worker_main
 from taskq.worker._consumer import (
     _RATE_LIMIT_DEPENDENCY_EXCEPTIONS,
     _acquire_for_actor_with_denial_retry,
+    _release_unstarted_row,
 )
 from taskq.worker._handlers import (  # pyright: ignore[reportPrivateUsage]  # Why: the SlotPoolAcquireError arm disowns the claimed row exactly as dispatch's terminal-write-infra arm does; same private-seam rationale.
     _disown_job,
@@ -1043,57 +1043,40 @@ async def _release_unstarted_claim_write(
     later abandons it as ``failed``, or the worker shuts down first). A noop
     therefore falls through to the fenced ``mark_cancelled`` the consumer's
     other cancellation arms use: an operator's row terminalises ``cancelled``
-    now, and a row that really moved no-ops the fence.
+    now (and publishes the terminal transition), while a row that really
+    moved no-ops the fence.
 
-    Returns the snooze outcome (``None`` when that write failed and the row
-    was disowned), so a caller with an arm-specific log line for one of the
-    outcomes can still speak it. Log event names are
-    ``{event_prefix}-release-failed`` / ``-release-noop`` / ``-cancel-failed``.
+    Returns the snooze outcome (``"cancelled"`` when the fall-through
+    terminalised the row, ``None`` when a write failed and the row was
+    disowned), so a caller with an arm-specific log line for one of the
+    outcomes can still speak it. The failure events are the literals
+    ``unstarted-claim-release-failed`` / ``unstarted-claim-cancel-failed``
+    (with their ``kind`` and ``error_class`` taxonomy), and the arm's own
+    ``{event_prefix}-release-noop`` DEBUG line names the fence miss.
 
     The caller owns this whole sequence through cancellation
     (:func:`taskq._shield.shield_until_complete`); neither write is detached
     from the pool it needs.
     """
-    try:
-        release_outcome = await backend.mark_snoozed(
-            job.id,
-            worker_id,
-            snooze_for,
-            metadata_update=metadata_update,
-            attempt=job.attempt,
-            claim_epoch=job.claim_epoch,
-        )
-    except Exception:
-        _consumer_log.exception(
-            f"{event_prefix}-release-failed", job_id=str(job.id), actor=job.actor
-        )
-        _disown_job(deps.disowned_jobs, job)
-        return None
-    if release_outcome != "noop":
-        return release_outcome
-    _consumer_log.debug(f"{event_prefix}-release-noop", job_id=str(job.id), actor=job.actor)
-    try:
-        cancel_landed = await backend.mark_cancelled(
-            job.id,
-            worker_id,
-            attempt=job.attempt,
-            claim_epoch=job.claim_epoch,
-        )
-    except Exception:
-        _consumer_log.exception(
-            f"{event_prefix}-cancel-failed", job_id=str(job.id), actor=job.actor
-        )
-        _disown_job(deps.disowned_jobs, job)
-        return None
-    if cancel_landed:
-        log_state_change(
-            _consumer_log,
-            from_state="running",
-            to_state="cancelled",
-            job_id=str(job.id),
-            actor=job.actor,
-        )
-    return release_outcome
+    return await _release_unstarted_row(
+        backend,
+        job,
+        worker_id,
+        event_prefix=event_prefix,
+        snooze_for=snooze_for,
+        metadata_update=metadata_update,
+        log=_consumer_log,
+        redis_client=deps.redis_client,
+        settings=deps.settings,
+        progress_buffers=deps.progress_buffers,
+        disowned_jobs=deps.disowned_jobs,
+        release_failed_event="unstarted-claim-release-failed",
+        cancel_failed_event="unstarted-claim-cancel-failed",
+        noop_event=f"{event_prefix}-release-noop",
+        noop_kind=f"{event_prefix.replace('-', '_')}_release_noop",
+        released_event=None,
+        released_kind=None,
+    )
 
 
 async def _release_unstarted_claim(
@@ -1783,15 +1766,16 @@ async def di_consumer_loop(
                 # claim intent here, or a stale id would fence a future claim
                 # of the same row out of every hand-back pass.
                 deps.active_jobs.resolve_claim(job.id, _claim)
-            # The snooze tri-state is the write's fence and must be read, not
-            # dropped: "scheduled" released the row, "failed" terminalised it
-            # on the deadline arm, and "noop" means the row stopped being this
-            # worker's to move between claim and release (a reclaim re-pended
-            # it, or an operator's cancel landed on it and the fall-through
-            # terminalised it - see _release_unstarted_claim), the new owner
-            # holds it, so there is nothing to release, but a discarded outcome
-            # would make the fenced-out write indistinguishable from a landed
-            # one.
+            # The release outcome must be read, not dropped: "scheduled"
+            # released the row, "failed" terminalised it on the deadline arm,
+            # "cancelled" means the operator's cancel landed on the row and
+            # this worker's fenced fall-through terminalised it (see
+            # _release_unstarted_claim), and "noop" means the row stopped being
+            # this worker's to move between claim and release (a reclaim
+            # re-pended it, or the fence declined it), so the new owner holds
+            # it and there is nothing to release. A discarded outcome would
+            # make the fenced-out write indistinguishable from a landed one,
+            # and a landed cancel indistinguishable from a no-op.
             if release_outcome == "failed":
                 _consumer_log.info(
                     "dispatch-actor-not-found-release-deadline-exceeded",
@@ -1806,7 +1790,7 @@ async def di_consumer_loop(
         # (asyncio.current_task() inside the child). Registering this loop
         # task instead (awaiting dispatch_one_job inline) would let the
         # cancel ladder's phase-2 escalation
-        # (cancel.py's active.task.cancel()) cancel the whole loop:
+        # (cancel.py's deliver_first_cancel(active.task)) cancel the whole loop:
         # CancelledError is a BaseException, the handlers below catch only
         # SlotPoolAcquireError and Exception, so it would propagate out of the
         # while, the TaskGroup would discard the cancelled sibling, nothing

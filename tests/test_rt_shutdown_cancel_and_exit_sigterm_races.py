@@ -1,19 +1,26 @@
 """Regression pins for two system-e2e shutdown races.
 
-1. Cancel-racing-SIGTERM strand (Flake A):
-   - ``CancelController`` vs ``orchestrate_shutdown`` (``FORCING``): when
-     ``SIGTERM`` lands before ``CancelController`` observes ``cancel_phase = 1``,
-     ``CANCELLING`` stamps ``cancel_phase = COOPERATIVE`` and
-     ``cancel_origin = SHUTDOWN``. ``CancelController.run_in_tx`` then skips
-     its Phase-1 origin override (gated on ``active.cancel_phase < COOPERATIVE``)
-     and leaves ``cancel_origin = SHUTDOWN``. At ``cancellation_grace_period``,
-     if ``CancelController`` fires Phase 2 just ahead of ``FORCING``'s 0.1s poll,
-     the consumer catches ``CancelledError`` and enters ``mark_interrupted`` (or
-     ``mark_cancelled`` when ``origin`` was already ``OPERATOR``). ``FORCING``
-     then unconditionally calls ``active.task.cancel()`` a second time,
-     interrupting the in-flight terminal write, disowning the job, skipping
-     ``mark_cancelled``, and deregistering from ``active_jobs`` — so
-     ``orchestrate_shutdown`` exits ``rc=0`` with the row stranded ``running``.
+1. Cancel-racing-SIGTERM strand (Flake A), now closed by two gates:
+   - ``CancelController`` vs ``orchestrate_shutdown`` (``FORCING``): a
+     ``SIGTERM`` landing before ``CancelController`` observed
+     ``cancel_phase = 1`` used to leave the row on the shutdown's routing.
+     ``CANCELLING`` stamped ``cancel_phase = COOPERATIVE`` and
+     ``cancel_origin = SHUTDOWN``, and the phase-1 arm was gated on
+     ``active.cancel_phase < COOPERATIVE``, so it skipped the operator
+     takeover. At ``cancellation_grace_period``, when ``CancelController``
+     fired Phase 2 just ahead of ``FORCING``'s 0.1s poll, the consumer
+     entered ``mark_interrupted`` instead of the operator's own verdict, and
+     ``FORCING`` then unconditionally called ``active.task.cancel()`` a
+     second time, interrupting the in-flight terminal write, disowning the
+     job, skipping ``mark_cancelled``, and deregistering from
+     ``active_jobs`` - so ``orchestrate_shutdown`` exited ``rc=0`` with the
+     row stranded ``running``.
+   - The shipped gates: the phase-1 arm's predicate is
+     ``or active.cancel_origin is not CancelOrigin.OPERATOR`` (a row already
+     at ``COOPERATIVE`` still takes the operator takeover), and every
+     delivery goes through ``deliver_first_cancel`` (first delivery only, so
+     ``FORCING`` cannot interrupt a consumer already unwinding its terminal
+     write).
    - Take-to-register shutdown seam: if ``SIGTERM`` lands while a claimed row
      carrying ``cancel_phase >= 1`` is in the take-to-register window,
      ``consume_one_job``'s shutdown seam calls ``mark_snoozed`` (which no-ops on
@@ -45,28 +52,53 @@ import os
 import signal
 import subprocess
 import sys
+from collections.abc import Callable
+from dataclasses import replace
 from datetime import timedelta
-from typing import Any
-from unittest.mock import AsyncMock
+from types import SimpleNamespace
+from typing import Any, cast
+from unittest.mock import AsyncMock, MagicMock, Mock
+from uuid import UUID
 
 import asyncpg
 import pytest
+import structlog
 from pydantic import BaseModel
 
+import taskq.obs._otel as otel_mod
+import taskq.worker.cancel as cancel_mod
 import taskq.worker.shutdown as shutdown_mod
 from taskq._ids import new_job_id, new_uuid
 from taskq.actor_config import ActorConfig
-from taskq.backend._protocol import CancelPhase, EnqueueArgs, JobId
+from taskq.backend._protocol import Backend, CancelPhase, EnqueueArgs, JobId
 from taskq.backend.clock import SystemClock
 from taskq.constants import CANCEL_ORIGIN_FORCED
 from taskq.context import CancelOrigin, JobContext
 from taskq.exceptions import ReservationUnavailable
+from taskq.obs import get_logger
 from taskq.settings import WorkerSettings
 from taskq.testing.actor import default_actor_config
 from taskq.testing.in_memory import InMemoryBackend
-from taskq.worker._consumer import consume_one_job
+from taskq.worker._consumer import (
+    _cancel_fenced_unstarted,
+    _release_shutdown_unstarted,
+    consume_one_job,
+)
 from taskq.worker.cancel import ActiveJobRegistry, make_cancel_controller
+from taskq.worker.run import _release_unstarted_claim_write
 from taskq.worker.shutdown import ShutdownPhase, orchestrate_shutdown
+from tests._ns_patch import module_ns_proxy
+from tests.test_shutdown_orchestrator import (
+    FakeActiveJobRegistry,
+    FakeClock,
+    _make_deps,
+    _make_fake_active_job,
+    _patch_clock,
+)
+from tests.test_shutdown_orchestrator import (
+    _worker_settings as _orchestrator_settings,
+)
+from tests.test_worker_di_bootstrap import _running_unstarted_job, _stub_deps
 
 
 class _SlowPayload(BaseModel):
@@ -114,17 +146,35 @@ class _MinimalActorConfig:
 
 class _SlowTerminalBackend(InMemoryBackend):
     """InMemoryBackend whose interrupt/cancel writes pause briefly to model a
-    real Postgres round-trip under load during shutdown."""
+    real Postgres round-trip under load during shutdown.
 
-    def __init__(self, *, write_delay: float = 0.15) -> None:
+    ``release_mark_cancelled`` turns the cancel write into a gate: the write
+    announces itself through ``mark_cancelled_entered`` and then blocks until
+    the test releases it. That holds the terminal write open across the
+    orchestrator's FORCING delivery pass without any timing assumption, so
+    the test observes the real interleaving instead of racing a sleep.
+    ``phase_probe`` records the shutdown phase at the instant the write
+    entered, proving the race actually happened before FORCING.
+    """
+
+    def __init__(
+        self,
+        *,
+        write_delay: float = 0.15,
+        release_mark_cancelled: asyncio.Event | None = None,
+        phase_probe: Callable[[], ShutdownPhase] | None = None,
+    ) -> None:
         super().__init__(
             SystemClock(),
             actor_configs=[ActorConfig(actor="sys_slow", queue="default", max_concurrent=None)],
         )
         self._write_delay = write_delay
+        self._release_mark_cancelled = release_mark_cancelled
+        self._phase_probe = phase_probe
         self.mark_interrupted_calls = 0
         self.mark_cancelled_calls = 0
         self.mark_cancelled_entered = asyncio.Event()
+        self.mark_cancelled_phase: ShutdownPhase | None = None
         self._inflight_writes: list[asyncio.Task[Any]] = []
 
     async def mark_interrupted(self, *args: Any, **kwargs: Any) -> Any:
@@ -140,8 +190,13 @@ class _SlowTerminalBackend(InMemoryBackend):
         current = asyncio.current_task()
         if current is not None:
             self._inflight_writes.append(current)
+        if self._phase_probe is not None:
+            self.mark_cancelled_phase = self._phase_probe()
         self.mark_cancelled_entered.set()
-        await asyncio.sleep(self._write_delay)
+        if self._release_mark_cancelled is not None:
+            await self._release_mark_cancelled.wait()
+        else:
+            await asyncio.sleep(self._write_delay)
         return await super().mark_cancelled(*args, **kwargs)
 
     async def drain_inflight(self) -> None:
@@ -194,15 +249,40 @@ class _FakeCancelConn:
         raise AssertionError(f"Unexpected SQL in _FakeCancelConn.execute: {sql[:120]!r}")
 
 
+async def _wait_for_forcing_delivery_summary(
+    logs: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Wait until FORCING's post-delivery summary is in the captured stream."""
+    while True:
+        for record in logs:
+            if (
+                record.get("event") == "shutdown-phase"
+                and record.get("phase") == "FORCING"
+                and "deliveries_refused" in record
+            ):
+                return record
+        await asyncio.sleep(0.005)
+
+
 async def test_cancel_controller_and_forcing_race_terminalises_operator_cancel(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """When SIGTERM arrives before CancelController sees an operator cancel,
     and CancelController's phase-2 tick lands just ahead of FORCING, the job
-    must still terminalise ``cancelled`` and never be disowned as ``running``."""
+    must still terminalise ``cancelled`` and never be disowned as ``running``.
+
+    The terminal write is held open on a gate until FORCING's delivery pass has
+    run, so the interleaving is observed rather than raced: a fixed sleep let a
+    loaded host finish the write before FORCING woke, and the pin then passed
+    on the double-cancel code.
+    """
     settings = _load_worker_settings(monkeypatch, TASKQ_CANCELLATION_GRACE_PERIOD="0.205")
     deps = _MinimalDeps(settings)
-    backend = _SlowTerminalBackend(write_delay=0.25)
+    release_mark_cancelled = asyncio.Event()
+    backend = _SlowTerminalBackend(
+        release_mark_cancelled=release_mark_cancelled,
+        phase_probe=lambda: deps.shutdown_phase,
+    )
     worker_id = new_uuid()
 
     enq = await backend.enqueue(
@@ -247,30 +327,53 @@ async def test_cancel_controller_and_forcing_race_terminalises_operator_cancel(
     # 2. SIGTERM starts orchestrate_shutdown before CancelController polls.
     monkeypatch.setattr(shutdown_mod, "drain_local_queue_to_pending", AsyncMock(return_value=0))
     shutdown_event = asyncio.Event()
-    shut_task = asyncio.create_task(
-        orchestrate_shutdown(
-            deps,  # type: ignore[arg-type]
-            settings,
-            worker_id,
-            shutdown_event,
-            None,
-            backend=backend,
+    with structlog.testing.capture_logs() as logs:
+        shut_task = asyncio.create_task(
+            orchestrate_shutdown(
+                deps,  # type: ignore[arg-type]
+                settings,
+                worker_id,
+                shutdown_event,
+                None,
+                backend=backend,
+            )
         )
-    )
-    while deps.shutdown_phase != ShutdownPhase.CANCELLING:  # noqa: ASYNC110  # Why: shutdown_phase is a plain enum field polled until the orchestrator enters CANCELLING.
-        await asyncio.sleep(0.005)
+        while deps.shutdown_phase != ShutdownPhase.CANCELLING:  # noqa: ASYNC110  # Why: shutdown_phase is a plain enum field polled until the orchestrator enters CANCELLING.
+            await asyncio.sleep(0.005)
 
-    controller = make_cancel_controller(deps, worker_id, backend)  # type: ignore[arg-type]
-    fake_conn = _FakeCancelConn(backend, job_id, worker_id)
+        controller = make_cancel_controller(deps, worker_id, backend)  # type: ignore[arg-type]
+        fake_conn = _FakeCancelConn(backend, job_id, worker_id)
 
-    # Heartbeat tick during CANCELLING observes cancel_phase = 1.
-    await controller.run_in_tx(fake_conn)
-
-    # Sleep to 0.215s: past cancel_grace (0.205s) while orchestrate_shutdown is
-    # still inside its 3rd 0.1s sleep (0.20..0.30s), leaving ~85ms margin before
-    # FORCING wakes while the 0.25s terminal write is in flight.
-    await asyncio.sleep(0.215)
-    await controller.run_in_tx(fake_conn)
+        # Heartbeat tick during CANCELLING observes cancel_phase = 1.
+        await controller.run_in_tx(fake_conn)
+        entry = deps.active_jobs.get(job_id)
+        assert entry is not None
+        # The phase-2 escalation is due once cancel_grace has elapsed. Backdate
+        # the observation rather than racing a fixed sleep, so the tick lands
+        # strictly inside CANCELLING and the race is reproducible by
+        # construction.
+        entry.cancel_observed_at = asyncio.get_running_loop().time() - (
+            settings.cancellation_grace_period + 0.01
+        )
+        try:
+            # The tick escalates and delivers the first cancel; the terminal
+            # write announces itself and blocks on the gate.
+            await controller.run_in_tx(fake_conn)
+            await asyncio.wait_for(backend.mark_cancelled_entered.wait(), timeout=2.0)
+            assert backend.mark_cancelled_phase is ShutdownPhase.CANCELLING, (
+                "the terminal write entered after FORCING had already started: "
+                "this run did not reproduce the cancel-racing-SIGTERM ordering"
+            )
+            summary = await asyncio.wait_for(_wait_for_forcing_delivery_summary(logs), timeout=5.0)
+            assert summary["deliveries_refused"] == 1, (
+                "FORCING's delivery pass ran while the consumer was mid-write "
+                f"and did not refuse the second delivery: {summary!r}"
+            )
+        finally:
+            # FORCING's delivery pass has run (or an assertion failed): let the
+            # held write finish so the consumer settles and the orchestrator
+            # joins.
+            release_mark_cancelled.set()
 
     rc = await asyncio.wait_for(shut_task, timeout=5.0)
     try:
@@ -1088,3 +1191,398 @@ except SystemExit as exc:
         f"taskq worker CLI died rc={proc.returncode} on late SIGTERM during loop.close(); "
         f"stderr={proc.stderr!r}"
     )
+
+
+# ── Cancel counters, wire seq, and release-failure signals ─────────────
+
+
+class _CountingCounter:
+    """Stand-in for the ``taskq.jobs.cancels_actored`` instrument."""
+
+    def __init__(self) -> None:
+        self.points: list[dict[str, object]] = []
+
+    def add(self, amount: int, attributes: dict[str, object] | None = None) -> None:
+        self.points.append({"amount": amount, "attributes": dict(attributes or {})})
+
+
+class _LadderRegistry(FakeActiveJobRegistry):
+    """The orchestrator harness's registry, plus the reads the cancel ladder makes."""
+
+    def get(self, job_id: object) -> object:
+        for job in self._jobs:
+            if job.job_id == job_id:
+                return job
+        return None
+
+    def held_ids(self) -> set[JobId]:
+        return {job.job_id for job in self._jobs}
+
+    def queued_ids(self) -> set[JobId]:
+        return set()
+
+
+class _ForcedRowConn:
+    """The heartbeat connection once the row is durably at ``cancel_phase = 2``."""
+
+    def __init__(self, job_id: JobId) -> None:
+        self._job_id = job_id
+
+    async def fetch(self, *args: object, **kwargs: object) -> list[dict[str, object]]:
+        return [{"id": self._job_id, "cancel_phase": 2}]
+
+    async def execute(self, sql: str, *args: object) -> str:
+        return "UPDATE 0"
+
+
+async def test_forcing_probe_counts_the_operator_cancel_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The FORCING probe is a fourth first-observer, so it must count the request.
+
+    When the operator's request lands inside the last heartbeat interval of
+    the CANCELLING grace, the shutdown orchestrator's escalation write is the
+    first to observe it: the row still carries ``cancel_phase = 1``, the probe
+    restamps the origin OPERATOR, and the attempt is cancelled. The
+    controller's arms are closed afterwards (the OPERATOR stamp, the FORCED
+    phase), so a cancel the worker demonstrably acted on would otherwise
+    increment ``taskq.jobs.cancels_actored_total`` zero times, permanently.
+    """
+    counter = _CountingCounter()
+    monkeypatch.setattr(otel_mod, "_cancels_actored", counter)
+
+    job = _make_fake_active_job(job_id=new_uuid())
+    registry = _LadderRegistry([job])
+    settings = _orchestrator_settings(cancellation_grace=0.05, cleanup_grace=0.05)
+    deps = _make_deps(registry=registry, settings=settings)
+
+    backend = AsyncMock(spec=Backend)
+    # The probe lands: the row still carried cancel_phase = 1, an operator
+    # request that appeared between the cancel ladder's poll and this write.
+    backend.write_cancel_escalation = AsyncMock(return_value=True)
+    backend.mark_interrupted = AsyncMock(return_value="scheduled")
+    backend.mark_cancelled = AsyncMock(return_value=True)
+
+    monkeypatch.setattr(shutdown_mod, "drain_local_queue_to_pending", AsyncMock(return_value=0))
+    _patch_clock(monkeypatch, FakeClock(), Mock())
+
+    with structlog.testing.capture_logs() as logs:
+        rc = await orchestrate_shutdown(
+            deps, settings, new_uuid(), asyncio.Event(), None, backend=backend
+        )
+
+    assert rc == 0
+    assert [r for r in logs if r.get("event") == "force-cancel-escalation-observed-operator-cancel"]
+    assert job.cancel_origin is CancelOrigin.OPERATOR
+    assert job.cancel_phase >= CancelPhase.FORCED
+    assert sum(int(p["amount"]) for p in counter.points) == 1, counter.points
+    assert counter.points[0]["attributes"] == {"actor": job.ctx.actor}
+
+    # No later tick recovers or doubles it: the controller re-walks the row it
+    # no longer recognises as a fresh operator request.
+    fake_loop = Mock()
+    fake_loop.time = lambda: 100.0
+    monkeypatch.setattr(
+        cancel_mod,
+        "asyncio",
+        module_ns_proxy(asyncio, get_running_loop=lambda: fake_loop),
+    )
+    controller = make_cancel_controller(deps, new_uuid(), backend)
+    await controller.run_in_tx(cast("Any", _ForcedRowConn(job.job_id)))
+    assert sum(int(p["amount"]) for p in counter.points) == 1, counter.points
+
+
+class _FakeRedis:
+    """Record the state-change events a publish site emits."""
+
+    def __init__(self) -> None:
+        self.published: list[dict[str, Any]] = []
+
+    async def publish(self, channel: str, payload: str) -> int:
+        import json
+
+        self.published.append({"channel": channel, **json.loads(payload)})
+        return 1
+
+
+async def test_cancel_fall_through_publishes_the_consumed_seq() -> None:
+    """The terminal event must carry the seq the write consumes, not the head.
+
+    A row that reported progress on an earlier attempt keeps its durable
+    ``progress_seq`` as the stream head. A terminal event consumes one past it
+    (``head + 1``), exactly as every other terminal write does; publishing the
+    head itself (or, worse, the bufferless default ``0``) is behind events a
+    seq-cursor subscriber already consumed, so the cancellation would be
+    dropped as a duplicate while Postgres correctly says the row is terminal.
+    """
+    backend = InMemoryBackend(
+        SystemClock(),
+        actor_configs=[ActorConfig(actor="sys_slow", queue="default", max_concurrent=None)],
+    )
+    worker_id = new_uuid()
+    await backend.enqueue(
+        EnqueueArgs(
+            id=new_job_id(),
+            actor="sys_slow",
+            queue="default",
+            payload={"sleep": 0.0},
+            max_attempts=5,
+            retry_kind="transient",
+            scheduled_at=None,
+        )
+    )
+    claimed = (await backend.dispatch_batch(worker_id, ["default"], 1, timedelta(seconds=10)))[0]
+    await backend.write_cancel_request(claimed.id, reason="offboard")
+    stored = await backend.get(claimed.id)
+    assert stored is not None
+    backend._jobs[claimed.id] = replace(stored, progress_seq=7)  # pyright: ignore[reportPrivateUsage]  # Why: the store's own map seeds the durable seq a retried row would carry.
+    job = await backend.get(claimed.id)
+    assert job is not None
+
+    redis = _FakeRedis()
+    landed = await _cancel_fenced_unstarted(
+        backend,
+        job,
+        worker_id,
+        log=get_logger("taskq.test"),
+        redis_client=redis,  # type: ignore[arg-type]  # Why: the fake implements publish, the only method the publisher calls.
+        settings=SimpleNamespace(  # type: ignore[arg-type]  # Why: the publish path reads schema_name and progress_publish_global only.
+            schema_name="taskq", progress_publish_global=False
+        ),
+        progress_buffers={},
+        disowned_jobs=set(),
+    )
+
+    assert landed
+    terminal_seq = job.progress_seq + 1
+    persisted = await backend.get(job.id)
+    assert persisted is not None
+    assert persisted.progress_seq == terminal_seq, (
+        "the fenced write must SET the consumed seq durably: "
+        f"row has progress_seq={persisted.progress_seq}, expected {terminal_seq}"
+    )
+    cancelled = [event for event in redis.published if event.get("status") == "cancelled"]
+    assert cancelled, "no terminal state-change event was published"
+    assert cancelled[0]["seq"] == terminal_seq, (
+        "the published terminal event carries seq="
+        f"{cancelled[0]['seq']} while the row's stream head was {job.progress_seq} "
+        f"(the consumed seq is {terminal_seq}): a seq-cursor subscriber discards "
+        "any event at or below its last emitted seq"
+    )
+
+
+async def test_shutdown_release_failure_carries_its_cause() -> None:
+    """The shutdown seam's release failure must carry the exception.
+
+    On this arm a failed ``mark_snoozed`` disowns the row: it stays
+    ``running`` under this worker's lock until the lease reclaim, the strand
+    shape the release exists to prevent. The record must therefore name the
+    cause beside the taxonomy, or the responder cannot tell a closed pool
+    from a constraint violation.
+    """
+    job = _running_unstarted_job(actor="test_actor")
+    backend = AsyncMock(spec=Backend)
+    backend.mark_snoozed = AsyncMock(side_effect=RuntimeError("pool is closed"))
+    disowned: set[UUID] = set()
+
+    with structlog.testing.capture_logs() as logs:
+        outcome = await _release_shutdown_unstarted(
+            backend,
+            job,
+            new_uuid(),
+            log=get_logger("taskq.test"),
+            redis_client=None,
+            settings=None,
+            progress_buffers=None,
+            disowned_jobs=disowned,
+        )
+
+    assert outcome == "scheduled"
+    assert job.id in disowned
+    record = next(r for r in logs if r.get("event") == "shutdown-release-failed")
+    assert record.get("kind") == "shutdown_release_failed"
+    assert record.get("error_class") == "infra"
+    carried = any(key in record for key in ("exc_info", "error_type", "error", "exception.message"))
+    assert carried, (
+        "shutdown-release-failed records the failure and discards the exception "
+        f"that caused it: {record!r}"
+    )
+
+
+async def test_di_release_failure_carries_the_release_failure_taxonomy() -> None:
+    """The DI twin of the same failure must carry the same queryable fields.
+
+    One failure, one shape: the literal failure event plus ``kind`` and
+    ``error_class="infra"`` beside the cause, so a query filtering either
+    field finds both the consumer's and the dispatch side's release failures.
+    """
+    settings = _orchestrator_settings()
+    deps = _stub_deps(settings)
+    job = _running_unstarted_job(actor="test_actor")
+    backend = AsyncMock(spec=Backend)
+    backend.mark_snoozed = AsyncMock(side_effect=RuntimeError("pool is closed"))
+
+    with structlog.testing.capture_logs() as logs:
+        outcome = await _release_unstarted_claim_write(
+            backend,
+            job,
+            new_uuid(),
+            deps,  # type: ignore[arg-type]  # Why: the helper reads settings, redis_client, progress_buffers, and disowned_jobs, all present on the stub.
+            event_prefix="dispatch-actor-not-found",
+            snooze_for=timedelta(seconds=10),
+            metadata_update={"released_reason": "actor-not-found"},
+        )
+
+    assert outcome is None
+    assert job.id in deps.disowned_jobs
+    record = next(r for r in logs if r.get("event") == "unstarted-claim-release-failed")
+    assert record.get("error_class") == "infra"
+    assert record.get("kind") == "dispatch_actor_not_found_release_failed"
+    carried = any(key in record for key in ("exc_info", "error_type", "error", "exception.message"))
+    assert carried, f"the release-failure record discards its cause: {record!r}"
+
+
+async def _run_forcing_stream(
+    monkeypatch: pytest.MonkeyPatch, *, cancelling: int
+) -> tuple[list[dict[str, object]], MagicMock]:
+    """One shutdown over a single registered attempt, at FORCING's delivery.
+
+    ``cancelling`` is the attempt's ``Task.cancelling()``: ``0`` is an attempt
+    that has not taken a cancellation yet (FORCING delivers), ``1`` is one
+    already unwinding its terminal write (FORCING refuses). Everything else is
+    identical, so any difference in the emitted stream is attributable to the
+    delivery decision alone.
+    """
+    job = _make_fake_active_job(job_id=new_uuid())
+    task = cast("MagicMock", job.task)
+    task.done.return_value = False
+    task.cancelling.return_value = cancelling
+    registry = FakeActiveJobRegistry([job])
+    settings = _orchestrator_settings(cancellation_grace=0.05, cleanup_grace=0.05)
+    deps = _make_deps(registry=registry, settings=settings)
+
+    backend = AsyncMock(spec=Backend)
+    # The probe declines: this row carries no operator cancel.
+    backend.write_cancel_escalation = AsyncMock(return_value=False)
+    backend.mark_interrupted = AsyncMock(return_value="scheduled")
+
+    monkeypatch.setattr(shutdown_mod, "drain_local_queue_to_pending", AsyncMock(return_value=0))
+    _patch_clock(monkeypatch, FakeClock(), Mock())
+
+    with structlog.testing.capture_logs() as logs:
+        rc = await orchestrate_shutdown(
+            deps, settings, new_uuid(), asyncio.Event(), None, backend=backend
+        )
+    assert rc == 0
+    return [dict(record) for record in logs], task
+
+
+async def test_a_refused_forcing_delivery_is_visible(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The FORCING delivery decision must be reconstructable from the stream.
+
+    Refusing a second delivery is a deliberate degradation (the attempt is
+    mid-terminal-write). A delivered cancel the actor swallowed and a refused
+    one have opposite remedies, so the stream has to say which branch ran.
+    """
+    delivered, delivered_task = await _run_forcing_stream(monkeypatch, cancelling=0)
+    refused, refused_task = await _run_forcing_stream(monkeypatch, cancelling=1)
+
+    delivered_task.cancel.assert_called_once()
+    refused_task.cancel.assert_not_called()
+    assert delivered != refused, (
+        "the FORCING delivery was refused for an attempt already unwinding its "
+        "terminal write, and the shutdown's log stream is identical to the one "
+        "where the cancel was delivered"
+    )
+    refused_records = [r for r in refused if r.get("event") == "force-cancel-delivery-refused"]
+    assert refused_records, refused
+    assert refused_records[0]["deliveries_refused"] == 1
+    summaries = [
+        r
+        for r in refused
+        if r.get("event") == "shutdown-phase"
+        and r.get("phase") == "FORCING"
+        and "deliveries_refused" in r
+    ]
+    assert summaries, "the FORCING phase emits no delivery summary"
+    assert summaries[-1]["deliveries_refused"] == 1
+    assert summaries[-1]["deliveries_delivered"] == 0
+
+
+async def test_di_release_fall_through_returns_cancelled_and_publishes() -> None:
+    """A landed cancel fall-through is reported and published, not a noop.
+
+    The dispatch-side release is the same operation as the consumer's: when
+    ``mark_snoozed`` fences out an operator-cancelled row, the fenced
+    ``mark_cancelled`` terminalises it. The caller must read ``"cancelled"``
+    (not the snooze's ``"noop"``), and the wire event must carry the row's
+    durable seq and ``terminal=True`` so watchers see the verdict.
+    """
+    settings = _orchestrator_settings()
+    settings.progress_publish_global = False
+    deps = _stub_deps(settings)
+    redis = _FakeRedis()
+    deps.redis_client = redis  # type: ignore[assignment]  # Why: the fake implements publish, the only method the publisher calls.
+    job = replace(
+        _running_unstarted_job(actor="test_actor", cancel_phase=CancelPhase.COOPERATIVE),
+        progress_seq=7,
+    )
+    backend = AsyncMock(spec=Backend)
+    backend.mark_snoozed = AsyncMock(return_value="noop")
+    backend.mark_cancelled = AsyncMock(return_value=True)
+
+    outcome = await _release_unstarted_claim_write(
+        backend,
+        job,
+        new_uuid(),
+        deps,  # type: ignore[arg-type]  # Why: the helper reads settings, redis_client, progress_buffers, and disowned_jobs, all present on the stub.
+        event_prefix="dispatch-actor-not-found",
+        snooze_for=timedelta(seconds=10),
+        metadata_update={"released_reason": "actor-not-found"},
+    )
+
+    assert outcome == "cancelled"
+    backend.mark_cancelled.assert_awaited_once()
+    assert backend.mark_cancelled.await_args is not None
+    assert backend.mark_cancelled.await_args.kwargs["progress_seq"] == job.progress_seq + 1
+    cancelled = [event for event in redis.published if event.get("status") == "cancelled"]
+    assert cancelled, "the landed cancel was not published"
+    assert cancelled[0]["terminal"] is True
+    assert cancelled[0]["seq"] == job.progress_seq + 1
+
+
+async def test_failed_snooze_release_publishes_terminal_failed_at_consumed_seq() -> None:
+    """A deadline-exceeded snooze is terminal and must publish as such.
+
+    ``mark_snoozed`` returns ``"failed"`` on its deadline arm, which
+    terminalises the row. The publish must say ``status="failed",
+    terminal=True`` at the consumed seq (``job.progress_seq + 1``), not a
+    non-terminal ``"scheduled"`` at ``seq=0``.
+    """
+    settings = _orchestrator_settings()
+    settings.progress_publish_global = False
+    deps = _stub_deps(settings)
+    redis = _FakeRedis()
+    deps.redis_client = redis  # type: ignore[assignment]  # Why: the fake implements publish, the only method the publisher calls.
+    job = replace(_running_unstarted_job(actor="test_actor"), progress_seq=7)
+    backend = AsyncMock(spec=Backend)
+    backend.mark_snoozed = AsyncMock(return_value="failed")
+
+    outcome = await _release_unstarted_claim_write(
+        backend,
+        job,
+        new_uuid(),
+        deps,  # type: ignore[arg-type]  # Why: the helper reads settings, redis_client, progress_buffers, and disowned_jobs, all present on the stub.
+        event_prefix="dispatch-actor-not-found",
+        snooze_for=timedelta(seconds=10),
+        metadata_update={"released_reason": "actor-not-found"},
+    )
+
+    assert outcome == "failed"
+    backend.mark_snoozed.assert_awaited_once()
+    assert backend.mark_snoozed.await_args is not None
+    assert backend.mark_snoozed.await_args.kwargs["progress_seq"] == job.progress_seq + 1
+    published = [event for event in redis.published if event.get("status") == "failed"]
+    assert published, f"the terminal snooze published nothing: {redis.published!r}"
+    assert published[0]["terminal"] is True
+    assert published[0]["seq"] == job.progress_seq + 1

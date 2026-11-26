@@ -1428,3 +1428,213 @@ async def test_worker_main_async_ignore_sigterm_tolerates_unsupported_loop_handl
 
     assert await worker_main_async(settings, cron_registry=[], ignore_sigterm_on_exit=True) == 0
     assert signal.getsignal(signal.SIGTERM) is signal.SIG_IGN
+
+
+# ── Entrypoint verdicts and the guard's documented scope ───────────────
+
+
+def test_aad_worker_mode_propagates_the_drain_verdict(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``examples/fastapi_app/aad.py``'s worker mode must exit with the verdict.
+
+    The example is the Azure/AAD deployment entrypoint operators copy. A
+    verdict that is discarded cannot be preserved: ``worker_main``'s ``3``
+    (failed jobs in drain mode) and ``4`` (idle-max-runtime exceeded) must
+    reach the process exit status.
+    """
+    import sys
+    import types
+
+    from examples.fastapi_app import aad
+
+    class _StubSettings:
+        pg_dsn_direct = "postgresql://u:p@localhost/db"
+        pg_dsn_pooled = "postgresql://u:p@localhost/db"
+        dispatcher_pool_size = 1
+        heartbeat_pool_size = 1
+        worker_pool_size = 1
+        redis_url = None
+        schema_name = "public"
+
+    class _StubCredential:
+        pass
+
+    azure_aio = types.ModuleType("azure.identity.aio")
+    azure_aio.DefaultAzureCredential = _StubCredential  # type: ignore[attr-defined]  # Why: the stub module stands in for the optional azure package.
+    azure_pkg = types.ModuleType("azure")
+    azure_identity = types.ModuleType("azure.identity")
+    monkeypatch.setitem(sys.modules, "azure", azure_pkg)
+    monkeypatch.setitem(sys.modules, "azure.identity", azure_identity)
+    monkeypatch.setitem(sys.modules, "azure.identity.aio", azure_aio)
+    monkeypatch.setattr(aad, "WorkerSettings", types.SimpleNamespace(load=lambda: _StubSettings()))
+    monkeypatch.setattr(aad, "worker_main", lambda *a, **kw: 3)
+    monkeypatch.setattr(sys, "argv", ["aad.py", "worker"])
+
+    with pytest.raises(SystemExit) as exited:
+        aad.main()
+
+    assert exited.value.code == 3, (
+        "the worker mode discarded worker_main's exit code: a drain that failed "
+        f"jobs (3) exits {exited.value.code!r}, so the container reports success"
+    )
+
+
+_PROCESS_SIGTERM_WITH_MASKED_MAIN = """
+import signal, sys, threading, time
+
+signal.signal(signal.SIGTERM, signal.SIG_DFL)
+
+
+def _straggler() -> None:
+    time.sleep(30.0)
+
+
+threading.Thread(target=_straggler, daemon=True).start()
+signal.pthread_sigmask(signal.SIG_BLOCK, {signal.SIGTERM})
+sys.stdout.write("ready\\n")
+sys.stdout.flush()
+time.sleep(30.0)
+"""
+
+
+@pytest.mark.skipif(
+    not hasattr(signal, "pthread_sigmask"),
+    reason="requires POSIX signal masks",
+)
+def test_the_exit_guard_mask_is_per_thread() -> None:
+    """The documented guard scope is real: a straggler can still take SIGTERM.
+
+    ``ignore_sigterm_on_exit`` masks SIGTERM in the calling thread while
+    ``asyncio`` has put ``SIG_DFL`` back on the process-global disposition. A
+    process-directed SIGTERM in that window is delivered to any thread that
+    does not block it, so the guarantee is scoped to a process with no other
+    live threads at exit.
+    """
+    import subprocess
+    import sys
+    import time
+
+    child = subprocess.Popen(  # noqa: S603  # Why: fixed interpreter + literal script, no shell, no external input.
+        [sys.executable, "-c", _PROCESS_SIGTERM_WITH_MASKED_MAIN],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        assert child.stdout is not None
+        assert child.stdout.readline().strip() == "ready", "child never reached its masked state"
+        child.send_signal(signal.SIGTERM)
+        deadline = time.monotonic() + 10.0
+        while time.monotonic() < deadline and child.poll() is None:
+            time.sleep(0.01)
+        rc = child.poll()
+        assert rc is not None, "the child outlived its SIGTERM: no thread took it"
+        assert rc == -signal.SIGTERM, (
+            f"expected the default action (rc == {int(-signal.SIGTERM)}), got {rc}: a "
+            "blocked main thread shielded the process while an unblocked thread "
+            "was live, so the guard's per-thread scope claim would be wrong"
+        )
+    finally:
+        if child.poll() is None:  # pragma: no cover - only on a failed expectation
+            child.kill()
+        child.wait()
+
+
+#: Drive an entrypoint's own ``__main__`` with the worker bootstrap faked out,
+#: and deliver a SIGTERM at the exact instant ``asyncio`` rewrites SIGTERM's
+#: disposition to SIG_DFL (``remove_signal_handler`` is what does it). The
+#: signal is process-directed: only the guard's mask can keep it from landing
+#: on the default disposition.
+_LATE_SIGTERM_PRELUDE = """
+import asyncio, asyncio.unix_events, os, signal, sys
+
+_sent = False
+_orig_remove = asyncio.unix_events._UnixSelectorEventLoop.remove_signal_handler
+
+
+def _hooked_remove(self, sig):
+    global _sent
+    res = _orig_remove(self, sig)
+    if sig == signal.SIGTERM and not _sent:
+        _sent = True
+        os.kill(os.getpid(), signal.SIGTERM)
+    return res
+
+
+asyncio.unix_events._UnixSelectorEventLoop.remove_signal_handler = _hooked_remove
+
+import taskq.worker._bootstrap as _bootstrap
+import taskq.worker.run as _run
+
+
+async def _fake_main(*args, **kwargs):
+    asyncio.get_running_loop().add_signal_handler(signal.SIGTERM, lambda: None)
+    return 0
+
+
+_bootstrap._main = _fake_main
+_run._main = _fake_main
+
+import runpy
+
+try:
+    runpy.run_module({module!r}, run_name="__main__")
+except SystemExit as exc:
+    sys.exit(exc.code)
+"""
+
+#: The rewired entrypoints that drive the worker in this process and whose
+#: module is importable outside the e2e container image.
+_ENTRYPOINT_MODULES = [
+    "tests._worker_harness",
+    "tests._worker_harness_consv",
+    "tests._worker_harness_consv2",
+    "tests.system_e2e._kill_entry",
+    "tests.system_e2e._wf_entry",
+    "tests.system_e2e._worker_entry",
+    "tests.system_e2e._p2_saturation_worker",
+    "tests.system_e2e._wf_diag_entry",
+]
+
+
+@pytest.mark.skipif(
+    not hasattr(signal, "pthread_sigmask"),
+    reason="requires POSIX signal masks and asyncio's Unix event loop",
+)
+@pytest.mark.parametrize("module", _ENTRYPOINT_MODULES)
+def test_entrypoint_keeps_its_verdict_when_sigterm_lands_in_the_close(module: str) -> None:
+    """A SIGTERM inside the loop's close must not replace the drain verdict.
+
+    Every rewired ``run_worker_to_exit`` /
+    ``worker_main_async(ignore_sigterm_on_exit=True)`` entrypoint must survive
+    a signal delivered after the drain returned and exit with that verdict
+    instead of ``-15``.
+    """
+    import os
+    import subprocess
+    import sys
+
+    repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    env = {
+        **os.environ,
+        # Prefer this worktree's ``src`` so the child imports the checkout
+        # under test, not an unrelated parent checkout's installed package.
+        "PYTHONPATH": os.pathsep.join([os.path.join(repo_root, "src"), repo_root]),
+        "TASKQ_PG_DSN": "postgresql://u:p@localhost/db",
+        "TASKQ_ENVIRONMENT": "dev",
+        "TASKQ_WATCHDOG_ENABLED": "false",
+    }
+    proc = subprocess.run(  # noqa: S603  # Why: fixed interpreter + generated script naming a module in this repo.
+        [sys.executable, "-c", _LATE_SIGTERM_PRELUDE.format(module=module)],
+        cwd=repo_root,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=False,
+    )
+    assert proc.returncode == 0, (
+        f"{module} exited rc={proc.returncode} on a SIGTERM delivered inside the loop "
+        f"close: the guard did not preserve the drain verdict. stderr={proc.stderr!r}"
+    )

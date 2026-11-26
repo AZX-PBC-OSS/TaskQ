@@ -188,10 +188,15 @@ class TestShieldUntilComplete:
                 await asyncio.sleep(0)
 
         assert task.cancelled()
-        detached = [e for e in logs if e["event"] == "shield-detached-task-failed"]
-        assert len(detached) == 1
-        assert detached[0]["error_type"] == "RuntimeError"
-        assert "pg went down mid-release" in str(detached[0]["error"])
+        held = [e for e in logs if e["event"] == "shield-held-task-failed"]
+        assert len(held) == 1
+        assert held[0]["error_type"] == "RuntimeError"
+        assert "pg went down mid-release" in str(held[0]["error"])
+        assert not any(e["event"] == "shield-detached-task-failed" for e in logs), (
+            "a held write's failure was reported as a detached one: the caller "
+            "waited for this write before re-raising, so the row's only writer "
+            "failed rather than being abandoned"
+        )
 
     async def test_repeated_cancellation_still_waits_for_the_inner_operation(self) -> None:
         """A second cancel cannot cut through the ownership hold."""
