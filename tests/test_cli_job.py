@@ -128,6 +128,29 @@ def test_show_prints_the_rows_tags(monkeypatch: pytest.MonkeyPatch) -> None:
     assert "tags: (none)" in plain_cli_output(untagged.output)
 
 
+def test_show_neutralises_terminal_escapes_in_error_message(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``error_message`` is DB-sourced text: a persisted CSI/OSC/BEL sequence
+    must not reach the operator's tty. The class seat beside it already
+    neutralises escapes; the message seat applies the same law."""
+    _patch_db(
+        monkeypatch,
+        _job_row(
+            status="failed",
+            error_class="ValueError",
+            error_message="ok\x1b[2J\x1b[31mRED\x1b[0m\x1b]0;pwn\x07tail",
+        ),
+    )
+
+    result = runner.invoke(app, ["job", "show", _JOB_ID])
+
+    assert result.exit_code == 0, f"stderr: {result.stderr}"
+    assert "\x1b" not in result.output, result.output
+    assert "\x07" not in result.output, result.output
+    assert "error_message: okRED]0;pwntail" in plain_cli_output(result.output)
+
+
 def test_show_unknown_job_exits_nonzero(monkeypatch: pytest.MonkeyPatch) -> None:
     """No row in either table: the shell contract is a non-zero exit - a
     show that found nothing must not read as success."""

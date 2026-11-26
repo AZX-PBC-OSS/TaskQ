@@ -24,7 +24,7 @@ from collections.abc import AsyncIterator, Callable, Iterator
 from datetime import datetime
 from hashlib import sha256
 from pathlib import Path
-from typing import Any, Final, cast
+from typing import Any, Final, NoReturn, cast
 from uuid import (
     uuid4,  # noqa: TID251  # Why: the failure log run ID is deliberately not a persisted id — no B-tree, no ordering; randomness is the point (attribution token).
 )
@@ -40,6 +40,51 @@ from taskq.workflows._sql import WorkflowSql
 from taskq.workflows.engine import render_workflow_sql
 
 MEASUREMENTS = Path(__file__).parent.parent / ".measurements"
+
+
+class SpawnHostSentinel:
+    """A stand-in for one of ``_SpawnHost``'s declared fields: attribute
+    reads succeed (returning the sentinel), any invocation fails loudly."""
+
+    def __getattr__(self, name: str) -> SpawnHostSentinel:
+        return self
+
+    def __call__(self, *args: object, **kwargs: object) -> NoReturn:
+        raise AssertionError("the spawn used a host field before its target check")
+
+
+class StubSpawnHost:
+    """All ten ``_SpawnHost`` fields as inert sentinels: a harmless ``self.*``
+    read before a spawn refusal costs nothing, and the first real use (a
+    method call, a query) raises. The workflow pin suites' one spawn-host
+    double — a new ``_SpawnHost`` field lands here once, not in three
+    hand-maintained mirrors."""
+
+    __slots__ = (
+        "_ledger_id",
+        "_loop_iteration",
+        "_map_index",
+        "_pool",
+        "_wsql",
+        "attempt",
+        "claim_epoch",
+        "flow_id",
+        "job_id",
+        "node_key",
+    )
+
+    def __init__(self) -> None:
+        sentinel = SpawnHostSentinel()
+        self.flow_id = sentinel
+        self.job_id = sentinel
+        self.node_key = sentinel
+        self.attempt = sentinel
+        self.claim_epoch = sentinel
+        self._pool = sentinel
+        self._wsql = sentinel
+        self._ledger_id = sentinel
+        self._loop_iteration = None
+        self._map_index = None
 
 
 def runtime_refusal_builder(fn: Callable[[], object]) -> Callable[[], Promise[object]]:

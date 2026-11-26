@@ -1545,6 +1545,28 @@ raises, so nothing points you at the call site; audit for them explicitly.
   attempt 1 without burning the retry budget. Rename the key
   (`f"item-{i}"`) or drop `key=` to use the slot.
 
+* **A `ctx.spawn_flow` target with no terminal node is refused deterministically,
+  and the durable `error_class` it records is `ChildWorkflowNoTerminalError`.**
+  A child workflow whose step promises are all sunk (`sink(...)`) compiles with
+  no terminal node, so the join could never read a result. The spawn used to
+  record the base `ChildWorkflowUnknownError` and spend the node's retry
+  budget. It now raises `ChildWorkflowNoTerminalError`, which
+  subclasses `ChildWorkflowUnknownError`, so `except ChildWorkflowUnknownError:`
+  catches both. An author wrapper that catches the base and re-raises
+  (`raise MyError(...) from exc`) does not launder it: the deterministic
+  walker records the leaf `ChildWorkflowNoTerminalError`. The refusal is
+  DETERMINISTIC — within a process, re-running cannot give the compiled graph a
+  terminal — so the node terminal-fails without spending the retry ladder and
+  writes exactly one failed ledger row (`jobs.attempt` is the claim ordinal,
+  which a prior hold's resume bumps, so it is not always 1). During a
+  mixed-version rolling deploy that adds a terminal to a previously
+  terminal-less child, an in-flight parent landing on an older worker fails
+  deterministically without retrying onto a newer worker. **Your action:**
+  match both class names in any exact-match alert, dashboard, or saved query on
+  `ChildWorkflowUnknownError` — these rows record the subclass only. Give the
+  child a terminal by returning its step promise (or `build(...)` it) instead
+  of sinking it.
+
 * **The wait, timer and child-join replay cursors move from attempt-keyed
   metadata to claim-scoped ones.** A wait site used to stamp
   `hold_cursor_{attempt}_{seq}` (signal waits),

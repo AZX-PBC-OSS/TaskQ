@@ -4100,15 +4100,15 @@ traceback-truncation convention at timeline scale."""
 
 
 def _format_event_detail(detail: Any) -> str:
-    """Render an event's detail jsonb as one bounded line."""
-    if detail is None:
-        return ""
-    text = " ".join(str(detail).split())
-    if len(text) <= _EVENT_DETAIL_LINE_LIMIT:
-        return text
-    remaining = len(text) - _EVENT_DETAIL_LINE_LIMIT
-    suffix = f"... (+{remaining} characters)"
-    return text[: _EVENT_DETAIL_LINE_LIMIT - len(suffix)] + suffix
+    """Render an event's detail jsonb as one bounded line: whitespace
+    collapsed, terminal escape sequences (CSI/ESC/BEL, OSC included)
+    neutralised, and truncated with the dropped-character count named —
+    the wf CLI's ``_bounded_line`` law, imported from its one home."""
+    from taskq.workflows._cli import (
+        _bounded_line,  # pyright: ignore[reportPrivateUsage]  # Why: the bound's one home is the wf CLI's own private — the discipline is imported, never duplicated.
+    )
+
+    return _bounded_line(detail, _EVENT_DETAIL_LINE_LIMIT)
 
 
 # ── flows: the workflow-run surface ───────────────────────────────

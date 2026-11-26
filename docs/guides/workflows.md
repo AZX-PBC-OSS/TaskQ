@@ -2178,6 +2178,31 @@ does not fire (a deterministic refusal is not an exhaustion). Inside a
 loop body the loop exhausts with `LoopBodyFailure`, and the class name is
 in the message.
 
+**The spawn target.** The child workflow is resolved from the compile
+registry in THIS process, so the spawn's two target refusals are
+`ChildWorkflowUnknownError` when the named workflow is not registered
+(the definitions must be imported here) and `ChildWorkflowNoTerminalError`
+when it IS registered but its compiled graph declares no terminal node (a
+workflow whose step promises are explicitly sunk with `sink(...)`, so the
+join could never read a result). The terminal-less refusal is a
+DETERMINISTIC authoring failure: within a process, re-running cannot give
+the compiled graph a terminal; its class subclasses
+`ChildWorkflowUnknownError`, so `except ChildWorkflowUnknownError:` catches
+both. In Python, catching the base still catches it; a row-level alert,
+dashboard, or saved query matches the `error_class` string, though, and
+these rows record `ChildWorkflowNoTerminalError` — matching only the base
+matches zero of them, so match both names. The refusal fires before any
+child flow row, spawn cursor, or receipt is written: it spends no retry
+budget and writes exactly one failed ledger row (`jobs.attempt` reads the
+claim ordinal, which a prior hold's resume increments, so it is not always
+1), and a declared `on_exhaustion` effect does not fire. During a
+mixed-version rolling deploy that adds a terminal to a previously
+terminal-less child, an in-flight parent landing on an older worker fails
+deterministically without retrying onto a newer worker. Its remedy is to
+give the child a terminal by returning its step promise (or `build(...)`
+it) instead of sinking it. Inside a loop body the loop exhausts with
+`LoopBodyFailure`, and the class name is in the message.
+
 **The retention interplay (the operator's rule).** The cancel cascade
 cancels the family; the retention purge must WALK THE PARENT LINKS the
 same way — purging a child's rows while its parent still runs leaves a

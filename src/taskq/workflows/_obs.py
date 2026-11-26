@@ -292,8 +292,10 @@ def record_step_laddered(span: Span, exc: Exception, *, retried: bool) -> None:
     ``record_exception_text`` sets the ERROR status described by the
     scrubbed message plus the ``exception`` event. The ``wf.laddered``
     event names the route the ladder took (``retried`` — the node
-    re-pends; ``False`` — the budget exhausted, the terminal landed),
-    the distinction the row's ledger carries and the span echoes.
+    re-pends; ``False`` — no re-pend: the terminal landed, whether the
+    retry budget was exhausted or the failure was deterministic, the two
+    distinguished by ``error_class``), the distinction the row's ledger
+    carries and the span echoes.
 
     The engine's private route raiser is named by its PUBLIC class on both
     surfaces (the event's ``error_class`` and ``exception.type``, plus the
