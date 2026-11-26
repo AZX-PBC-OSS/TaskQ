@@ -102,8 +102,10 @@ def _deterministic_classes() -> tuple[type[BaseException], ...]:
     from taskq.exceptions import ReservedTimerNamespaceError
     from taskq.workflows._childflow import (
         ChildFlowLostError,
+        ChildResultContractError,
         SpawnDepthExceededError,
         SpawnKeyReservedError,
+        SpawnResultModelError,
     )
     from taskq.workflows._emit import (
         EmitCapacityCorruptionError,
@@ -133,6 +135,8 @@ def _deterministic_classes() -> tuple[type[BaseException], ...]:
         SpawnDepthExceededError,
         SpawnKeyReservedError,
         ChildFlowLostError,
+        SpawnResultModelError,  # never plain TypeError: every body TypeError would turn terminal.
+        ChildResultContractError,  # the join's decode refusal (the declared result= model cannot read the child's row).
         ClaimEpochMissingError,
         VanishedNodeError,
         DuplicateSubstepError,

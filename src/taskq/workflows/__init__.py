@@ -50,9 +50,11 @@ from taskq.workflows._childflow import (
     ChildHandle,
     ChildOk,
     ChildOutcome,
+    ChildResultContractError,
     ChildWorkflowUnknownError,
     SpawnDepthExceededError,
     SpawnKeyReservedError,
+    SpawnResultModelError,
 )
 from taskq.workflows._emit import EmitBackpressure, EmitReservationExceededError
 from taskq.workflows._policy import (
@@ -135,6 +137,7 @@ __all__ = [
     "ChildHandle",
     "ChildOk",
     "ChildOutcome",
+    "ChildResultContractError",
     "ChildWorkflowUnknownError",
     "CompiledWorkflow",
     "DeliveryResult",
@@ -172,6 +175,7 @@ __all__ = [
     "RunClaim",
     "SpawnDepthExceededError",
     "SpawnKeyReservedError",
+    "SpawnResultModelError",
     "Step",
     "StepContext",
     "TerminalEffect",

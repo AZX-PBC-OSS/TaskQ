@@ -2140,6 +2140,25 @@ links (a corrupted/operator-written link cannot run the walk forever —
 the same bound fires, the message names it). A fan-out that genuinely
 needs more depth declares `max_depth=` at the spawn site.
 
+**The result contract.** `result=` must be a pydantic model class that
+pydantic can render a JSON schema for. Any other value, including a plain
+type such as `int`, bare `BaseModel`, or a duck-typed class that supplied
+the three members the old doors read (and so worked by shape before this
+check), is refused with `SpawnResultModelError` (a `TypeError`) — as is a
+model class whose own JSON schema pydantic cannot build (an unresolved
+forward reference, or an `arbitrary_types_allowed` field). The join
+decodes the child's terminal result into the declared model; a child
+result that model cannot validate raises `ChildResultContractError` (a
+`ValueError`) at the join — also a deterministic authoring failure,
+because the terminal row is the truth and every attempt would decode it
+identically. The check is the spawn's first act: it runs before the child
+is created and ahead of the spawn's other refusals, and it fires even
+when the handle is never waited on. The refusal terminal-fails the node
+without spending the retry ladder, and a declared `on_exhaustion` effect
+does not fire (a deterministic refusal is not an exhaustion). Inside a
+loop body the loop exhausts with `LoopBodyFailure`, and the class name is
+in the message.
+
 **The retention interplay (the operator's rule).** The cancel cascade
 cancels the family; the retention purge must WALK THE PARENT LINKS the
 same way — purging a child's rows while its parent still runs leaves a
