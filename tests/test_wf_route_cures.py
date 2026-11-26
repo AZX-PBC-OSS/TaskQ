@@ -3,9 +3,9 @@
 The routing spine's refusal pins — the empty corpus, the fan-in
 bound's build seam, the arm arity, the E15 arm-param exactness.
 
-* the EMPTY-CORPUS WEDGE (``_runner.py``'s ``_route_fork``
-  returns ``None`` for a legitimately-empty corpus: the join never
-  fires, the flow wedges or lies). The contract: the empty list IS the
+* the EMPTY-CORPUS CONTRACT (the route's fork builds the zero-child
+  join for a legitimately-empty corpus: the join fires with ``[]`` and
+  the consumer receives it). The contract: the empty list IS the
   typed sum's honest value — the join fires with ``[]``.
 * the >1000 FAN-IN BOUND's BUILD SEAM (the named constant +
   the E-rule refusal AT BUILD; ``validate_fork``'s raise into the

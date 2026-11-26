@@ -1515,13 +1515,16 @@ def _attach_route[S](
     impossible refuses at the wiring site): an EMPTY arms dict, a
     non-TYPE key, a source that already carries an attachment (a node
     finalizes once — one fork), a source whose declared return does not
-    resolve to a list of pydantic models, and the TOTALITY breach —
-    the keys must be EXACTLY the union's members (a missing member would
-    route NOTHING — the silent drop the route exists to refuse; an
-    unknown member would never fire). The validator's
-    ``E15-route-totality`` re-proves the fence from the compiled graph
-    (checker-independently); the runtime ``RouterNotTotal`` names the
-    body that lied about its type."""
+    resolve to a list of pydantic models, the TOTALITY breach — the keys
+    must be EXACTLY the union's members (a missing member would route
+    NOTHING — the silent drop the route exists to refuse; an unknown
+    member would never fire) — and the two dispatch-time predicates that
+    would skip the fork entirely: ``cache=True`` (the hit path cannot
+    rebuild the fork from the cached envelope) and ``skip=`` (the skip
+    gate finalizes the source without ever entering the fork's body
+    path). The validator's ``E15-route-totality`` re-proves the totality
+    fence from the compiled graph (checker-independently); the runtime
+    ``RouterNotTotal`` names the body that lied about its type."""
     from taskq.workflows.chain import type_tag
 
     if not arms:
@@ -1661,6 +1664,26 @@ def _attach_route[S](
                 "reservations= so the arm rides the source's cohort), or "
                 "put the arm on its own step with its own declared cap."
             )
+    if source_node.skip is not None:
+        # skip= on a route source wedges the run the same way cache=True does:
+        # the dispatch-time skip gate finalizes the source ``succeeded``
+        # without entering the body path where the fork is built
+        # (``_finalize_skipped`` calls ``finalize_node`` with no fork), so
+        # ``<source>.join`` never spawns, the consumer's reserved dependency
+        # is never released, and the run stands ``running`` forever with no
+        # error row. The fail-closed guard in the success finalize never sees
+        # this door, so the wiring refuses it here.
+        raise WorkflowBuildError(
+            f"node {source.key!r} declares a skip= predicate and now carries "
+            "a typed route — the combination is refused: a skipped route "
+            "source terminalizes succeeded WITHOUT its route fork (the skip "
+            "gate never reaches the body path where the fork is built), so "
+            "the join never spawns, the downstream waits forever, and the "
+            "run stands running with no error row. Move the condition into "
+            "the source body (return [] when there is nothing to route — an "
+            "empty list is the honest empty corpus and still fires the join), "
+            "or drop the route from this node"
+        )
     if source_node.cache:
         # cache=True on a typed-route source wedges the run forever at the
         # first cache hit — the hit path never rebuilds the route fork (the arm
@@ -1866,7 +1889,9 @@ def route[S, R](
     exists; the validator's ``E15-route-totality`` re-proves the fence
     from the compiled graph (checker-independently — the compiled graph
     is public, mutable data); and the RUNTIME door — an element whose
-    type has no arm (the body that lied about its union) raises
+    type has no arm (the body that lied about its union), or a source
+    return that is not the declared ``list[...]`` at all (a forgotten
+    ``return``, a bare model instead of ``[model]``) — raises
     :class:`taskq.workflows.RouterNotTotal`: the source terminal-FAILS
     with ``error_class='RouterNotTotal'``, nothing routes, the run
     FAILS. The skip-silent shape is DEAD: the stringly ``skip=``
@@ -1963,18 +1988,24 @@ def chain_source(
     and is deliberately not inherited by the source.
     """
     graph = active_graph()
+    node_key = key or chain.name
     step_keys = set(chain.steps)
-    clashes = (step_keys & set(graph.nodes)) | (
-        step_keys & {k for c in graph.chains for k in c.steps}
-    )
+    # The node key this call is about to add joins the checked set. A
+    # ``chain_source`` keyed as one of its OWN chain's step keys was accepted
+    # before only because the check ran before the key existed — and at runtime
+    # ``_execute_claimed_tail`` resolves the row through ``_chain_steps`` (keyed
+    # by chain STEP keys), so the source's own finalize is misrouted into the
+    # chain router and a route attached to it silently discards its fork.
+    claimed = step_keys | {node_key}
+    existing = set(graph.nodes) | {k for c in graph.chains for k in c.steps}
+    clashes = (claimed & existing) | ({node_key} & step_keys)
     if clashes:
         raise WorkflowBuildError(
             f"chain {chain.name!r}'s step keys {sorted(clashes)} collide "
-            "with wired nodes or another chain's steps — a step key is the "
-            "ledger's identity, never a shadow"
+            "with the source node key, wired nodes, or another chain's steps "
+            "— a step key is the ledger's identity, never a shadow"
         )
     graph.chains.append(chain)
-    node_key = key or chain.name
     sources: list[tuple[str, object]] = []
     for arg in args:
         sources.append(("p", arg.key) if isinstance(arg, Promise) else ("d", arg))

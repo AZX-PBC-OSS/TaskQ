@@ -1525,7 +1525,11 @@ and PURE — that SPELLS the graph by dataflow:
 ELEMENTS' list, and a SINGLE-VALUE (non-list) `Promise[A|B]` is refused
 at build (`route's source 'x' does not declare a list[...] return —
 the route is a MAP face: the source produces the elements' list, the
-arms key its members`). There is no per-value arm dispatch on a plain
+arms key its members`). At runtime the same shape lies fail closed: a
+source body that returns `None` (the forgotten `return`) or any other
+non-list value fails the source deterministically on attempt 1 with
+`error_class='RouterNotTotal'` — nothing routes, and `[]` remains the
+honest empty-corpus return. There is no per-value arm dispatch on a plain
 step: routing ONE union value is the chain step's in-body `Route`
 (the §router below — `Route({EnrichOutcome.OK: "score", …})`, the
 total-over-the-outcome-enum fence at declaration time); inside a graph
@@ -2489,9 +2493,13 @@ vocabulary at both levels, at THREE doors: the wiring verb's refusal
 (missing/unknown members, NAMED), the validator's
 `E15-route-totality` (the checker-independent re-proof from the
 compiled graph), and the runtime `RouterNotTotal` — the element of a
-type with no arm (the body that lied about its union) fails the source
-LOUDLY, nothing routes, the run FAILS. The skip-silent shape is dead
-at both levels.
+type with no arm, or a source return that is not the declared
+`list[...]` at all (the body that lied about its union) — fails the
+source LOUDLY, nothing routes, the run FAILS. A `skip=` predicate on
+a route source is refused at the wiring: the dispatch-time skip gate
+would finalize the source `succeeded` without its fork, stranding the
+join and the downstream consumer. The skip-silent shape is dead at
+both levels.
 
 ### Chain or DAG? (the one-paragraph decision guide)
 

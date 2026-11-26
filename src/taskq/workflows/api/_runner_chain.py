@@ -13,10 +13,8 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any, Protocol
 
 import asyncpg
-import structlog
 
 from taskq.backend._protocol import JobId
-from taskq.obs import get_logger
 from taskq.workflows.api._runner_codec import encode_result
 from taskq.workflows.engine import finalize_node
 
@@ -24,8 +22,6 @@ if TYPE_CHECKING:
     from taskq.workflows._sql import WorkflowSql
 
 __all__ = ["ChainOps"]
-
-logger: structlog.stdlib.BoundLogger = get_logger(__name__)
 
 
 class _ChainHost(Protocol):
@@ -76,42 +72,19 @@ class ChainOps(_ChainHost):
           record names the defect, the chain visibly dies, never
           silently drops (the declaration-time totality check makes this
           door unreachable for a truth-telling body; it exists for the
-          body that lied about its type)."""
-        from taskq.workflows.chain import RouterNotTotal, chain_fork
+          body that lied about its type). The refusal is NOT handled
+          here: it escapes to the caller's finalize boundary, which routes
+          it through the same deterministic ladder (capture policy,
+          terminal projection, ERROR step span) the graph route uses."""
+        from taskq.workflows.chain import chain_fork
 
-        try:
-            child = chain.next_child(
-                step_key,
-                outcome,
-                payload=payload_doc,
-                map_index=row["map_index"],
-                run_priority=run_priority,
-            )
-        except RouterNotTotal as exc:
-            logger.warning(
-                "node.router-not-total",
-                run_id=str(flow_id),
-                node=step_key,
-                outcome=repr(outcome),
-            )
-            await finalize_node(
-                self.pool,
-                self.wsql,
-                flow_id=flow_id,
-                job_id=JobId(row["id"]),
-                step_key=step_key,
-                worker_id=self._worker_id,
-                attempt=attempt,
-                claim_epoch=claim_epoch,
-                outcome="failed",
-                error_class="RouterNotTotal",
-                error_message=str(exc)[:500],
-                map_index=row["map_index"],
-                ledger_id=ledger_id,
-                ledger_claimed_at=ledger_claimed_at,
-                emit_capacity=self._emit_capacity,
-            )
-            return
+        child = chain.next_child(
+            step_key,
+            outcome,
+            payload=payload_doc,
+            map_index=row["map_index"],
+            run_priority=run_priority,
+        )
         fork = chain_fork(child, trace_id=row.get("trace_id"))
         chain_final = await finalize_node(
             self.pool,

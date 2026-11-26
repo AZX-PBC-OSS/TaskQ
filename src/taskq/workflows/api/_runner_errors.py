@@ -177,6 +177,18 @@ class WorkflowResultDetailUnavailableError(WorkflowRunError):
         )
 
 
+class _RouteForkMissingError(RuntimeError):  # pyright: ignore[reportUnusedClass]  # Why: consumed by the runner's finalize guard and the ladder's deterministic tuple in sibling modules; the underscore keeps it out of the caller-catchable surface.
+    """The fail-closed success-finalize guard (engine-private).
+
+    A typed-route source reached the success finalize without its
+    prebuilt fork. The wiring refuses the two authoring shapes that could
+    produce it (a route source declaring ``cache=True`` or ``skip=``), so
+    this is unreachable on valid paths — it exists so that if one of those
+    fences is ever wrong, the refusal lands on the deterministic terminal
+    (the named class on the row, the retry ladder unburned) instead of
+    escaping the machinery boundary as an unnamed ``running`` row."""
+
+
 class WorkflowRootMissingError(WorkflowRunError):
     """Durable run-root corruption: the flow's own ``__flow__`` root row
     is gone while one of its nodes needs it. Raised at the root-ordered

@@ -186,13 +186,13 @@ class FanInBoundExceededError(ValueError):
     message carrying the ``child_driven`` escape so the remedy is
     reachable from the refusal's own text.
 
-    A DETERMINISTIC authoring failure (:func:`taskq.workflows.api.
-    _runner_ladder.is_deterministic_authoring_failure`'s fourth class):
-    re-running cannot shrink the corpus — the retry ladder never burns;
-    the node terminal-fails on the first attempt with this class on the
-    record. (The pre-fix raise was the raw ``ValueError`` OUTSIDE the
-    ladder's try — the reclaim re-crashed it forever, the remedy
-    unreachable.)"""
+    A DETERMINISTIC authoring failure
+    (:func:`taskq.workflows.api._runner_ladder.is_deterministic_authoring_failure`'s
+    class tuple): re-running cannot shrink the corpus — the retry ladder
+    never burns; the node terminal-fails on the first attempt with this
+    class on the record. (The pre-fix raise was the raw ``ValueError``
+    OUTSIDE the ladder's try — the reclaim re-crashed it forever, the
+    remedy unreachable.)"""
 
 
 def validate_fork(fork: ForkSpec) -> None:
