@@ -8,6 +8,7 @@ from __future__ import annotations
 
 __all__ = [
     "VanishedNodeError",
+    "WorkflowResultDetailUnavailableError",
     "WorkflowRootMissingError",
     "WorkflowRunCancelledError",
     "WorkflowRunError",
@@ -62,6 +63,67 @@ class VanishedNodeError(WorkflowRunError):
     truth — never an eternal zombie (a ``running`` root over a
     forever-pending node, parked budget-free, surfaced only in a
     detector's log)."""
+
+
+class WorkflowResultDetailUnavailableError(WorkflowRunError):
+    """A row's value cannot be READ from the durable state the bounded
+    collect's ``detail_home`` contract names: the row is a bounded summary
+    whose parent rows (the only home of the full collect) are missing,
+    purged, or do not reconcile with the recorded count; or the row's own
+    ``result`` is NULL because the result-TTL sweep claimed it or an
+    operator retry re-pended it.
+
+    THE FAIL-CLOSED FACE OF THE DETAIL RE-READ. The seats that enforce it
+    are the four workflow row readers: :meth:`FlowRunner.result`,
+    :meth:`FlowRunner._flow_state` (and ``_parent_results``, the body-arg
+    read they share) and :meth:`ChildHandle._ok_result`. Each either
+    rebuilds the whole declared value or raises THIS class — never a
+    truncated prefix, never ``[]``, never a bare ``None`` where a stored
+    value stood. A silent prefix is the defect family this class closes:
+    the caller's declared ``list[...]`` decoded fine over 64 KiB of a
+    106 KiB collect, and nobody could tell. A swept or re-pended row has
+    the same shape — its result is SQL NULL, which is never a collected
+    ``None`` (a body returning ``None`` is stored as the empty document).
+
+    DETERMINISTIC BY CONSTRUCTION (registered in
+    :func:`_deterministic_classes`): the detail rows are the record, and
+    no re-run, retry, or later tick can restore rows a purge removed or a
+    TTL claimed — the ladder's retry budget is never spent on it.
+
+    ``expected``/``rebuilt`` are the item counts when the failure is a
+    count mismatch (``None`` when the row itself is gone); ``reason``
+    names the concrete missing face. ``node_id``/``step_key`` locate the
+    row the operator must inspect. The reason and the counts lead the
+    message and the row id trails it: the CLI's failed-node line clamps
+    to ~100 characters, and the operator needs the diagnosis there more
+    than the uuid."""
+
+    def __init__(
+        self,
+        *,
+        node_id: object,
+        step_key: str,
+        reason: str,
+        expected: int | None = None,
+        rebuilt: int | None = None,
+    ) -> None:
+        self.node_id = node_id
+        self.step_key = step_key
+        self.reason = reason
+        self.expected = expected
+        self.rebuilt = rebuilt
+        counts = ""
+        if expected is not None:
+            counts = f" (expected {expected} items"
+            if rebuilt is not None:
+                counts += f", rebuilt {rebuilt}"
+            counts += ")"
+        super().__init__(
+            f"node {step_key!r} cannot be read{counts}: {reason}. (row {node_id}) "
+            "A bounded collect's row carries only the summary — the full "
+            "value lives on the parent rows — and the read fails closed rather than "
+            "handing back a truncated prefix"
+        )
 
 
 class WorkflowRootMissingError(WorkflowRunError):

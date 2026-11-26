@@ -91,8 +91,11 @@ from taskq._ids import new_uuid
 from taskq._json import dumps_jsonb_str
 from taskq.backend._protocol import ConnLike, JobId
 from taskq.workflows.api._ctx_wait import Expired, NodeHeldError
-from taskq.workflows.api._runner_codec import decode_result
-from taskq.workflows.api._runner_errors import WorkflowRunError
+from taskq.workflows.api._runner_codec import decode_result_with_detail
+from taskq.workflows.api._runner_errors import (
+    WorkflowResultDetailUnavailableError,
+    WorkflowRunError,
+)
 from taskq.workflows.api._sql_runner import render_sql
 
 if TYPE_CHECKING:
@@ -291,7 +294,16 @@ class ChildHandle[G: BaseModel]:
         returns the :class:`Expired` member once per abandoned row per
         attempt (the face-marker pattern). ``None`` waits as long as the
         child lives — safe by the cascade (a cancelled parent cancels
-        its children, so no join outlives its flow)."""
+        its children, so no join outlives its flow).
+
+        A succeeded child whose terminal value cannot be read raises
+        :class:`~taskq.workflows.api._runner_errors.WorkflowResultDetailUnavailableError`
+        — the terminal row is missing, or a truncated join's parent
+        detail rows have aged out or been purged. The raise lands inside
+        the calling node's body (so the failure is recorded against the
+        consumer's row, not the child's) and is deterministic: a retry
+        cannot restore the rows, so the ladder does not spend its budget
+        on it."""
         site = self._site
         signal_name = f"{CHILD_JOIN_SIGNAL_PREFIX}{self.flow_id}"
         async with site.pool.acquire() as conn:
@@ -420,18 +432,64 @@ class ChildHandle[G: BaseModel]:
     async def _ok_result(self, conn: ConnLike) -> ChildOk[G]:
         """The child's typed result read: the terminal node's decoded
         row result re-validated into the declared model (the decode
-        once, typed end to end — the R3 face at the flow boundary)."""
+        once, typed end to end — the R3 face at the flow boundary).
+
+        A terminal that is a JOIN reads through THE one detail re-read
+        (:func:`taskq.workflows.api._runner_codec.decode_result_with_detail`)
+        — the same function ``FlowRunner.result()`` uses — so a bounded
+        collect's truncated summary row hands back the FULL collect, and a
+        truncated ``gather`` flattens exactly as its own packer did.
+
+        The flatten authority differs by row age, and this seat has to be
+        honest about it: a row born after this deploy carries the durable
+        ``wf_node_kind`` stamp in its ``metadata``, which is this reader's
+        authority (it holds no ``CompiledWorkflow`` to ask). A row born
+        before the stamp existed carries no kind here, so the re-read
+        falls back to a COUNT-VERIFIED reconciliation: when the rebuilt
+        parent values do not match the recorded item count and every one
+        of them is a list, it tries the one-level gather flatten and
+        accepts it only if the flattened length equals the recorded count.
+        If neither shape reconciles the read refuses.
+
+        A row with no durable value at all — a swept or re-pended terminal,
+        or a truncated join whose parent detail rows were purged — raises
+        :class:`~taskq.workflows.api._runner_errors.WorkflowResultDetailUnavailableError`,
+        the same fail-closed class the runner seats raise, so the join
+        fails LOUDLY instead of returning a 64 KiB prefix or validating a
+        ``None`` into a pydantic ``ValidationError``."""
         if self._terminal_key is None:  # pragma: no cover - the spawn refuses a terminal-less child
             raise ChildWorkflowUnknownError(
                 f"the child flow {self.flow_id} names no terminal — the spawn "
                 "refuses a terminal-less child (the join could never read a result)"
             )
-        raw = await conn.fetchval(
+        row = await conn.fetchrow(
             render_sql(_CHILD_TERMINAL_RESULT_SQL, self._site.wsql.schema),
             self._terminal_key,
             self.flow_id,
         )
-        decoded = decode_result(raw)  # the envelope's unwrap — the runner's own codec seam
+        if row is None:
+            # The child's root said ``succeeded`` and its terminal row is
+            # gone: the result face has no source. Deterministic corruption
+            # (no re-run restores the row) — the same fail-closed class the
+            # detail re-read raises, so the ladder does not burn retries on a
+            # read that can never succeed.
+            raise WorkflowResultDetailUnavailableError(
+                node_id=self.flow_id,
+                step_key=self._terminal_key,
+                reason=(
+                    f"the child flow {self.flow_id} reads as succeeded but its "
+                    "terminal row is missing (purged or never written)"
+                ),
+            )
+        decoded = await decode_result_with_detail(
+            conn,
+            self._site.wsql.schema,
+            node_id=row["id"],  # pyright: ignore[reportUnknownArgumentType]  # Why: the asyncpg Record's members are Unknown; the statement's SELECT names the columns.
+            raw=row["result"],  # pyright: ignore[reportUnknownArgumentType]  # Why: same walk.
+            metadata=row["metadata"],  # pyright: ignore[reportUnknownArgumentType]  # Why: same walk.
+            step_key=str(row["step_key"]),  # pyright: ignore[reportUnknownArgumentType]  # Why: same walk.
+            result_expired=bool(row["result_expired"]),  # pyright: ignore[reportUnknownArgumentType]  # Why: same walk.
+        )
         result = self._result_model.model_validate(decoded)
         return ChildOk(flow_id=str(self.flow_id), result=result)
 
@@ -768,7 +826,8 @@ SELECT status FROM {schema}.jobs WHERE id = $1 AND step_key = '__flow__'
 """
 
 _CHILD_TERMINAL_RESULT_SQL = """
-SELECT result FROM {schema}.jobs WHERE step_key = $1
+SELECT id, step_key, result, metadata, (result IS NULL) AS result_expired
+FROM {schema}.jobs WHERE step_key = $1
   AND (metadata->>'flow_id')::uuid = $2
 """
 

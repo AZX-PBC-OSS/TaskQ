@@ -375,28 +375,27 @@ marker). The collected result envelope of a map join or `gather` follows
 the same 64 KiB cap: past it the row keeps the prefix that fits,
 `__truncated__: N` and a `detail_home` pointer, and the full collect
 stays on the rows it was collected from (a map join's `.item` children,
-a `gather`'s parents). A map wired directly on the join forks one child
-per item the join packed, and a consumer step's argument re-reads those
-rows. The re-read goes one level deep: a consumer over a `gather` whose
-parent is itself a truncated join (a map join or a `gather`) still sees
-that parent's prefix. The map sees one level further, because the join
-built its pack through the same re-read: it sees a prefix only when
-both levels below its source are truncated joins, as in a map on a
-`gather` over a `gather` of truncated map joins. Two single-level
-readers bypass that detail re-read and see only the row's prefix
-(`docs/design/seam-audit-matrix.md` §12 row 2): a `skip` / guard
-predicate over a truncated join (`_flow_state`) and a child flow's
-terminal read of one (`_ok_result`) both decode the row's kept prefix,
-never the full collect. One further shape is silent: in a single-branch
-two-level nest — `gather([small_step, gather([truncated_map])])` — the
-outer join's pack is already shortened by the inner truncation and can
-fit under the 64 KiB cap, so its row carries NO `__truncated__` marker
-and no `wf_collect_truncated` receipt at all, indistinguishable from a
-complete pack, and a map wired on it forks a prefix of a prefix. The
-author-usable escape is an intermediate step that receives the truncated
-joins as direct arguments: its argument re-read reads each join's full
-collect off the children's rows, so an outer `gather` over those steps
-packs the whole corpus.
+a `gather`'s parents). A map wired directly on the join forks one child per item the join
+packed, and every reader of a truncated join — a consumer step's
+arguments (`_parent_results`), `FlowRunner.result()`, a `skip=` / guard
+predicate's `state["results"]` (`_flow_state`), and a child flow's
+terminal read (`ChildHandle._ok_result`) — recursively rebuilds the full
+collect off the detail rows (`decode_result_with_detail`), including
+nested joins (such as a `gather` over truncated map joins or a `gather`
+over `gather`).
+
+**When the detail rows are gone, the read fails closed.** A truncated
+join's full collect lives only on its parent rows, so retention that
+expires or purges them costs more than a stored byte: reading that join
+raises `WorkflowResultDetailUnavailableError` on the FIRST attempt — no
+retry, because no retry can restore the rows — and the consuming node
+terminal-fails with the class on its row. The same class is raised when
+the terminal row's own result was swept, and when a re-pended (retried)
+row's result is NULL. `skip=` predicates are on the same path: their
+`state["results"]` view decodes through the same re-read, so an
+unreadable entry fails the gated node deterministically instead of
+deciding against a hole. The remedy is to re-run the flow; retrying the
+node that raised cannot succeed.
 
 ## The three cancel legs
 

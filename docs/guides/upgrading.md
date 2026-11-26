@@ -656,6 +656,32 @@ buckets alongside old ones (a temporary over-admission window). Drain
 affected queues before deploying payload model changes that affect key
 derivation.
 
+### Truncated workflow joins read their full collect (and fail closed when it is gone)
+
+> **Unreleased.** Two authoring values change, and one new failure face
+> appears on runs whose retained detail rows age out.
+
+A join (`map_join` or `gather`) that collects more than the 64 KiB cap stores a
+bounded summary on its row and keeps the full list on the parent rows. The
+readers now rebuild that list instead of handing back the summary:
+
+- `ChildOk.result` is the FULL collected list. It used to be the 64 KiB prefix
+  re-validated into the declared model — a parent body that counted,
+  deduplicated, or derived an idempotency key from `len(items.root)` now sees
+  every item.
+- A `skip=` predicate's `state["results"][<join>]` is the FULL collected list
+  (a truncated `gather` is flattened exactly as it was packed). A predicate
+  authored as "skip when fewer than N items are visible" flipped from
+  always-skip to never-skip; re-check those comparisons.
+
+When the full list can no longer be rebuilt — the parent detail rows were
+purged, or their result TTL was swept (`result_ttl`) — the read raises
+`WorkflowResultDetailUnavailableError` on the **first** attempt instead of
+degrading to the prefix or to `None`. The class is deterministic: the ladder
+spends no retries on it, the consuming node terminal-fails with the class on its
+row, and the remedy is to re-run the flow. See
+[Workflows](workflows.md#the-retention-coupling).
+
 ### Workflow rows carry a fairness cohort
 
 > **Unreleased.** The dispatch BEHAVIOR change is confined to

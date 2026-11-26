@@ -108,7 +108,10 @@ def _deterministic_classes() -> tuple[type[BaseException], ...]:
     )
     from taskq.workflows._progress import ProgressRefusedError
     from taskq.workflows._types import MapIndexSchemaError
-    from taskq.workflows.api._runner_errors import VanishedNodeError
+    from taskq.workflows.api._runner_errors import (
+        VanishedNodeError,
+        WorkflowResultDetailUnavailableError,
+    )
     from taskq.workflows.definitions import FanInBoundExceededError
 
     return (
@@ -124,6 +127,7 @@ def _deterministic_classes() -> tuple[type[BaseException], ...]:
         SpawnKeyReservedError,
         ChildFlowLostError,
         VanishedNodeError,
+        WorkflowResultDetailUnavailableError,
     )
 
 

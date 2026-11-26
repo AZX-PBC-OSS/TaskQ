@@ -222,20 +222,39 @@ UNION ALL
 SELECT 'cancel_fenced'::text AS verdict, id FROM cancel_fenced
 """
 
+# The detail re-read's PARENT ROWS (the bounded collect's ``detail_home``):
+# ``metadata`` rides every level so the recursive re-read knows each parent's
+# own node kind from the durable ``wf_node_kind`` stamp
+# (``_runner_codec.WF_NODE_KIND_KEY``) rather than from a workflow registry a
+# runner-less reader does not have. ``result_expired`` is the definite,
+# two-valued "this row holds no durable value": a NULL result never is a
+# collected ``None`` (a body returning ``None`` is stored as the empty
+# document, never SQL NULL), so the flag is plain ``p.result IS NULL``. The
+# TTL comparison is deliberately NOT part of the predicate: a row re-pended by
+# the operator retry carries no expiry stamp at all, and ``NULL <
+# clock_timestamp()`` is SQL NULL — a three-valued flag would read as "not
+# expired" and let that row's lost value through the count check as a
+# fabricated item.
 PARENT_RESULTS_BY_KEY_SQL_TEMPLATE = """
-SELECT p.id, p.step_key, p.result
+SELECT p.id, p.step_key, p.result, p.metadata,
+       (p.result IS NULL) AS result_expired
 FROM {schema}.wf_edge e
 JOIN {schema}.jobs p ON p.id = e.parent_id
 WHERE e.child_id = $1
   -- THE ABSORBED PARENT'S SLOT (the barrier fix — the envelope must
-  -- not lie in the sum): on an ABSORBING edge (collect | maybe) a
-  -- terminal-FAILED parent contributes NO result item to the packed
-  -- join — its absence is ON THE RECORD (the join's metadata.failures
-  -- array carries the typed FailureInfo + the policy that ran), never a
-  -- junk {} slot the consumer's decode cannot honor. A fail_closed
-  -- edge's consumer never runs over a failed parent (the cascade), so
-  -- this filter changes no other face.
-  AND NOT (p.status = 'failed' AND e.failure_policy IN ('collect', 'maybe'))
+  -- not lie in the sum): on an ABSORBING edge (collect | maybe) only a
+  -- SUCCEEDED parent contributes a result item to the packed join. A
+  -- terminal-FAILED parent's absence is ON THE RECORD (the join's
+  -- metadata.failures array carries the typed FailureInfo + the policy
+  -- that ran), never a junk {} slot the consumer's decode cannot honor —
+  -- and a parent the per-node retry re-pends AFTER the join packed stays
+  -- excluded too: the pack summed the succeeded set, so re-reading the
+  -- parent's LIVE status must not re-open a count the marker already
+  -- recorded. A fail_closed edge's consumer never runs over a failed
+  -- parent (the cascade), so this filter changes no other face — and a
+  -- re-pended parent behind that edge is read (and fails closed on its
+  -- NULL result) exactly as the re-pend left it.
+  AND NOT (p.status <> 'succeeded' AND e.failure_policy IN ('collect', 'maybe'))
 ORDER BY p.id
 """
 
@@ -359,8 +378,19 @@ SELECT error_class, error_message FROM {schema}.jobs
 WHERE id = $1 AND status = 'cancelled'
 """
 
+# The skip-predicate's view: every succeeded row's identity + result, with
+# its ``metadata`` — the detail re-read
+# (``_runner_codec.decode_result_with_detail``) needs the row id and the
+# durable node-kind stamp when the entry is a bounded collect's truncated
+# summary. ``result_expired`` carries the row's own "no durable value" fact
+# (``result IS NULL``) so a swept entry row refuses at the read instead of
+# decoding as a collected ``None``. The run's own ``__flow__`` root row is
+# excluded from that flag: it is the run, not a node result, and it holds no
+# ``result`` by construction.
 SUCCEEDED_RESULTS_SQL_TEMPLATE = """
-SELECT step_key, result FROM {schema}.jobs
+SELECT id, step_key, result, metadata,
+       (result IS NULL AND step_key <> '__flow__') AS result_expired
+FROM {schema}.jobs
 WHERE (metadata->>'flow_id')::uuid = $1 AND status = 'succeeded'
 """
 
@@ -531,10 +561,17 @@ SELECT count(*) FROM flipped
     _rebrace(validated_reservation_width("j")) + " AS released_emit_reservation_width",
 )
 
+#: The terminal read: the run's status + the terminal node's row. The
+#: node's own ``result_expired`` is the row's definite "no durable value"
+#: fact (``result IS NULL``), so a swept terminal join row refuses at the
+#: read instead of decoding as ``None`` — which is this reader's answer for
+#: "not terminal yet". ``n.id IS NOT NULL`` keeps the LEFT JOIN's miss a
+#: plain "no terminal row", never a stale expiry flag.
 TERMINAL_RESULT_SQL_TEMPLATE = """
 SELECT r.status AS run_status,
        n.id AS node_id, n.step_key AS node_key, n.result AS node_result,
-       n.status AS node_status
+       n.metadata AS node_metadata, n.status AS node_status,
+       (n.id IS NOT NULL AND n.result IS NULL) AS result_expired
 FROM {schema}.jobs r
 LEFT JOIN {schema}.jobs n
   ON (n.metadata->>'flow_id')::uuid = r.id AND n.step_key = $1
