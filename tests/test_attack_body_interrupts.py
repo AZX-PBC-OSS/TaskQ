@@ -34,6 +34,7 @@ the observed disposition and the attempt ledger's wholeness.
 
 import asyncio
 import contextlib
+import threading
 import time
 import warnings
 from collections.abc import Awaitable, Callable
@@ -71,8 +72,25 @@ _LIMIT = timedelta(milliseconds=150)
 # The carrier tests arm a start_to_close only to reach the enforcement's
 # task boundary (`if timeout is None` skips it). Their subject is the
 # carrier conversion, not the deadline, so the limit is far beyond any
-# scheduling delay. The deadline tests keep the tight _LIMIT.
+# scheduling delay. The non-sync deadline tests keep the tight _LIMIT.
 _CARRIER_LIMIT = timedelta(seconds=30)
+
+# The sync-body in-time-rescue tests arm a start_to_close only so the
+# deadline's _fire runs while the executor thread's finish stamp is
+# already recorded. A sync body's stamp is taken on the worker thread
+# after ThreadPoolExecutor dispatch + OS scheduling, and the default
+# executor may create its thread cold on a loaded xdist worker — so a
+# tight limit races real jitter, not the subject. The non-sync deadline
+# tests keep the tight _LIMIT.
+#
+# These three widened pins stay in the default contended `-n 2` leg rather
+# than moving to the serial `load_sensitive` lane: 600ms is measured
+# sufficient under contention far heavier than CI's, and
+# test_sync_body_in_time_pin_survives_thread_scheduling_jitter makes the
+# margin load-independent by injecting the jitter deterministically —
+# moving them would trade away the contended flake coverage that caught the
+# original 150ms failure without buying anything the sentinel does not.
+_SYNC_STALL_LIMIT = timedelta(milliseconds=600)
 
 
 class _FakeConnection:
@@ -341,8 +359,10 @@ async def test_reclaim_fence_stands_against_the_zombie(transactional: bool) -> N
 
 
 @pytest.mark.parametrize("transactional", [True, False], ids=["transactional", "autonomous"])
-# load_sensitive (pr #695's ruling): this file's elapsed-measuring family.
-# The load-bearing teeth are the two tx-unwind window pins below — elapsed
+# load_sensitive (pr #695's ruling): wall-clock/timing guards whose
+# assertions are load-fragile — the registered marker definition in
+# pyproject.toml, not only tests that measure elapsed time. The
+# load-bearing teeth here are the two tx-unwind window pins below — elapsed
 # must land inside [_TX_UNWIND_WAIT_BUDGET, _TX_UNWIND_WAIT_BUDGET + 3.0) —
 # and a window that tight measures the packing before it measures the code
 # on a starved runner. The family runs in the serial load-sensitive lane;
@@ -352,6 +372,12 @@ async def test_reclaim_fence_stands_against_the_zombie(transactional: bool) -> N
 # elapsed < 10.0 — 50x+ slack by design, "not a measurement" per their own
 # comments) ride along: harmless serially, and they drive the same
 # scenario.
+#
+# The _SYNC_STALL_LIMIT pins do not join this lane: they assert no elapsed
+# window (they check that the finish stamp landed inside a wall-clock
+# budget), and their 600ms margin is measured sufficient under the
+# contended `-n 2` leg, with the jitter sentinel pinning that margin
+# load-independently — see the _SYNC_STALL_LIMIT comment.
 @pytest.mark.load_sensitive
 async def test_hostile_finally_cannot_defer_the_deadline(transactional: bool) -> None:
     """A body whose finally does its own long (shielded) cleanup must not
@@ -669,21 +695,21 @@ async def test_sync_body_that_finished_inside_the_deadline_is_not_a_timeout(
     def body() -> object:
         nonlocal body_ran
         body_ran = True
-        time.sleep(0.05)
         return {"ok": True}
 
     # Scheduled right after the dispatch stashes the thread task, the
-    # stall holds the loop past the 150ms limit: the thread runs 0.05s
-    # (inside the deadline) while the enforcement stays starved until
-    # about +0.5s. The ordering is forced by the hop structure, not
-    # timed.
+    # stall starves the enforcement until limit + 0.1s: _fire runs
+    # exactly once and the rescue is reached by construction, not by a
+    # clock. The clock the wide sync-stall limit budgets for is the
+    # other half — the thread's finish stamp landing INSIDE the armed
+    # deadline, which is real executor dispatch + OS scheduling.
     real_set_sync = JobContext._set_sync_actor_task
 
     def _stall_once_thread_task_is_stashed(
         self: JobContext[BaseModel], task: asyncio.Task[object]
     ) -> None:
         real_set_sync(self, task)
-        loop.call_soon(time.sleep, 0.5)
+        loop.call_soon(time.sleep, _SYNC_STALL_LIMIT.total_seconds() + 0.1)
 
     monkeypatch.setattr(JobContext, "_set_sync_actor_task", _stall_once_thread_task_is_stashed)
 
@@ -694,10 +720,10 @@ async def test_sync_body_that_finished_inside_the_deadline_is_not_a_timeout(
 
     with (
         structlog.testing.capture_logs() as logs,
-        _DeadlineFireProbe(loop, _LIMIT) as probe,
+        _DeadlineFireProbe(loop, _SYNC_STALL_LIMIT) as probe,
     ):
         outcome = await _consume(
-            run_actor, _job(_LIMIT), transactional=transactional, backend=backend
+            run_actor, _job(_SYNC_STALL_LIMIT), transactional=transactional, backend=backend
         )
 
     assert outcome == "succeeded", outcome
@@ -714,6 +740,129 @@ async def test_sync_body_that_finished_inside_the_deadline_is_not_a_timeout(
         " must see the enforcement's own _fire run) or this pin no longer reaches"
         " its subject"
     )
+
+
+@pytest.mark.parametrize("transactional", [True, False], ids=["transactional", "autonomous"])
+@pytest.mark.parametrize("scenario", ["returns", "systemexit", "own_timeout"])
+async def test_sync_body_in_time_pin_survives_thread_scheduling_jitter(
+    scenario: str,
+    transactional: bool,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Regression pin for the sync-body in-time-rescue deadline margin.
+
+    Every sync-body rescue scenario (return value, ``SystemExit``, the
+    body's own ``TimeoutError``) stamps its finish on the executor
+    thread after thread-pool dispatch + OS scheduling. Injecting 160ms
+    of thread-scheduling jitter reproduces the CI contention that
+    pushed finish stamps past the old 150ms ``_LIMIT`` — with the
+    widened ``_SYNC_STALL_LIMIT`` the stamps stay in time and the rescue
+    still surfaces the thread's own outcome.
+    """
+    from taskq.worker import dispatch as dispatch_mod
+    from tests._ns_patch import patch_ns
+
+    real_to_thread = asyncio.to_thread
+    jitter_calls = 0
+
+    async def _jittered_to_thread(
+        func: Callable[..., object], /, *args: object, **kwargs: object
+    ) -> object:
+        nonlocal jitter_calls
+        jitter_calls += 1
+
+        def _delayed() -> object:
+            time.sleep(0.16)
+            return func(*args, **kwargs)
+
+        return await real_to_thread(_delayed)
+
+    patch_ns(monkeypatch, dispatch_mod, "asyncio", to_thread=_jittered_to_thread)
+    if scenario == "returns":
+        await test_sync_body_that_finished_inside_the_deadline_is_not_a_timeout(
+            transactional, monkeypatch
+        )
+    elif scenario == "systemexit":
+        await test_sync_body_systemexit_inside_the_deadline_is_the_actors_outcome(
+            transactional, monkeypatch
+        )
+    else:
+        await test_sync_body_own_timeout_inside_the_deadline_is_the_actors_outcome(
+            transactional, monkeypatch
+        )
+    assert jitter_calls == 1, (
+        f"jittered to_thread wrapper ran {jitter_calls} time(s); "
+        "dispatch_mod.asyncio.to_thread was not intercepted"
+    )
+
+
+@pytest.mark.parametrize("transactional", [True, False], ids=["transactional", "autonomous"])
+async def test_sync_body_finishing_after_the_deadline_during_a_loop_stall_is_a_timeout(
+    transactional: bool,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The late counterpart to the sync-body rescue stalls.
+
+    The thread finishes after ``start_to_close`` but before the stalled
+    enforcement resumes, so both its outcome and finish stamp are already
+    recorded when the deadline wins the wakeup race. The rescue must compare
+    that stamp with the armed deadline, not mistake the recorded outcome for
+    an in-time finish. Waiting on the thread's record makes that ordering
+    deterministic without asking the body to beat a wall-clock stall.
+    """
+    backend = FakeBackend()
+    loop = asyncio.get_running_loop()
+    finish_recorded = threading.Event()
+    finish_stamps: list[float] = []
+    stall_results: list[bool] = []
+
+    def body() -> object:
+        # The deadline is armed before executor dispatch, so this body is late
+        # even if a loaded runner delays the thread before it starts.
+        time.sleep(_SYNC_STALL_LIMIT.total_seconds() + 0.1)
+        return {"late": True}
+
+    real_set_sync = JobContext._set_sync_actor_task
+    real_record_finished = JobContext._record_actor_body_finished_at
+
+    def _record_and_release(self: JobContext[BaseModel], when: float) -> None:
+        real_record_finished(self, when)
+        finish_stamps.append(when)
+        finish_recorded.set()
+
+    def _wait_for_the_late_finish() -> None:
+        stall_results.append(finish_recorded.wait(timeout=5.0))
+
+    def _stall_once_thread_task_is_stashed(
+        self: JobContext[BaseModel], task: asyncio.Task[object]
+    ) -> None:
+        real_set_sync(self, task)
+        loop.call_soon(_wait_for_the_late_finish)
+
+    monkeypatch.setattr(JobContext, "_set_sync_actor_task", _stall_once_thread_task_is_stashed)
+    monkeypatch.setattr(JobContext, "_record_actor_body_finished_at", _record_and_release)
+
+    async def run_actor(job: JobRow, ctx: JobContext[BaseModel]) -> object:
+        del job
+        return await _run_sync_actor_tracked(body, {}, ctx)
+
+    with _DeadlineFireProbe(loop, _SYNC_STALL_LIMIT) as probe:
+        outcome = await _consume(
+            run_actor, _job(_SYNC_STALL_LIMIT), transactional=transactional, backend=backend
+        )
+
+    assert outcome == "scheduled", outcome
+    assert stall_results == [True], "the loop resumed before the late thread recorded its finish"
+    assert probe.deadline_when is not None
+    assert finish_stamps[0] > probe.deadline_when, (
+        "the scenario did not reach its subject: the thread finished inside the deadline"
+    )
+    assert not backend.mark_succeeded_calls, backend.mark_succeeded_calls
+    assert len(backend.mark_failed_or_retry_calls) == 1, backend.mark_failed_or_retry_calls
+    write = backend.mark_failed_or_retry_calls[0]
+    assert write["error_info"].error_class == "TimeoutError"  # pyright: ignore[reportAttributeAccessIssue]
+    assert write["error_info"].error_message == "start_to_close"  # pyright: ignore[reportAttributeAccessIssue]
+    assert probe.fires == 1, "the enforcement's own deadline must win the stalled wakeup race"
 
 
 @pytest.mark.parametrize("transactional", [True, False], ids=["transactional", "autonomous"])
@@ -801,7 +950,7 @@ async def test_sync_body_systemexit_inside_the_deadline_is_the_actors_outcome(
         self: JobContext[BaseModel], task: asyncio.Task[object]
     ) -> None:
         real_set_sync(self, task)
-        loop.call_soon(time.sleep, 0.5)
+        loop.call_soon(time.sleep, _SYNC_STALL_LIMIT.total_seconds() + 0.1)
 
     monkeypatch.setattr(JobContext, "_set_sync_actor_task", _stall_once_thread_task_is_stashed)
 
@@ -811,10 +960,10 @@ async def test_sync_body_systemexit_inside_the_deadline_is_the_actors_outcome(
 
     with (
         structlog.testing.capture_logs() as logs,
-        _DeadlineFireProbe(loop, _LIMIT) as probe,
+        _DeadlineFireProbe(loop, _SYNC_STALL_LIMIT) as probe,
     ):
         outcome = await _consume(
-            run_actor, _job(_LIMIT), transactional=transactional, backend=backend
+            run_actor, _job(_SYNC_STALL_LIMIT), transactional=transactional, backend=backend
         )
 
     assert outcome == "scheduled", outcome
@@ -866,7 +1015,7 @@ async def test_sync_body_own_timeout_inside_the_deadline_is_the_actors_outcome(
         self: JobContext[BaseModel], task: asyncio.Task[object]
     ) -> None:
         real_set_sync(self, task)
-        loop.call_soon(time.sleep, 0.5)
+        loop.call_soon(time.sleep, _SYNC_STALL_LIMIT.total_seconds() + 0.1)
 
     monkeypatch.setattr(JobContext, "_set_sync_actor_task", _stall_once_thread_task_is_stashed)
 
@@ -876,10 +1025,10 @@ async def test_sync_body_own_timeout_inside_the_deadline_is_the_actors_outcome(
 
     with (
         structlog.testing.capture_logs() as logs,
-        _DeadlineFireProbe(loop, _LIMIT) as probe,
+        _DeadlineFireProbe(loop, _SYNC_STALL_LIMIT) as probe,
     ):
         outcome = await _consume(
-            run_actor, _job(_LIMIT), transactional=transactional, backend=backend
+            run_actor, _job(_SYNC_STALL_LIMIT), transactional=transactional, backend=backend
         )
 
     assert outcome == "scheduled", outcome
@@ -1550,7 +1699,7 @@ async def test_body_caused_interface_error_outside_the_deadline_window_stays_int
 
     async def body(job_row: JobRow, ctx: JobContext[BaseModel]) -> object:
         # The body's own statement on the shared conn fails genuinely,
-        # long before the 150ms deadline could fire.
+        # long before the _CARRIER_LIMIT (30 s) deadline could fire.
         await tx_conn.execute("BODY_OP")
 
     with structlog.testing.capture_logs() as logs:

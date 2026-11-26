@@ -18,7 +18,9 @@ from __future__ import annotations
 
 import asyncio
 import json
+import sys
 import uuid as uuid_module
+from collections.abc import AsyncGenerator
 from typing import Any
 
 import asyncpg
@@ -53,6 +55,7 @@ from taskq.workflows.api._hitl_listen import (
     Backfilled,
     HitlListener,
     HoldCreated,
+    HoldEvent,
     HoldExpired,
     HoldResolved,
 )
@@ -307,7 +310,11 @@ async def test_listener_backfills_open_holds_and_dedups(
 
 
 async def test_resolve_wake_reaches_the_listener(
-    wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
+    wf_conn: asyncpg.Connection,
+    wf_schema: str,
+    wf_pool: asyncpg.Pool,
+    *,
+    flow_name: str = "resolve_wake_flow",
 ) -> None:
     """Pin (c): ``HitlClient.resolve`` → the listener's ``HoldResolved``
     within a bound (condition-not-clock: the wait_for is the SAFETY
@@ -319,13 +326,18 @@ async def test_resolve_wake_reaches_the_listener(
         return await ctx.wait_signal(Approval, timeout_s=120.0)
 
     flow_id, _runner, _node = await _held_flow(
-        wf_conn, wf_schema, wf_pool, wait_body=hold_body, name="resolve_wake_flow"
+        wf_conn, wf_schema, wf_pool, wait_body=hold_body, name=flow_name
     )
     client = HitlClient(wf_pool, schema=wf_schema)
     holds = await client.list(run=flow_id)
     assert len(holds) == 1
     listener = HitlListener(wf_pool, schema=wf_schema)
     async with listener:
+        # ``start()`` returns before Postgres LISTEN + add_listener finish;
+        # the snapshot's Backfilled is the listener's own readiness proof.
+        # resolve moves the hold OUT of 'held' — a notify committed before
+        # LISTEN can never be re-backfilled.
+        await _await_backfilled(listener)
         result = await client.resolve(holds[0].hold_id, {"verdict": "approve"})
         assert result.status == "delivered"
         event = await asyncio.wait_for(_next_of(listener, "hold_resolved"), timeout=5.0)
@@ -337,6 +349,146 @@ async def test_resolve_wake_reaches_the_listener(
         assert "approve" not in json.dumps(event.model_dump()), (
             "THE RESOLVED BROADCAST CARRIED THE VERDICT'S CONTENT — the pointer-only law"
         )
+
+
+def _lag_pump(monkeypatch: pytest.MonkeyPatch, delay: float = 0.15) -> None:
+    """Delay pump startup to reproduce CI connection/LISTEN setup lag:
+    ``_BroadcastListener.start`` returns before Postgres ``LISTEN`` +
+    ``add_listener`` registration completes, so a write committed inside
+    the delay window can never reach the listener (and its state change
+    out of ``status='held'`` is never re-backfilled)."""
+    import taskq.workflows.api._listen_pump as listen_pump_mod
+
+    real_pump = listen_pump_mod.pump
+
+    async def _delayed_pump(*args: Any, **kwargs: Any) -> Any:
+        await asyncio.sleep(delay)
+        async for item in real_pump(*args, **kwargs):
+            yield item
+
+    monkeypatch.setattr(listen_pump_mod, "pump", _delayed_pump)
+
+
+class _BackfilledGate:
+    """The lag pins' load-independent readiness proof: flags when the
+    listener's stream has yielded a ``Backfilled`` to the caller, and
+    asserts that flag at the non-backfillable write boundary. A missed
+    NOTIFY leaves no trace after the fact; a ``Backfilled`` consumed
+    before the write does — so omitting the readiness sync fails red
+    deterministically, regardless of host speed or CI load.
+
+    The observation sits on ``_iterate`` — the single read choke point
+    ``events()``, ``holds(run=…)`` and ``frames()`` all funnel through —
+    so a readiness wait written in any of those idioms flags alike."""
+
+    def __init__(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        self.consumed = False
+        self.sweep_calls = 0
+        # Why the ignore: the gate must observe the single read choke point
+        # every public door funnels through, and that seam is private.
+        real_iterate = HitlListener._iterate  # pyright: ignore[reportPrivateUsage]
+
+        async def _flagging_iterate(
+            listener: HitlListener, *args: Any, **kwargs: Any
+        ) -> AsyncGenerator[HoldEvent | None, None]:
+            async for event in real_iterate(listener, *args, **kwargs):
+                if isinstance(event, Backfilled):
+                    self.consumed = True
+                yield event
+
+        monkeypatch.setattr(HitlListener, "_iterate", _flagging_iterate)
+
+    def require_consumed(self) -> None:
+        assert self.consumed, (
+            "the non-backfillable write ran BEFORE the listener yielded "
+            "Backfilled — the LISTEN-readiness sync is missing (the write's "
+            "notify can drop on the floor under startup lag)"
+        )
+
+
+async def test_resolve_wake_reaches_the_listener_when_listen_setup_lags(
+    wf_conn: asyncpg.Connection,
+    wf_schema: str,
+    wf_pool: asyncpg.Pool,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Regression pin for the HITL listener LISTEN-readiness race.
+
+    ``HitlListener.start()`` launches ``_pump_loop`` as a background task
+    without awaiting Postgres ``LISTEN`` + ``add_listener`` registration.
+    Under pump startup lag, a ``resolve`` committed before ``LISTEN``
+    completes never reaches the listener and is not backfillable — the
+    gate asserts at the write boundary that ``Backfilled`` was yielded
+    first, so dropping the sync fails red on any host.
+    """
+    gate = _BackfilledGate(monkeypatch)
+    real_resolve = HitlClient.resolve
+
+    async def _gated_resolve(self: HitlClient, *args: Any, **kwargs: Any) -> Any:
+        gate.require_consumed()
+        return await real_resolve(self, *args, **kwargs)
+
+    monkeypatch.setattr(HitlClient, "resolve", _gated_resolve)
+    _lag_pump(monkeypatch)
+    await test_resolve_wake_reaches_the_listener(
+        wf_conn, wf_schema, wf_pool, flow_name="resolve_wake_flow_lag_pin"
+    )
+
+
+async def test_operator_abandon_delivers_hold_expired_when_listen_setup_lags(
+    wf_conn: asyncpg.Connection,
+    wf_schema: str,
+    wf_pool: asyncpg.Pool,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Lag pin for the operator-abandon site: under pump startup lag, the
+    abandon write must follow the listener's ``Backfilled`` — the gate
+    asserts readiness at the write boundary, so omitting the sync fails
+    red deterministically on any host or CI shard."""
+    gate = _BackfilledGate(monkeypatch)
+    real_abandon = HitlClient.abandon
+
+    async def _gated_abandon(self: HitlClient, *args: Any, **kwargs: Any) -> Any:
+        gate.require_consumed()
+        return await real_abandon(self, *args, **kwargs)
+
+    monkeypatch.setattr(HitlClient, "abandon", _gated_abandon)
+    _lag_pump(monkeypatch)
+    await test_operator_abandon_delivers_hold_expired_with_the_operator_door(
+        wf_conn, wf_schema, wf_pool, flow_name="pubsub_abandon_flow_lag_pin"
+    )
+
+
+async def test_expiry_in_loop_escalation_leg_still_delivers_when_listen_setup_lags(
+    wf_conn: asyncpg.Connection,
+    wf_schema: str,
+    wf_pool: asyncpg.Pool,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Lag pin for the loop-expiry-escalation site: under pump startup
+    lag, the expiry sweep must follow the listener's ``Backfilled`` — the
+    gate asserts readiness at the write boundary, so omitting the sync
+    fails red deterministically on any host or CI shard."""
+    gate = _BackfilledGate(monkeypatch)
+    real_sweep = sweep_expired_signals
+
+    async def _gated_sweep(*args: Any, **kwargs: Any) -> Any:
+        gate.sweep_calls += 1
+        gate.require_consumed()
+        return await real_sweep(*args, **kwargs)
+
+    monkeypatch.setattr(sys.modules[__name__], "sweep_expired_signals", _gated_sweep)
+    _lag_pump(monkeypatch)
+    await test_expiry_in_loop_escalation_leg_still_delivers(
+        wf_conn, wf_schema, wf_pool, flow_name="escalation_expiry_flow_lag_pin"
+    )
+    # This scenario sleeps past _lag_pump's window, so the gate is this
+    # pin's only teeth: if a call-spelling refactor makes the rebind above
+    # inert, the scenario would pass with no gate at all. Red loudly instead.
+    assert gate.sweep_calls == 1, (
+        "the gated sweep never ran — the monkeypatch no longer intercepts the "
+        "scenario's call spelling, so this pin asserts nothing"
+    )
 
 
 async def _first_of(events: Any) -> Any:
@@ -353,6 +505,37 @@ async def _next_of(listener: HitlListener, kind: str) -> Any:
         if event.event == kind:
             return event
     return None
+
+
+async def _await_backfilled(listener: HitlListener, bound_s: float = 5.0) -> Backfilled:
+    """The LISTEN-readiness proof for a FRESH listener: ``HitlListener.start()``
+    returns before Postgres ``LISTEN`` + ``add_listener`` registration
+    completes, so a wait is needed before the first non-backfillable write
+    (a resolve, an abandon, an expiry sweep) — its NOTIFY can drop on the
+    floor, and a transition out of ``status='held'`` is never
+    re-backfilled.
+
+    Two axes scope the proof, and both are load-bearing:
+
+    * Any event a subscriber observes proves the whole channel walk
+      completed on the connection that produced it, not only
+      ``Backfilled``: ``pump`` LISTENs and ``add_listener``s every channel
+      before ``on_connect``/backfill, so the walk precedes any event.
+    * This helper is scoped to a fresh listener's initial connection.
+      Across a reconnect ``_FanOut._history`` replays the previous
+      connection's ``Backfilled`` snapshot to the new subscriber, so a
+      caller waiting after a reconnect cannot treat a replayed
+      ``Backfilled`` alone as proof that the new session is ``LISTEN``ing.
+      Key such a wait on the live connection instead.
+
+    The wait asserts arrival: ``_next_of``'s bare ``None`` (an early stream
+    close) is never a pass."""
+    event = await asyncio.wait_for(_next_of(listener, "backfilled"), timeout=bound_s)
+    assert isinstance(event, Backfilled), (
+        "the listener closed its stream before yielding Backfilled "
+        f"(LISTEN + backfill never confirmed): {event!r}"
+    )
+    return event
 
 
 # ── the expiry-as-value-P4: the expiry fail-close (the worked example) ──────────────────
@@ -499,7 +682,11 @@ async def _expired_for(listener: HitlListener, run_id: str) -> Any:
 
 
 async def test_operator_abandon_delivers_hold_expired_with_the_operator_door(
-    wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
+    wf_conn: asyncpg.Connection,
+    wf_schema: str,
+    wf_pool: asyncpg.Pool,
+    *,
+    flow_name: str = "pubsub_abandon_flow",
 ) -> None:
     """The operator door's typed broadcast: ``HitlClient.abandon`` fires
     the ``HoldExpired`` event carrying ``abandoned_by="operator"`` — the
@@ -515,13 +702,17 @@ async def test_operator_abandon_delivers_hold_expired_with_the_operator_door(
 
     app = WorkflowApp()
 
-    @app.workflow("pubsub_abandon_flow")
+    @app.workflow(flow_name)
     def pubsub_abandon_flow() -> Promise[object]:
         return build(step(hold_body, Ingest(doc_id="d1"), key="review"))
 
     listener = HitlListener(wf_pool, wf_schema)
     async with listener:
-        runner = FlowRunner(app.get("pubsub_abandon_flow"), wf_pool, wf_schema)
+        # the abandon moves the hold OUT of 'held' — a notify committed
+        # before LISTEN can never be re-backfilled. the snapshot's
+        # Backfilled is the LISTEN-readiness proof.
+        await _await_backfilled(listener)
+        runner = FlowRunner(app.get(flow_name), wf_pool, wf_schema)
         flow_id = (await runner.create_flow()).flow_id
         await runner.drive(flow_id, until="held")
         client = _Client(wf_pool, schema=wf_schema)
@@ -539,7 +730,11 @@ async def test_operator_abandon_delivers_hold_expired_with_the_operator_door(
 
 
 async def test_expiry_in_loop_escalation_leg_still_delivers(
-    wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
+    wf_conn: asyncpg.Connection,
+    wf_schema: str,
+    wf_pool: asyncpg.Pool,
+    *,
+    flow_name: str = "escalation_expiry_flow",
 ) -> None:
     """Pin (e): a LOOP whose hold expires with ``on_exhausted="escalate"``:
     the typed expiry crosses the body boundary (the body does not
@@ -572,7 +767,7 @@ async def test_expiry_in_loop_escalation_leg_still_delivers(
 
     escalation_gate = GateDecl(name="Approval", payload_models=(Approval,), timeout_s=1.0)
 
-    @app.workflow("escalation_expiry_flow")
+    @app.workflow(flow_name)
     def escalation_flow() -> Promise[object]:
         return build(
             loop(
@@ -587,7 +782,12 @@ async def test_expiry_in_loop_escalation_leg_still_delivers(
 
     listener = HitlListener(wf_pool, schema=wf_schema)
     async with listener:
-        runner = FlowRunner(app.get("escalation_expiry_flow"), wf_pool, wf_schema)
+        # the sweep moves holds OUT of 'held' — a notify committed before
+        # LISTEN can never be re-backfilled. the snapshot's Backfilled is
+        # the LISTEN-readiness proof (the 1.1s sleep below is the gate's
+        # own 1.0s budget, never a readiness wait).
+        await _await_backfilled(listener)
+        runner = FlowRunner(app.get(flow_name), wf_pool, wf_schema)
         flow_id = (await runner.create_flow()).flow_id
         await runner.drive(flow_id, until="held")
         # the loop-kind hold (budget-paused) expires through the same arm — and
@@ -595,7 +795,10 @@ async def test_expiry_in_loop_escalation_leg_still_delivers(
         await asyncio.sleep(1.1)
         abandoned = await sweep_expired_signals(wf_pool, schema=wf_schema)
         assert abandoned >= 1
-        expired = await asyncio.wait_for(_next_of(listener, "hold_expired"), timeout=5.0)
+        # scoped to THIS run (the two sibling expiry pins' own helper): the
+        # sweep expires every overdue hold in the schema, so an unscoped read
+        # could pass on a foreign run's knock while this loop's own went blind.
+        expired = await asyncio.wait_for(_expired_for(listener, str(flow_id)), timeout=5.0)
         assert expired is not None, (
             "the expiry broadcast never reached the listener for the LOOP's hold — "
             "the budget-paused row went blind"
@@ -628,7 +831,7 @@ async def test_expiry_in_loop_escalation_leg_still_delivers(
     # the real fleet claim — the dispatch fence's terminal-flow leg with
     # the escalation-kind exemption is the only door this row has.
     worker_id = JobId(new_uuid())
-    runner = FlowRunner(app.get("escalation_expiry_flow"), wf_pool, wf_schema, worker_id=worker_id)
+    runner = FlowRunner(app.get(flow_name), wf_pool, wf_schema, worker_id=worker_id)
     await wf_conn.execute(
         f'INSERT INTO "{wf_schema}".actor_config (actor, queue) '
         "VALUES ($1, $2) ON CONFLICT (actor) DO NOTHING",
