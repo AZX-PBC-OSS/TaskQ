@@ -29,6 +29,7 @@ if TYPE_CHECKING:
 
 __all__ = [
     "CtxWaitOps",
+    "HoldMintFencedError",
     "LoopWaitShapeError",
     "SignalUnavailableError",
     "WaitHost",
@@ -169,6 +170,31 @@ class NodeHeldError(Exception):
         super().__init__(f"node held on {signal_names} (hold {hold_id})")
         self.hold_id = hold_id
         self.signal_names = signal_names
+
+
+class HoldMintFencedError(Exception):
+    """The fresh hold mint's control-flow unwinding (INTERNAL): the park
+    CAS (``AND status = 'running' AND claim_epoch = $4``) matched no row, so
+    this execution no longer holds the running node at its own epoch — the
+    lease lapsed and a successor claimed the row, a concurrent
+    resume/cancel moved it, or it already rests in the held representation.
+    The signal row is never written (the mint's transaction rolls back), so
+    nothing announces a hold no node stands on.
+
+    ``NodeHeldError``'s sibling, deliberately not its subclass: being held
+    is a representation the row carries, while this is the claim that wrote
+    nothing — reporting it as held would record a resume and a
+    ``ConsumedOutcome`` for a row this execution does not own. Neither is it
+    a ``WorkflowRunError``: the worker translates that family into a
+    body-unresolvable parking, which a stale claim must never reach."""
+
+    def __init__(self, *, node_id: object, claim_epoch: int) -> None:
+        super().__init__(
+            f"the hold mint's park matched no running row at claim_epoch="
+            f"{claim_epoch} (node {node_id})"
+        )
+        self.node_id = node_id
+        self.claim_epoch = claim_epoch
 
 
 class SignalUnavailableError(RuntimeError):
@@ -667,6 +693,7 @@ class CtxWaitOps(WaitHost):
                 context={"reason": reason, "tool": tool, "args": args},
                 redact=self._redact,
                 map_index=self._map_index,
+                claim_epoch=self.claim_epoch,
             )
         raise NodeHeldError(hold_id=str(hold_id), signal_names=names)
 

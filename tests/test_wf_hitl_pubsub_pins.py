@@ -62,6 +62,19 @@ from taskq.workflows.api._hitl_listen import (
 from tests._wf_fixtures import RedLog
 
 
+async def _running_claim(
+    conn: asyncpg.Connection, schema: str, flow_id: JobId, *, step_key: str
+) -> JobId:
+    """A running node row at the granted epoch (1): the fresh hold mint's park
+    admits only the claim that holds the row at its own epoch, and
+    ``seed_running_node`` writes the finalize pin's epoch 0."""
+    from tests._wf_fixtures import seed_running_node
+
+    node = await seed_running_node(conn, schema, flow_id, step_key=step_key)
+    await conn.execute(f'UPDATE "{schema}".jobs SET claim_epoch = 1 WHERE id = $1', node)
+    return node
+
+
 class Approval(BaseModel):
     verdict: str
     note: str = ""
@@ -143,7 +156,8 @@ async def test_hold_create_broadcast_is_transactional_and_shaped(
     """Pin (a): the hold-create broadcast rides the INSERT's own tx —
     the payload is the POINTER set (schema, flow_id, run_id, hold_id,
     signal, node_key, created_at), never the payload content; and a
-    rolled-back hold-create emits no notification.
+    rolled-back hold-create emits no notification. A claim-fenced fresh mint
+    is silent too: no consumer may see a hold the park refused.
 
     The knock sent OUTSIDE
     the tx (autocommit) outlives its row — the scenario rolls the INSERT
@@ -205,19 +219,61 @@ async def test_hold_create_broadcast_is_transactional_and_shaped(
     async with _RawKnocks(module_pg_schema.pg_dsn, HOLD_CREATED_CHANNEL) as knocks:
         # A second hold (new epoch) through the real leg — its knock is
         # the shipped one's witness.
+        node_id = await _running_claim(wf_conn, wf_schema, flow_id, step_key="review")
         hold_id = await register_hold(
             wf_conn,
             schema=wf_schema,
             workflow_id=flow_id,
-            node_id=JobId(new_uuid()),
+            node_id=node_id,
             node_key="review",
             signal_name="Approval",
             hold_epoch=2,
             call_id="call:the expiry-as-value-shape",
             payload_schema={"Approval": {"type": "object", "properties": {}}},
             timeout_s=120.0,
+            claim_epoch=1,
         )
-        await asyncio.sleep(0.2)
+        await wait_for_condition(
+            lambda: any(str(hold_id) in k for k in knocks.of(HOLD_CREATED_CHANNEL)),
+            description="the successful hold-create notification",
+        )
+        shaped = [json.loads(k) for k in knocks.of(HOLD_CREATED_CHANNEL) if str(hold_id) in k]
+
+        # The successful mint parked its node. A fresh mint at the same epoch
+        # is therefore fenced; its rollback must be silent to external
+        # consumers as well as leaving no orphan row. The committed sentinel
+        # proves the listener has passed every earlier notification before the
+        # absence assertion runs.
+        from taskq.workflows.api._ctx_wait import HoldMintFencedError
+
+        before_fence = len(knocks.of(HOLD_CREATED_CHANNEL))
+        with pytest.raises(HoldMintFencedError):
+            await register_hold(
+                wf_conn,
+                schema=wf_schema,
+                workflow_id=flow_id,
+                node_id=node_id,
+                node_key="review",
+                signal_name="Approval",
+                hold_epoch=3,
+                call_id="call:the-fenced-create-is-silent",
+                payload_schema={"Approval": {"type": "object", "properties": {}}},
+                timeout_s=120.0,
+                claim_epoch=1,
+            )
+        sentinel = f"after-fenced-mint:{new_uuid()}"
+        await wf_conn.execute("SELECT pg_notify($1, $2)", HOLD_CREATED_CHANNEL, sentinel)
+        await wait_for_condition(
+            lambda: sentinel in knocks.of(HOLD_CREATED_CHANNEL),
+            description="the post-fence notification sentinel",
+        )
+        assert knocks.of(HOLD_CREATED_CHANNEL)[before_fence:] == [sentinel]
+        assert (
+            await wf_conn.fetchval(
+                f'SELECT count(*) FROM "{wf_schema}".wf_signals WHERE workflow_id = $1', flow_id
+            )
+            == 2
+        )
     shaped = [json.loads(k) for k in knocks.of(HOLD_CREATED_CHANNEL) if str(hold_id) in k]
     assert shaped, "the shipped create leg emitted NO knock — the broadcast is dead"
     doc = shaped[0]
@@ -1081,13 +1137,14 @@ async def test_two_consumers_fan_out_and_each_gets_its_own_sentinel(
             wf_conn,
             schema=wf_schema,
             workflow_id=flow_id,
-            node_id=JobId(new_uuid()),
+            node_id=await _running_claim(wf_conn, wf_schema, flow_id, step_key="review"),
             node_key="review",
             signal_name="Approval",
             hold_epoch=2,
             call_id="call:hitl-fanout",
             payload_schema={"Approval": {"type": "object", "properties": {}}},
             timeout_s=120.0,
+            claim_epoch=1,
         )
         async with asyncio.timeout(5.0):
             await wait_for_condition(
@@ -1180,13 +1237,16 @@ async def test_two_schemas_one_database_the_payload_filter_is_the_isolation(
         wf_conn,  # any connection on the same database — the schema selects the tables
         schema=schema_b,
         workflow_id=JobId(uuid_module.UUID(foreign_flow)),
-        node_id=JobId(new_uuid()),
+        node_id=await _running_claim(
+            wf_conn, schema_b, JobId(uuid_module.UUID(foreign_flow)), step_key="review"
+        ),
         node_key="review",
         signal_name="Approval",
         hold_epoch=1,
         call_id="call:the expiry-as-value-isolation",
         payload_schema={"Approval": {"type": "object", "properties": {}}},
         timeout_s=120.0,
+        claim_epoch=1,
     )
 
     async def hold_body(ctx: StepContext, params: Ingest) -> Any:
@@ -1299,13 +1359,14 @@ async def test_notify_payloads_stay_under_the_named_cap(
             wf_conn,
             schema=wf_schema,
             workflow_id=flow_id,
-            node_id=JobId(new_uuid()),
+            node_id=await _running_claim(wf_conn, wf_schema, flow_id, step_key=long_key),
             node_key=long_key,
             signal_name="Approval",
             hold_epoch=2,
             call_id="call:hitl-cap",
             payload_schema={"Approval": {"type": "object", "properties": {}}},
             timeout_s=120.0,
+            claim_epoch=1,
         )
         await asyncio.sleep(0.2)
     shaped = [k for k in knocks.of(HOLD_CREATED_CHANNEL) if str(hold_id) in k]

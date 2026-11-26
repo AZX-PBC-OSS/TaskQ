@@ -28,7 +28,7 @@ from taskq.workflows._progress import MESSAGE_TERMINAL_MAX, ProgressEmitter
 from taskq.workflows._types import FinalizeResult
 from taskq.workflows.api._attempt import AttemptClaim, repend_attempt
 from taskq.workflows.api._ctx import build_step_context
-from taskq.workflows.api._ctx_wait import NodeHeldError
+from taskq.workflows.api._ctx_wait import HoldMintFencedError, NodeHeldError
 from taskq.workflows.api._deps import deps_param_declared
 from taskq.workflows.api._runner_codec import encode_result, jsonable
 from taskq.workflows.api._runner_errors import WorkflowRunError
@@ -281,7 +281,7 @@ class LoopOps(_LoopHost):
         *,
         claim_epoch: int = 0,
         ledger_claimed_at: Any = None,
-    ) -> None:
+    ) -> str | None:
         """Fresh jobs per iteration
         (``<loop>.iter<i>`` — the ledger's per-iteration identity); the
         carry FROZEN AT SPAWN (read once per iteration from the row) and
@@ -305,7 +305,13 @@ class LoopOps(_LoopHost):
         'crashed', the ladder untouched); anything else re-raises. The
         BODY's exceptions never reach this wrapper — the body boundary
         routes them first (a body cannot forge an infra fault by raising
-        ConnectionError)."""
+        ConnectionError).
+
+        The return label is the driver's ECHO, not the row's truth: a fenced
+        body control-flow outcome (a fresh hold mint or a deferral whose claim
+        fence closed) is reported to the caller, so the claim tail can unwind
+        the attempt as ``"fenced"``; every other drive ends through the
+        driver's own doors and returns ``None``."""
 
         # The attachment is typed on the NodeDecl field (the lazy-Any
         # correction): the driver reads the field's own type, no cast.
@@ -349,7 +355,7 @@ class LoopOps(_LoopHost):
         *,
         claim_epoch: int = 0,
         ledger_claimed_at: Any = None,
-    ) -> None:
+    ) -> str | None:
         """The loop driver's own drive (the machinery side of the
         escape-point contract — the escape-point contract): every exception
         raised by THIS method's own statements (the state reads, the
@@ -596,6 +602,40 @@ class LoopOps(_LoopHost):
                     # ladder unburned). The driver's walls stay blind while
                     # paused (the arm's heart) — holds are free.
                     return
+                except HoldMintFencedError as fenced:
+                    # the fresh mint's park matched nothing — the loop row a
+                    # successor claims, or one already resting held. Nothing
+                    # was written (the mint rolled back). Fence BOTH of this
+                    # claim's ledger rows (the attempt's and the iteration's)
+                    # with their own claim instants and report the driver's
+                    # one non-None label, so the claim tail unwinds the stale
+                    # attempt as "fenced" instead of the "loop" echo.
+                    logger.info(
+                        "loop.hold-mint-fenced",
+                        run_id=str(flow_id),
+                        node=row["step_key"],
+                        claim_epoch=fenced.claim_epoch,
+                        iteration=iteration,
+                    )
+                    async with self.pool.acquire() as conn:
+                        if ledger_id is not None:
+                            await conn.execute(
+                                self.wsql.ledger_fence_by_id,
+                                ledger_id,
+                                type(fenced).__name__,
+                                ledger_claimed_at,
+                            )
+                        if (
+                            iteration_claim.ledger_id is not None
+                            and iteration_claim.claimed_at is not None
+                        ):
+                            await conn.execute(
+                                self.wsql.ledger_fence_by_id,
+                                iteration_claim.ledger_id,
+                                type(fenced).__name__,
+                                iteration_claim.claimed_at,
+                            )
+                    return "fenced"
                 except (Snooze, RetryAfter) as exc:
                     # the iteration's control-flow signals route through the
                     # same deferral disposition the step bodies share
@@ -612,7 +652,7 @@ class LoopOps(_LoopHost):
                     # ladder still bounds loops). The buffer's close is the
                     # caller's own finally (the loop's entry seam — the
                     # driver's internal finalizes never wait on it).
-                    await self._defer_loop_step(
+                    verdict = await self._defer_loop_step(
                         flow_id,
                         row,
                         attempt,
@@ -627,7 +667,7 @@ class LoopOps(_LoopHost):
                             else None
                         ),
                     )
-                    return
+                    return "fenced" if verdict == "fenced" else None
                 except Exception as exc:
                     # every exception crossing it is a body failure — the
                     # loop's typed failure (the named class, the flow

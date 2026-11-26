@@ -1083,9 +1083,9 @@ async def execute_flow_job(
     default — an undeclared row's body runs unbounded.
 
     Returns the execution record (:class:`FlowExecution`) — the outcome
-    label (``succeeded`` / ``laddered`` / ``held`` / ``deferred`` — the
-    tail's outcome faces, the deferral the body's own control-flow
-    signals) beside the REAL identities the door resolved on the way.
+    label (``succeeded`` / ``laddered`` / ``held`` / ``deferred`` /
+    ``fenced`` — the tail's outcome faces, including control-flow and
+    claim-fence unwinds) beside the REAL identities the door resolved on the way.
 
     Raises :class:`WorkflowBodyUnresolvableError` when the stamped name
     or the step key resolves to nothing registered in this process —

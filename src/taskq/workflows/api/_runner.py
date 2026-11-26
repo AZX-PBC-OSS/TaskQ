@@ -104,7 +104,7 @@ from taskq.workflows._types import (
 )
 from taskq.workflows.api._app import CompiledWorkflow
 from taskq.workflows.api._ctx import StepContext, build_step_context
-from taskq.workflows.api._ctx_wait import NodeHeldError
+from taskq.workflows.api._ctx_wait import HoldMintFencedError, NodeHeldError
 from taskq.workflows.api._deps import deps_param_declared
 from taskq.workflows.api._graph import (
     Exit,
@@ -1463,7 +1463,7 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
         # buffer).
         if node is not None and node.loop_spec is not None:
             try:
-                await self._run_loop_node(
+                loop_outcome = await self._run_loop_node(
                     flow_id,
                     row,
                     attempt,
@@ -1475,7 +1475,7 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
                 )
             finally:
                 await emitter.aclose()
-            return "loop"
+            return "fenced" if loop_outcome == "fenced" else "loop"
 
         route_fork: ForkSpec | None = (
             None  # the typed route's prebuilt fork (the body path builds it from the live elements)
@@ -1738,6 +1738,30 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
             )
             record_step_held(trace.get_current_span(), held.hold_id, held.signal_names)
             return "held"
+        except HoldMintFencedError as fenced:
+            # the fresh mint's park matched nothing: this execution's lease
+            # lapsed and a successor owns the row, or a resume/cancel moved it
+            # first. Nothing was written (the mint's transaction rolled back),
+            # so this execution unwinds as fenced — the same label the
+            # deferral route's claim fence uses: no consumed outcome, no
+            # ladder attempt, and the stale attempt's own ledger row is fenced
+            # so it cannot outlive the claim it no longer holds.
+            await emitter.aclose()
+            logger.info(
+                "node.hold-mint-fenced",
+                run_id=str(flow_id),
+                node=row["step_key"],
+                claim_epoch=fenced.claim_epoch,
+            )
+            if ledger_id is not None:
+                async with self.pool.acquire() as conn:
+                    await conn.execute(
+                        self.wsql.ledger_fence_by_id,
+                        ledger_id,
+                        type(fenced).__name__,
+                        ledger_claimed_at,
+                    )
+            return "fenced"
         except EmitBackpressure as exc:
             # Ordinary whole-page capacity is control flow, never an error
             # ladder. The dedicated park commits before the one fresh recheck;

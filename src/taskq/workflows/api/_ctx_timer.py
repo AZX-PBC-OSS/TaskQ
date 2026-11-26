@@ -383,5 +383,6 @@ class CtxTimerOps(WaitHost):
                 relative=relative,
                 payload_schema={TIMER_WAKE_SCHEMA_NAME: TimerWake.model_json_schema()},
                 map_index=self._map_index,
+                claim_epoch=self.claim_epoch,
             )
         raise NodeHeldError(hold_id=str(hold_id), signal_names=(signal_name,))

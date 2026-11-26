@@ -200,14 +200,21 @@ async def test_warm_hold_insert_bind_serves_high_identity(
     warm_pool: tuple[asyncpg.Connection, str, WorkflowSql, asyncpg.Pool],
 ) -> None:
     control, schema, _wsql, pool = warm_pool
-    flow, node = await _seed(control, schema)
+    flow, low_node = await _seed(control, schema)
+    # one running row per sibling: each mint parks its own row, and the park
+    # fences on the executing claim's epoch (the seed writes epoch 0).
+    high_node = await seed_running_node(control, schema, flow, step_key="source")
+    await control.execute(
+        f'UPDATE "{schema}".jobs SET claim_epoch = 1 WHERE id = ANY($1::uuid[])',
+        [low_node, high_node],
+    )
     payload_schema: dict[str, object] = {"Approval": {"type": "object", "properties": {}}}
     async with pool.acquire() as conn:
         await register_hold(
             conn,
             schema=schema,
             workflow_id=flow,
-            node_id=node,
+            node_id=low_node,
             node_key="review",
             signal_name="Approval",
             hold_epoch=0,
@@ -215,6 +222,7 @@ async def test_warm_hold_insert_bind_serves_high_identity(
             payload_schema=payload_schema,
             timeout_s=120.0,
             map_index=LOW,
+            claim_epoch=1,
         )
     await _post(control, schema)
     async with pool.acquire() as conn:
@@ -222,7 +230,7 @@ async def test_warm_hold_insert_bind_serves_high_identity(
             conn,
             schema=schema,
             workflow_id=flow,
-            node_id=node,
+            node_id=high_node,
             node_key="review",
             signal_name="Approval",
             hold_epoch=1,
@@ -230,6 +238,7 @@ async def test_warm_hold_insert_bind_serves_high_identity(
             payload_schema=payload_schema,
             timeout_s=120.0,
             map_index=HIGH,
+            claim_epoch=1,
         )
     assert (
         await control.fetchval(

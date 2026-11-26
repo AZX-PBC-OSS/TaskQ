@@ -48,6 +48,18 @@ from taskq.workflows.definitions import (
 from taskq.workflows.engine import insert_node, render_workflow_sql
 from tests._wf_fixtures import claim_view, seed_flow, seed_running_node
 
+
+async def _running_claim(
+    conn: asyncpg.Connection, schema: str, flow: JobId, *, step_key: str = "review"
+) -> JobId:
+    """A running node at the epoch both claim doors grant (``seed_running_node``
+    writes the finalize pin's epoch 0; a hold mint's park fences on the
+    executing claim's epoch)."""
+    node = await seed_running_node(conn, schema, flow, step_key=step_key)
+    await conn.execute(f'UPDATE "{schema}".jobs SET claim_epoch = 1 WHERE id = $1', node)
+    return node
+
+
 pytestmark = pytest.mark.integration
 
 CARRIERS: tuple[str, ...] = (
@@ -906,7 +918,9 @@ async def test_high_identity_signal_holds_discriminate_map_siblings(
     from taskq.workflows.api._hitl import register_hold
 
     flow = await seed_flow(wf_conn, wf_schema)
-    node = await seed_running_node(wf_conn, wf_schema, flow, step_key="review")
+    first_node = await _running_claim(wf_conn, wf_schema, flow)
+    second_node = await _running_claim(wf_conn, wf_schema, flow)
+    duplicate_node = await _running_claim(wf_conn, wf_schema, flow)
 
     indexdef = await wf_conn.fetchval(
         "SELECT pg_get_indexdef(($1 || '.wf_signals_hold_identity_uniq')::regclass)",
@@ -920,7 +934,7 @@ async def test_high_identity_signal_holds_discriminate_map_siblings(
         wf_conn,
         schema=wf_schema,
         workflow_id=flow,
-        node_id=node,
+        node_id=first_node,
         node_key="review",
         signal_name="Approval",
         hold_epoch=0,
@@ -928,12 +942,13 @@ async def test_high_identity_signal_holds_discriminate_map_siblings(
         payload_schema=payload_schema,
         timeout_s=120.0,
         map_index=BIGINT_MAX,
+        claim_epoch=1,
     )
     second = await register_hold(
         wf_conn,
         schema=wf_schema,
         workflow_id=flow,
-        node_id=JobId(new_uuid()),
+        node_id=second_node,
         node_key="review",
         signal_name="Approval",
         hold_epoch=0,
@@ -941,6 +956,7 @@ async def test_high_identity_signal_holds_discriminate_map_siblings(
         payload_schema=payload_schema,
         timeout_s=120.0,
         map_index=BIGINT_MAX - 1,
+        claim_epoch=1,
     )
     assert first != second
     stored = await wf_conn.fetch(
@@ -956,7 +972,7 @@ async def test_high_identity_signal_holds_discriminate_map_siblings(
             wf_conn,
             schema=wf_schema,
             workflow_id=flow,
-            node_id=JobId(new_uuid()),
+            node_id=duplicate_node,
             node_key="review",
             signal_name="Approval",
             hold_epoch=0,
@@ -964,6 +980,7 @@ async def test_high_identity_signal_holds_discriminate_map_siblings(
             payload_schema=payload_schema,
             timeout_s=120.0,
             map_index=BIGINT_MAX,
+            claim_epoch=1,
         )
 
 
@@ -996,7 +1013,7 @@ async def test_hold_doors_refuse_negative_and_bool_identity(
 
     payload_schema: dict[str, object] = {"Approval": {"type": "object", "properties": {}}}
     flow = await seed_flow(wf_conn, wf_schema)
-    node = await seed_running_node(wf_conn, wf_schema, flow, step_key="review")
+    node = await _running_claim(wf_conn, wf_schema, flow)
 
     # The bad values are the point of the case: their real (invalid) type is
     # what the door must refuse at runtime, so the deliberate type violation
@@ -1021,6 +1038,7 @@ async def test_hold_doors_refuse_negative_and_bool_identity(
                 payload_schema=payload_schema,
                 timeout_s=120.0,
                 map_index=cast("Any", bad),
+                claim_epoch=1,
             )
 
     stored = await wf_conn.fetchval(
@@ -1042,6 +1060,7 @@ async def test_hold_doors_refuse_negative_and_bool_identity(
         payload_schema=payload_schema,
         timeout_s=120.0,
         map_index=None,
+        claim_epoch=1,
     )
     assert plain is not None
 
@@ -1060,4 +1079,5 @@ async def test_hold_doors_refuse_negative_and_bool_identity(
             relative=60.0,
             payload_schema=payload_schema,
             map_index=-1,
+            claim_epoch=1,
         )

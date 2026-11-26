@@ -130,9 +130,10 @@ def _ctx(
 async def _mint_one_standing_hold(
     pool: asyncpg.Pool, wsql: WorkflowSql, flow_id: JobId, node_id: JobId
 ) -> str:
-    """Stage the reachable re-entry state: a standing ``held`` signal on the
-    node, with the node row ``running`` and unstamped (what a lease reclaim
-    between the mint's signal INSERT and a later claim leaves behind).
+    """Stage the re-entry arm's input shape: a standing ``held`` signal on the
+    node, with the node row ``running`` and unstamped — what a mint leaves
+    behind when its park does not survive to the next claim (the rows the
+    pre-fence mints already wrote).
 
     The mint runs through the real door at the granted epoch (so the hold row
     is production's), then the row is restored to the running shape the

@@ -612,11 +612,13 @@ async def test_reconcile_read_cost_stays_a_single_pass_over_the_two_tables(pg_ds
 async def test_a_mint_whose_park_matches_nothing_is_named(
     wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
 ) -> None:
-    """The mint's park is a conditional write (``AND status = 'running'``).
-    A body whose lease lapsed, or whose node a concurrent resume/cancel moved,
-    mints a live ``held`` signal while the node update matches nothing — the
-    approval queue then shows a hold for a node that is not waiting. The miss
-    is a named event (the result of the write is read, not discarded)."""
+    """The mint's park is a conditional write (``AND status = 'running' AND
+    claim_epoch = $4``). A body whose lease lapsed, or whose node a
+    concurrent resume/cancel moved, matches nothing — and the mint must not
+    stand behind a hold no node is waiting on. The miss is a named event AND
+    the transaction unwinds: no ``held`` row survives for the approval queue
+    to show."""
+    from taskq.workflows.api._ctx_wait import HoldMintFencedError
     from taskq.workflows.api._hitl import register_hold
 
     _flow_id, node_id, _hold_id, _runner = await _held_flow(
@@ -624,8 +626,14 @@ async def test_a_mint_whose_park_matches_nothing_is_named(
     )
     # The node rests pending (the standing hold's held representation): a
     # second mint's park cannot match.
-    with structlog.testing.capture_logs() as captured:
-        minted = await register_hold(
+    before = await wf_conn.fetchval(
+        f'SELECT count(*) FROM "{wf_schema}".wf_signals WHERE workflow_id = $1', _flow_id
+    )
+    with (
+        structlog.testing.capture_logs() as captured,
+        pytest.raises(HoldMintFencedError) as fenced,
+    ):
+        await register_hold(
             wf_conn,
             schema=wf_schema,
             workflow_id=_flow_id,
@@ -636,9 +644,22 @@ async def test_a_mint_whose_park_matches_nothing_is_named(
             call_id="call:1:1",
             payload_schema={"Approval": {"type": "object"}},
             timeout_s=None,
+            claim_epoch=1,
         )
-    assert minted is not None
+    assert fenced.value.claim_epoch == 1
     misses = [e for e in captured if e["event"] == "wf-hold-mint-park-missed"]
     assert misses, [e["event"] for e in captured]
     assert misses[0]["node_id"] == str(node_id), misses[0]
-    assert misses[0]["hold_id"] == str(minted), misses[0]
+    assert misses[0]["claim_epoch"] == 1, misses[0]
+    # the miss still names the id of the hold it refused to write
+    assert misses[0]["hold_id"], misses[0]
+    after = await wf_conn.fetchval(
+        f'SELECT count(*) FROM "{wf_schema}".wf_signals WHERE workflow_id = $1', _flow_id
+    )
+    assert after == before, "the fenced mint committed a hold row no node stands on"
+    assert (
+        await wf_conn.fetchval(
+            f'SELECT count(*) FROM "{wf_schema}".wf_signals WHERE hold_epoch = 99',
+        )
+        == 0
+    )

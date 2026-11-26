@@ -1471,7 +1471,7 @@ async def test_the_loops_zombie_fence_cannot_mark_a_reminted_live_row(
     # body's Snooze, the claim fence refuses (the row is the peer's), the route
     # takes the zombie's arm — the fence must refuse the re-minted row.
     node = runner.compiled.nodes.get("counter")
-    await runner._execute_claimed(  # pyright: ignore[reportPrivateUsage]  # Why: the pins drive the runner's own claim tail — the seam the threading rides.
+    outcome = await runner._execute_claimed(  # pyright: ignore[reportPrivateUsage]  # Why: the pins drive the runner's own claim tail — the seam the threading rides.
         flow_id,
         dict(node_row),
         1,
@@ -1481,8 +1481,11 @@ async def test_the_loops_zombie_fence_cannot_mark_a_reminted_live_row(
         claim_epoch=5,
         ledger_claimed_at=zombie_claim.claimed_at,
     )
-    # the row is the truth (the loop branch's label is the driver's echo —
-    # always "loop" — the ledger is the record the fence wrote):
+    # the zombie's deferral is reported as "fenced" (the loop route's own
+    # label for its claim fence), never the "loop" echo of a drive that ended
+    # through the row's doors:
+    assert outcome == "fenced", outcome
+    # the row is the truth — the ledger is the record the fence wrote:
     ledger_rows = await _ledger_rows(module_pg_pool, schema, str(flow_id), "counter")
     live = [r for r in ledger_rows if r["attempt"] == 1]
     assert live, dict(ledger_rows[0]) if ledger_rows else "no rows"

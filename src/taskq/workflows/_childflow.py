@@ -486,6 +486,7 @@ class ChildHandle[G: BaseModel]:
                 },
                 timeout_s=timeout_s,
                 context={"kind": "child_join", "child_flow_id": str(self.flow_id)},
+                claim_epoch=site.claim_epoch,
             )
         raise NodeHeldError(hold_id=str(hold_id), signal_names=(signal_name,))
 

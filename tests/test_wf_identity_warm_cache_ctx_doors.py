@@ -91,8 +91,8 @@ def _ctx(
         job_id=node_id,
         node_key="source",
         attempt=1,
-        # a synthetic context (no row claim): the emit/wait doors under test
-        # do not fence on the epoch, so the minimum well-formed value is used.
+        # the granted epoch: the wait doors' hold park fences on it, so each
+        # wait case seeds its own running row claimed at this epoch.
         claim_epoch=1,
         pool=pool,
         wsql=wsql,
@@ -107,12 +107,19 @@ async def test_warm_signal_wait_doors_serve_a_high_sibling(
 ) -> None:
     control, schema, wsql, pool = warm_wait_pool
     flow = await seed_flow(control, schema)
-    node = await seed_running_node(control, schema, flow, step_key="source")
+    low_node = await seed_running_node(control, schema, flow, step_key="source")
+    high_node = await seed_running_node(control, schema, flow, step_key="source")
+    # one running row per sibling: each sibling's mint parks its own row, and
+    # the park fences on the claim's epoch (``seed_running_node`` writes 0).
+    await control.execute(
+        f'UPDATE "{schema}".jobs SET claim_epoch = 1 WHERE id = ANY($1::uuid[])',
+        [low_node, high_node],
+    )
 
     # Warm the four read statements and the hold mint at LOW, pre-POST.
     with pytest.raises(NodeHeldError):
         await _ctx(
-            pool, wsql, flow, node, map_index=LOW, workflow_name="warm-ctx-signal"
+            pool, wsql, flow, low_node, map_index=LOW, workflow_name="warm-ctx-signal"
         ).wait_signal((Decision,), timeout_s=120.0)
 
     await apply_pending(control, schema=schema, phase="post")
@@ -120,7 +127,7 @@ async def test_warm_signal_wait_doors_serve_a_high_sibling(
     # The same warm statements, now widened, at a sibling identity past 32767.
     with pytest.raises(NodeHeldError) as held:
         await _ctx(
-            pool, wsql, flow, node, map_index=HIGH, workflow_name="warm-ctx-signal"
+            pool, wsql, flow, high_node, map_index=HIGH, workflow_name="warm-ctx-signal"
         ).wait_signal((Decision,), timeout_s=120.0)
 
     row = await control.fetchrow(
@@ -191,18 +198,23 @@ async def test_warm_timer_wait_doors_serve_a_high_sibling(
 ) -> None:
     control, schema, wsql, pool = warm_wait_pool
     flow = await seed_flow(control, schema)
-    node = await seed_running_node(control, schema, flow, step_key="source")
+    low_node = await seed_running_node(control, schema, flow, step_key="source")
+    high_node = await seed_running_node(control, schema, flow, step_key="source")
+    await control.execute(
+        f'UPDATE "{schema}".jobs SET claim_epoch = 1 WHERE id = ANY($1::uuid[])',
+        [low_node, high_node],
+    )
 
     with pytest.raises(NodeHeldError):
         await _ctx(
-            pool, wsql, flow, node, map_index=LOW, workflow_name="warm-ctx-timer"
+            pool, wsql, flow, low_node, map_index=LOW, workflow_name="warm-ctx-timer"
         ).wait_until(120.0, key="remind")
 
     await apply_pending(control, schema=schema, phase="post")
 
     with pytest.raises(NodeHeldError) as held:
         await _ctx(
-            pool, wsql, flow, node, map_index=HIGH, workflow_name="warm-ctx-timer"
+            pool, wsql, flow, high_node, map_index=HIGH, workflow_name="warm-ctx-timer"
         ).wait_until(120.0, key="remind")
 
     row = await control.fetchrow(
