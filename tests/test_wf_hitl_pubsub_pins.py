@@ -20,6 +20,7 @@ import asyncio
 import json
 import sys
 import uuid as uuid_module
+from collections.abc import AsyncGenerator
 from typing import Any
 
 import asyncpg
@@ -54,6 +55,7 @@ from taskq.workflows.api._hitl_listen import (
     Backfilled,
     HitlListener,
     HoldCreated,
+    HoldEvent,
     HoldExpired,
     HoldResolved,
 )
@@ -373,19 +375,28 @@ class _BackfilledGate:
     asserts that flag at the non-backfillable write boundary. A missed
     NOTIFY leaves no trace after the fact; a ``Backfilled`` consumed
     before the write does — so omitting the readiness sync fails red
-    deterministically, regardless of host speed or CI load."""
+    deterministically, regardless of host speed or CI load.
+
+    The observation sits on ``_iterate`` — the single read choke point
+    ``events()``, ``holds(run=…)`` and ``frames()`` all funnel through —
+    so a readiness wait written in any of those idioms flags alike."""
 
     def __init__(self, monkeypatch: pytest.MonkeyPatch) -> None:
         self.consumed = False
-        real_events = HitlListener.events
+        self.sweep_calls = 0
+        # Why the ignore: the gate must observe the single read choke point
+        # every public door funnels through, and that seam is private.
+        real_iterate = HitlListener._iterate  # pyright: ignore[reportPrivateUsage]
 
-        async def _flagging_events(listener: HitlListener) -> Any:
-            async for event in real_events(listener):
+        async def _flagging_iterate(
+            listener: HitlListener, *args: Any, **kwargs: Any
+        ) -> AsyncGenerator[HoldEvent | None, None]:
+            async for event in real_iterate(listener, *args, **kwargs):
                 if isinstance(event, Backfilled):
                     self.consumed = True
                 yield event
 
-        monkeypatch.setattr(HitlListener, "events", _flagging_events)
+        monkeypatch.setattr(HitlListener, "_iterate", _flagging_iterate)
 
     def require_consumed(self) -> None:
         assert self.consumed, (
@@ -462,6 +473,7 @@ async def test_expiry_in_loop_escalation_leg_still_delivers_when_listen_setup_la
     real_sweep = sweep_expired_signals
 
     async def _gated_sweep(*args: Any, **kwargs: Any) -> Any:
+        gate.sweep_calls += 1
         gate.require_consumed()
         return await real_sweep(*args, **kwargs)
 
@@ -469,6 +481,13 @@ async def test_expiry_in_loop_escalation_leg_still_delivers_when_listen_setup_la
     _lag_pump(monkeypatch)
     await test_expiry_in_loop_escalation_leg_still_delivers(
         wf_conn, wf_schema, wf_pool, flow_name="escalation_expiry_flow_lag_pin"
+    )
+    # This scenario sleeps past _lag_pump's window, so the gate is this
+    # pin's only teeth: if a call-spelling refactor makes the rebind above
+    # inert, the scenario would pass with no gate at all. Red loudly instead.
+    assert gate.sweep_calls == 1, (
+        "the gated sweep never ran — the monkeypatch no longer intercepts the "
+        "scenario's call spelling, so this pin asserts nothing"
     )
 
 
@@ -489,13 +508,27 @@ async def _next_of(listener: HitlListener, kind: str) -> Any:
 
 
 async def _await_backfilled(listener: HitlListener, bound_s: float = 5.0) -> Backfilled:
-    """The LISTEN-readiness proof: ``HitlListener.start()`` returns before
-    Postgres ``LISTEN`` + ``add_listener`` registration completes, and the
-    snapshot's ``Backfilled`` is the listener's own announcement that
-    LISTEN on every channel and ``_backfill`` have finished. A transition
-    out of ``status='held'`` committed before it (a resolve, an abandon,
-    an expiry sweep) is non-backfillable — its NOTIFY can drop on the
-    floor. Asserts arrival: ``_next_of``'s bare ``None`` (an early stream
+    """The LISTEN-readiness proof for a FRESH listener: ``HitlListener.start()``
+    returns before Postgres ``LISTEN`` + ``add_listener`` registration
+    completes, so a wait is needed before the first non-backfillable write
+    (a resolve, an abandon, an expiry sweep) — its NOTIFY can drop on the
+    floor, and a transition out of ``status='held'`` is never
+    re-backfilled.
+
+    Two axes scope the proof, and both are load-bearing:
+
+    * Any event a subscriber observes proves the whole channel walk
+      completed on the connection that produced it, not only
+      ``Backfilled``: ``pump`` LISTENs and ``add_listener``s every channel
+      before ``on_connect``/backfill, so the walk precedes any event.
+    * This helper is scoped to a fresh listener's initial connection.
+      Across a reconnect ``_FanOut._history`` replays the previous
+      connection's ``Backfilled`` snapshot to the new subscriber, so a
+      caller waiting after a reconnect cannot treat a replayed
+      ``Backfilled`` alone as proof that the new session is ``LISTEN``ing.
+      Key such a wait on the live connection instead.
+
+    The wait asserts arrival: ``_next_of``'s bare ``None`` (an early stream
     close) is never a pass."""
     event = await asyncio.wait_for(_next_of(listener, "backfilled"), timeout=bound_s)
     assert isinstance(event, Backfilled), (

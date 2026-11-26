@@ -72,7 +72,7 @@ _LIMIT = timedelta(milliseconds=150)
 # The carrier tests arm a start_to_close only to reach the enforcement's
 # task boundary (`if timeout is None` skips it). Their subject is the
 # carrier conversion, not the deadline, so the limit is far beyond any
-# scheduling delay. The deadline tests keep the tight _LIMIT.
+# scheduling delay. The non-sync deadline tests keep the tight _LIMIT.
 _CARRIER_LIMIT = timedelta(seconds=30)
 
 # The sync-body in-time-rescue tests arm a start_to_close only so the
@@ -80,8 +80,16 @@ _CARRIER_LIMIT = timedelta(seconds=30)
 # already recorded. A sync body's stamp is taken on the worker thread
 # after ThreadPoolExecutor dispatch + OS scheduling, and the default
 # executor may create its thread cold on a loaded xdist worker — so a
-# tight limit races real jitter, not the subject. The deadline tests
-# keep the tight _LIMIT.
+# tight limit races real jitter, not the subject. The non-sync deadline
+# tests keep the tight _LIMIT.
+#
+# These three widened pins stay in the default contended `-n 2` leg rather
+# than moving to the serial `load_sensitive` lane: 600ms is measured
+# sufficient under contention far heavier than CI's, and
+# test_sync_body_in_time_pin_survives_thread_scheduling_jitter makes the
+# margin load-independent by injecting the jitter deterministically —
+# moving them would trade away the contended flake coverage that caught the
+# original 150ms failure without buying anything the sentinel does not.
 _SYNC_STALL_LIMIT = timedelta(milliseconds=600)
 
 
@@ -351,8 +359,10 @@ async def test_reclaim_fence_stands_against_the_zombie(transactional: bool) -> N
 
 
 @pytest.mark.parametrize("transactional", [True, False], ids=["transactional", "autonomous"])
-# load_sensitive (pr #695's ruling): this file's elapsed-measuring family.
-# The load-bearing teeth are the two tx-unwind window pins below — elapsed
+# load_sensitive (pr #695's ruling): wall-clock/timing guards whose
+# assertions are load-fragile — the registered marker definition in
+# pyproject.toml, not only tests that measure elapsed time. The
+# load-bearing teeth here are the two tx-unwind window pins below — elapsed
 # must land inside [_TX_UNWIND_WAIT_BUDGET, _TX_UNWIND_WAIT_BUDGET + 3.0) —
 # and a window that tight measures the packing before it measures the code
 # on a starved runner. The family runs in the serial load-sensitive lane;
@@ -362,6 +372,12 @@ async def test_reclaim_fence_stands_against_the_zombie(transactional: bool) -> N
 # elapsed < 10.0 — 50x+ slack by design, "not a measurement" per their own
 # comments) ride along: harmless serially, and they drive the same
 # scenario.
+#
+# The _SYNC_STALL_LIMIT pins do not join this lane: they assert no elapsed
+# window (they check that the finish stamp landed inside a wall-clock
+# budget), and their 600ms margin is measured sufficient under the
+# contended `-n 2` leg, with the jitter sentinel pinning that margin
+# load-independently — see the _SYNC_STALL_LIMIT comment.
 @pytest.mark.load_sensitive
 async def test_hostile_finally_cannot_defer_the_deadline(transactional: bool) -> None:
     """A body whose finally does its own long (shielded) cleanup must not
@@ -1672,7 +1688,7 @@ async def test_body_caused_interface_error_outside_the_deadline_window_stays_int
 
     async def body(job_row: JobRow, ctx: JobContext[BaseModel]) -> object:
         # The body's own statement on the shared conn fails genuinely,
-        # long before the 150ms deadline could fire.
+        # long before the _CARRIER_LIMIT (30 s) deadline could fire.
         await tx_conn.execute("BODY_OP")
 
     with structlog.testing.capture_logs() as logs:
