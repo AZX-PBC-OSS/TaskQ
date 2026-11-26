@@ -58,6 +58,7 @@ from taskq.obs import (
     record_lock_expires_in_seconds,
     update_heartbeat_consecutive_failures,
 )
+from taskq.worker._cancel_delivery import deliver_first_cancel
 from taskq.worker._registration import reregister_worker
 from taskq.worker._transient import TRANSIENT_PG_ERRORS
 from taskq.worker.cancel import CancelController
@@ -1256,8 +1257,12 @@ async def isolate_self(
         if active.cancel_phase < CancelPhase.COOPERATIVE:
             active.cancel_phase = CancelPhase.COOPERATIVE
             active.cancel_observed_at = loop.time()
-        if not active.task.done():
-            active.task.cancel()
+        # First delivery only (deliver_first_cancel): a consumer the cancel
+        # ladder already forced is unwinding through its terminal write, and a
+        # second cancel here interrupts that write, disowns the job and
+        # deregisters it - the row then strands 'running' behind a
+        # walking-away worker.
+        deliver_first_cancel(active.task)
     if active_entries:
         # The interrupt writes run inside the consumers' own unwinding,
         # bounded by the terminal-write retry budget; the join here is the

@@ -13,14 +13,12 @@ The kill seams stay in ``_kill_entry`` — this entry is always seam-free,
 the same contract the vanilla entry keeps.
 """
 
-import asyncio
-import contextlib
 import faulthandler
 import signal
 import sys
 
 from taskq.settings import WorkerSettings
-from taskq.worker.run import _main
+from taskq.worker.run import _main, run_worker_to_exit
 from tests.system_e2e import (
     _wf_app as _wf_app_module,  # Why: the import is the capability — the app registry observes it, the boot's projection compiles the flows.
 )
@@ -38,10 +36,6 @@ if __name__ == "__main__":
     faulthandler.register(signal.SIGUSR2, all_threads=True)
     settings = WorkerSettings.load()
     try:
-        with asyncio.Runner() as runner:
-            code = runner.run(_main(settings, actor_registry=REGISTRY))
-        with contextlib.suppress(ValueError):  # Why: not the main thread -> no window to guard.
-            signal.signal(signal.SIGTERM, signal.SIG_IGN)
-        sys.exit(code)
+        sys.exit(run_worker_to_exit(_main(settings, actor_registry=REGISTRY)))
     except KeyboardInterrupt:
         sys.exit(0)

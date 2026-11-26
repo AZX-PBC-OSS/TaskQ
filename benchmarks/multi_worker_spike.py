@@ -27,7 +27,6 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import contextlib
 import json
 import signal
 import subprocess
@@ -96,14 +95,10 @@ def run_worker(dsn: str, schema: str) -> int:
             "TASKQ_QUEUES": "spike",
         }
     )
-    code = worker_main(settings, actor_registry=ACTORS)
-    # The drain's verdict guard: the loop is closed, so a redundant
-    # stop-signal in the teardown window must not erase the exit status
-    # with -15. Lives at the entrypoint (worker_main no longer sets it -
-    # an ignored disposition leaks to every process the host forks after).
-    with contextlib.suppress(ValueError):  # Why: not the main thread -> no window to guard.
-        signal.signal(signal.SIGTERM, signal.SIG_IGN)
-    return code
+    # ignore_sigterm_on_exit: the runner kills this worker with SIGTERM at
+    # teardown, and the drain's verdict must survive a redundant signal
+    # landing after the loop closed.
+    return worker_main(settings, actor_registry=ACTORS, ignore_sigterm_on_exit=True)
 
 
 # ── client roles ──────────────────────────────────────────────────────

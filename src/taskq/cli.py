@@ -714,6 +714,12 @@ def worker(
             idle_settle_window=idle_settle_window,
             idle_poll_interval=idle_poll_interval,
             idle_max_runtime=idle_max_runtime,
+            # This process's next act is its own exit, so the worker's
+            # teardown may ignore SIGTERM: a supervisor's redundant stop
+            # signal landing after a clean drain must not erase the
+            # drain's exit status with -15 (worker_main's docstring has
+            # the mechanism and the library-caller constraint).
+            ignore_sigterm_on_exit=True,
         )
     except ActorConfigDriftList as e:
         # Why: the remedy hint is folded into ActorConfigDriftList.__str__
@@ -734,22 +740,6 @@ def worker(
             err=True,
         )
         raise typer.Exit(code=1) from None
-    # The loop is closed (asyncio restored SIG_DFL on close), but the
-    # process is not gone yet: the exit path, interpreter teardown, atexit
-    # hooks and thread joins all still run, and a loaded host stretches
-    # every one of them. A signal in that window kills the process with
-    # -15 and erases the drain's verdict (the observed fleet-wide-storm
-    # shape - the orchestrator's redundant stop-signal landing after one
-    # pod had already drained cleanly). The escalation contract only has
-    # meaning while the loop lives; once it is closed there is nothing
-    # left to escalate, so SIGTERM is ignored and the exit status stays
-    # the drain's. This guard lives here - the process is genuinely about
-    # to die - and not in ``worker_main``: an ignored disposition set in a
-    # library function is inherited by every process that host forks
-    # afterwards (the proven -9 leak), while an entrypoint's next act is
-    # its own exit.
-    with contextlib.suppress(ValueError):  # Why: not the main thread -> no window to guard.
-        signal.signal(signal.SIGTERM, signal.SIG_IGN)
     raise typer.Exit(code=code)
 
 

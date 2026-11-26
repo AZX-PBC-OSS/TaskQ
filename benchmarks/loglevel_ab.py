@@ -31,10 +31,8 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import contextlib
 import json
 import os
-import signal
 import subprocess
 import sys
 import time
@@ -150,14 +148,15 @@ def run_worker(dsn: str, schema: str, events_level: str, profile_out: str | None
         prof = cProfile.Profile()
         prof.enable()
     try:
-        return worker_main(settings, actor_registry=ACTORS)
+        # ignore_sigterm_on_exit: the runner kills this worker with SIGTERM at
+        # teardown; the drain's verdict must survive a redundant signal, and
+        # the profile dump below runs with SIGTERM ignored.
+        return worker_main(settings, actor_registry=ACTORS, ignore_sigterm_on_exit=True)
     finally:
         if prof is not None:
             prof.disable()
             prof.dump_stats(profile_out)
             print(f"[cProfile] dumped to {profile_out}")
-        with contextlib.suppress(ValueError):  # Why: not the main thread -> no window to guard.
-            signal.signal(signal.SIGTERM, signal.SIG_IGN)
 
 
 # ── client role ───────────────────────────────────────────────────────

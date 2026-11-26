@@ -44,7 +44,7 @@ from taskq._di import ProviderRegistry
 from taskq._di.scopes import LoopScope, ProcessScope, ThreadScope
 from taskq._forkguard import take_parent_fork_event
 from taskq._ids import new_uuid
-from taskq._shield import shield_with_retrieval
+from taskq._shield import shield_until_complete, shield_with_retrieval
 from taskq.actor import ActorRef
 from taskq.actor_config_ops import ActorConfigRow
 from taskq.backend._protocol import Backend, JobId, JobRow
@@ -68,10 +68,11 @@ from taskq.ratelimit.refs import KeyedReservationRef
 from taskq.ratelimit.registry import RateLimitRegistry, queue_concurrency_reservation_name
 from taskq.ratelimit.reservation import ConcurrencyReservation
 from taskq.settings import WorkerSettings
-from taskq.worker._bootstrap import worker_main, worker_main_async
+from taskq.worker._bootstrap import run_worker_to_exit, worker_main, worker_main_async
 from taskq.worker._consumer import (
     _RATE_LIMIT_DEPENDENCY_EXCEPTIONS,
     _acquire_for_actor_with_denial_retry,
+    _release_unstarted_row,
 )
 from taskq.worker._handlers import (  # pyright: ignore[reportPrivateUsage]  # Why: the SlotPoolAcquireError arm disowns the claimed row exactly as dispatch's terminal-write-infra arm does; same private-seam rationale.
     _disown_job,
@@ -101,6 +102,7 @@ __all__ = [  # pyright: ignore[reportUnsupportedDunderAll]  # Why: _main is lazi
     "producer_loop",
     "producer_loop_stub",
     "register_worker",
+    "run_worker_to_exit",
     "worker_main",
     "worker_main_async",
 ]
@@ -1017,6 +1019,97 @@ async def _flow_rate_limit_gate(
     return _FlowSlotGate(acquired, rl_registry, None, None)
 
 
+async def _release_unstarted_claim_write(
+    backend: Backend,
+    job: JobRow,
+    worker_id: UUID,
+    deps: WorkerDeps,
+    *,
+    event_prefix: str,
+    snooze_for: timedelta,
+    metadata_update: dict[str, object],
+) -> str | None:
+    """Hand a claimed-but-never-started row back, terminalising a cancel.
+
+    The pre-dispatch release shared by every arm above that claims a row and
+    then declines to run its body (a denied rate limit, a corrupt workflow
+    root, an unresolvable workflow body, an unregistered actor). No registry
+    entry exists on this path, so the cancel ladder cannot reach the row:
+    the release write is its only writer.
+
+    ``mark_snoozed`` fences on ``cancel_phase = 0``, so an operator-cancelled
+    row no-ops it - and returning on that noop stranded the row ``running``
+    under this worker's lock with no writer at all (the ladder's unheld walk
+    later abandons it as ``failed``, or the worker shuts down first). A noop
+    therefore falls through to the fenced ``mark_cancelled`` the consumer's
+    other cancellation arms use: an operator's row terminalises ``cancelled``
+    now (and publishes the terminal transition), while a row that really
+    moved no-ops the fence.
+
+    Returns the snooze outcome (``"cancelled"`` when the fall-through
+    terminalised the row, ``None`` when a write failed and the row was
+    disowned), so a caller with an arm-specific log line for one of the
+    outcomes can still speak it. The failure events are the literals
+    ``unstarted-claim-release-failed`` / ``unstarted-claim-cancel-failed``
+    (with their ``kind`` and ``error_class`` taxonomy), and the arm's own
+    ``{event_prefix}-release-noop`` DEBUG line names the fence miss.
+
+    The caller owns this whole sequence through cancellation
+    (:func:`taskq._shield.shield_until_complete`); neither write is detached
+    from the pool it needs.
+    """
+    return await _release_unstarted_row(
+        backend,
+        job,
+        worker_id,
+        event_prefix=event_prefix,
+        snooze_for=snooze_for,
+        metadata_update=metadata_update,
+        log=_consumer_log,
+        redis_client=deps.redis_client,
+        settings=deps.settings,
+        progress_buffers=deps.progress_buffers,
+        disowned_jobs=deps.disowned_jobs,
+        release_failed_event="unstarted-claim-release-failed",
+        cancel_failed_event="unstarted-claim-cancel-failed",
+        noop_event=f"{event_prefix}-release-noop",
+        noop_kind=f"{event_prefix.replace('-', '_')}_release_noop",
+        released_event=None,
+        released_kind=None,
+    )
+
+
+async def _release_unstarted_claim(
+    backend: Backend,
+    job: JobRow,
+    worker_id: UUID,
+    deps: WorkerDeps,
+    *,
+    event_prefix: str,
+    snooze_for: timedelta,
+    metadata_update: dict[str, object],
+) -> str | None:
+    """Keep the complete release-and-cancel sequence owned through teardown.
+
+    The row has no registry entry yet, so this release is its only writer,
+    and the pool it writes through is closed by the deps teardown that runs
+    after the consumer loop is gone. The sequence is therefore finished
+    before the loop's cancellation is re-raised, never detached from the
+    resource it still needs.
+    """
+    return await shield_until_complete(
+        _release_unstarted_claim_write(
+            backend,
+            job,
+            worker_id,
+            deps,
+            event_prefix=event_prefix,
+            snooze_for=snooze_for,
+            metadata_update=metadata_update,
+        )
+    )
+
+
 async def _dispatch_flow_job(
     *,
     deps: WorkerDeps,
@@ -1499,15 +1592,20 @@ async def di_consumer_loop(
                         # no assert, no disown. the row goes back to the
                         # pending pool budget-free, the stamp naming its arm on
                         # the record (the helper's two shapes — the denial's
-                        # bucket, the fail-closed park's kind). A disown here
-                        # would churn: an assert failure in this try's except →
-                        # _disown_job → the heartbeat stops renewing → the
-                        # reclaim hands the row back → the re-claim re-denies,
-                        # at lease cadence, forever.
-                        _flow_release = await backend.mark_snoozed(
-                            job.id,
+                        # bucket, the fail-closed park's kind), and an
+                        # operator-cancelled row terminalises cancelled instead
+                        # of stranding (see _release_unstarted_claim). A disown
+                        # here would churn: an assert failure in this try's
+                        # except → _disown_job → the heartbeat stops renewing →
+                        # the reclaim hands the row back → the re-claim
+                        # re-denies, at lease cadence, forever.
+                        await _release_unstarted_claim(
+                            backend,
+                            job,
                             worker_id,
-                            _flow_snooze,
+                            deps,
+                            event_prefix="dispatch-flow-rate-limit",
+                            snooze_for=_flow_snooze,
                             # the release_reason names the arm's kind and the
                             # denied bucket's own name rides beside it — a
                             # reservation denial's row names the reservation.
@@ -1515,24 +1613,11 @@ async def di_consumer_loop(
                                 _flow_gate.denied,
                                 parked_kind=_flow_gate.parked_kind,
                             ),
-                            attempt=job.attempt,
-                            claim_epoch=job.claim_epoch,
                         )
-                    except Exception:
-                        _consumer_log.exception(
-                            "dispatch-flow-rate-limit-release-failed",
-                            job_id=str(job.id),
-                        )
-                        _disown_job(deps.disowned_jobs, job)
-                    else:
-                        if _flow_release == "noop":
-                            _consumer_log.debug(
-                                "dispatch-flow-rate-limit-release-noop",
-                                job_id=str(job.id),
-                            )
-                    deps.active_jobs.resolve_claim(job.id, _claim)
-                    if slot_freed_event is not None:
-                        slot_freed_event.set()
+                    finally:
+                        deps.active_jobs.resolve_claim(job.id, _claim)
+                        if slot_freed_event is not None:
+                            slot_freed_event.set()
                     continue
                 try:
                     _flow_outcome = await _dispatch_flow_job(
@@ -1573,27 +1658,17 @@ async def di_consumer_loop(
                         flow_id=str(job.metadata.get("flow_id")),
                     )
                     try:
-                        _root_missing_release = await backend.mark_snoozed(
-                            job.id,
+                        await _release_unstarted_claim(
+                            backend,
+                            job,
                             worker_id,
-                            timedelta(seconds=10),
+                            deps,
+                            event_prefix="dispatch-workflow-root-missing",
+                            snooze_for=timedelta(seconds=10),
                             metadata_update={"released_reason": "workflow-root-missing"},
-                            attempt=job.attempt,
-                            claim_epoch=job.claim_epoch,
                         )
-                    except Exception:
-                        _consumer_log.exception(
-                            "dispatch-workflow-root-missing-release-failed",
-                            job_id=str(job.id),
-                        )
-                        deps.disowned_jobs.add(job.id)
-                    else:
-                        if _root_missing_release == "noop":
-                            _consumer_log.debug(
-                                "dispatch-workflow-root-missing-release-noop",
-                                job_id=str(job.id),
-                            )
-                    deps.active_jobs.resolve_claim(job.id, _claim)
+                    finally:
+                        deps.active_jobs.resolve_claim(job.id, _claim)
                     continue
                 except _flow_seam.WorkflowBodyUnresolvableError:
                     # a stamped workflow name no process carries, a
@@ -1608,27 +1683,17 @@ async def di_consumer_loop(
                         flow_id=str(job.metadata.get("flow_id")),
                     )
                     try:
-                        _flow_release = await backend.mark_snoozed(
-                            job.id,
+                        await _release_unstarted_claim(
+                            backend,
+                            job,
                             worker_id,
-                            timedelta(seconds=10),
+                            deps,
+                            event_prefix="dispatch-workflow-unresolvable",
+                            snooze_for=timedelta(seconds=10),
                             metadata_update={"released_reason": "workflow-body-unresolvable"},
-                            attempt=job.attempt,
-                            claim_epoch=job.claim_epoch,
                         )
-                    except Exception:
-                        _consumer_log.exception(
-                            "dispatch-workflow-unresolvable-release-failed",
-                            job_id=str(job.id),
-                        )
-                        deps.disowned_jobs.add(job.id)
-                    else:
-                        if _flow_release == "noop":
-                            _consumer_log.debug(
-                                "dispatch-workflow-unresolvable-release-noop",
-                                job_id=str(job.id),
-                            )
-                    deps.active_jobs.resolve_claim(job.id, _claim)
+                    finally:
+                        deps.active_jobs.resolve_claim(job.id, _claim)
                     continue
                 except SlotPoolAcquireError:
                     # F2-2, the vanilla leg's own shape, mirrored. the door's
@@ -1687,50 +1752,36 @@ async def di_consumer_loop(
             # is the closest bounded outcome, a delay, a release, and a
             # released_reason marker in one transition.
             try:
-                release_outcome = await backend.mark_snoozed(
-                    job.id,
+                release_outcome = await _release_unstarted_claim(
+                    backend,
+                    job,
                     worker_id,
-                    timedelta(seconds=10),
+                    deps,
+                    event_prefix="dispatch-actor-not-found",
+                    snooze_for=timedelta(seconds=10),
                     metadata_update={"released_reason": "actor-not-found"},
-                    attempt=job.attempt,
-                    claim_epoch=job.claim_epoch,
                 )
-            except Exception:
-                _consumer_log.exception(
-                    "dispatch-actor-not-found-release-failed",
+            finally:
+                # This exit path bypasses the dispatch finally below: drop the
+                # claim intent here, or a stale id would fence a future claim
+                # of the same row out of every hand-back pass.
+                deps.active_jobs.resolve_claim(job.id, _claim)
+            # The release outcome must be read, not dropped: "scheduled"
+            # released the row, "failed" terminalised it on the deadline arm,
+            # "cancelled" means the operator's cancel landed on the row and
+            # this worker's fenced fall-through terminalised it (see
+            # _release_unstarted_claim), and "noop" means the row stopped being
+            # this worker's to move between claim and release (a reclaim
+            # re-pended it, or the fence declined it), so the new owner holds
+            # it and there is nothing to release. A discarded outcome would
+            # make the fenced-out write indistinguishable from a landed one,
+            # and a landed cancel indistinguishable from a no-op.
+            if release_outcome == "failed":
+                _consumer_log.info(
+                    "dispatch-actor-not-found-release-deadline-exceeded",
                     job_id=str(job.id),
                     actor=job.actor,
                 )
-                # The row is still running under this worker's lock with
-                # nothing left to move it: disown it so the heartbeat stops
-                # renewing the lease and the reclaim sweep hands it back.
-                deps.disowned_jobs.add(job.id)
-            else:
-                # The snooze tri-state is the write's fence and must be
-                # read, not dropped: "scheduled" released the row,
-                # "failed" terminalised it on the deadline arm, and
-                # "noop" means the row stopped being this worker's to
-                # move between claim and release (a reclaim re-pended
-                # it, or a racing cancel terminalised it), the new
-                # owner holds it, so there is nothing to release, but
-                # a discarded outcome would make the fenced-out write
-                # indistinguishable from a landed one.
-                if release_outcome == "noop":
-                    _consumer_log.debug(
-                        "dispatch-actor-not-found-release-noop",
-                        job_id=str(job.id),
-                        actor=job.actor,
-                    )
-                elif release_outcome == "failed":
-                    _consumer_log.info(
-                        "dispatch-actor-not-found-release-deadline-exceeded",
-                        job_id=str(job.id),
-                        actor=job.actor,
-                    )
-            # This exit path bypasses the dispatch finally below: drop the
-            # claim intent here, or a stale id would fence a future claim
-            # of the same row out of every hand-back pass.
-            deps.active_jobs.resolve_claim(job.id, _claim)
             continue
 
         actor_ref = actor_registry[job.actor]
@@ -1739,7 +1790,7 @@ async def di_consumer_loop(
         # (asyncio.current_task() inside the child). Registering this loop
         # task instead (awaiting dispatch_one_job inline) would let the
         # cancel ladder's phase-2 escalation
-        # (cancel.py's active.task.cancel()) cancel the whole loop:
+        # (cancel.py's deliver_first_cancel(active.task)) cancel the whole loop:
         # CancelledError is a BaseException, the handlers below catch only
         # SlotPoolAcquireError and Exception, so it would propagate out of the
         # while, the TaskGroup would discard the cancelled sibling, nothing

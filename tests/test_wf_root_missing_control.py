@@ -574,6 +574,8 @@ async def test_worker_release_arm_attempts_the_bounded_noop_release(
         shutdown_phase=ShutdownPhase.NONE,
         disowned_jobs=set(),
         drain_failures=0,
+        redis_client=None,
+        progress_buffers={},
     )
 
     # THE SEEDED CLAIM IDENTITY (round-5 F-3): the fabricated row must
@@ -873,6 +875,8 @@ def _loop_deps(settings: Any, pool: asyncpg.Pool) -> Any:
         shutdown_phase=ShutdownPhase.NONE,
         disowned_jobs=set(),
         drain_failures=0,
+        redis_client=None,
+        progress_buffers={},
     )
 
 
@@ -1135,7 +1139,7 @@ async def test_root_missing_release_exception_disowns_the_job(
     """Round-4 NEW-8a / CL-1: the release arm's own failure law. The REAL
     seam propagates the corruption to the worker arm (as above); the
     release call ITSELF raises (the store is down) — the arm logs its
-    own `dispatch-workflow-root-missing-release-failed`, DISOWNS the job
+    own `unstarted-claim-release-failed`, DISOWNS the job
     (the heartbeat stops renewing; the row recovers by the reclaim
     machinery — never a silent wedge), resolves the claim, and the loop
     moves on. The committed tx1 terminal stands; the body-unresolvable
@@ -1208,7 +1212,7 @@ async def test_root_missing_release_exception_disowns_the_job(
     # owner for the corruption itself.
     names = [e["event"] for e in events if "event" in e]
     assert "dispatch-workflow-root-missing" in names, names
-    assert "dispatch-workflow-root-missing-release-failed" in names, names
+    assert "unstarted-claim-release-failed" in names, names
     assert "dispatch-workflow-root-missing-release-noop" not in names, names
     assert "dispatch-workflow-body-unresolvable" not in names, names
     assert "dispatch-flow-failed" not in names, names

@@ -1316,7 +1316,7 @@ taskq workgroup start workgroup.toml
 | `3` | `taskq worker --until-idle`: some jobs failed during the drain |
 | `4` | `taskq worker --until-idle`: idle-max-runtime exceeded before drain completed |
 
-The `taskq worker` command exits with the code returned by `worker_main()`. On clean SIGTERM, `worker_main()` returns `0`. With `--until-idle`, `worker_main()` returns `0` (all jobs succeeded), `3` (some jobs failed), or `4` (idle-max-runtime exceeded). A third SIGTERM calls `sys.exit(1)`.
+The `taskq worker` command exits with the code returned by `worker_main()`. On clean SIGTERM, `worker_main()` returns `0`. With `--until-idle`, `worker_main()` returns `0` (all jobs succeeded), `3` (some jobs failed), or `4` (idle-max-runtime exceeded). A third SIGTERM calls `sys.exit(1)` while the worker's event loop is running; after a clean drain, the CLI ignores redundant SIGTERM through the rest of process exit.
 
 The `taskq workgroup start` command exits 0 on clean shutdown. It exits 1 if the config file is missing, invalid, or if the optional health-check PG pool fails to initialise.
 

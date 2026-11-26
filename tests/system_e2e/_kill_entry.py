@@ -35,7 +35,6 @@ Without the switch the harness is a plain worker on the full registry.
 
 from __future__ import annotations
 
-import asyncio
 import os
 import signal
 import sys
@@ -44,7 +43,7 @@ from typing import Any
 import taskq.worker.heartbeat as _heartbeat_module
 from taskq.backend.postgres import PostgresBackend
 from taskq.settings import WorkerSettings
-from taskq.worker.run import _main
+from taskq.worker.run import _main, run_worker_to_exit
 from tests.system_e2e._kill_actors import ACTORS as KILL9_ACTORS
 from tests.system_e2e.actors import ACTORS as GRACEFUL_ACTORS
 
@@ -150,5 +149,4 @@ elif _SEAM == "after_heartbeat":
 
 if __name__ == "__main__":
     settings = WorkerSettings.load()
-    with asyncio.Runner() as runner:
-        sys.exit(runner.run(_main(settings, actor_registry=REGISTRY)))
+    sys.exit(run_worker_to_exit(_main(settings, actor_registry=REGISTRY)))

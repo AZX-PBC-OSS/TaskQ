@@ -2,7 +2,8 @@
 control.
 
 Same fleet standard as :mod:`tests.system_e2e._wf_entry` (the app-module
-import is the capability; the same registry; the same post-drain guard),
+import is the capability; the same registry; the same post-drain guard,
+carried by ``worker_main_async(..., ignore_sigterm_on_exit=True)``),
 but it enters through the production :func:`worker_main_async` wrapper —
 whose ``setup_logging`` applies the settings' ``TASKQ_LOG_LEVEL`` — so the
 boot's INFO-level capacity diagnostics (the operator-owned
@@ -14,7 +15,6 @@ the mismatch control's workers need this entry.
 """
 
 import asyncio
-import contextlib
 import faulthandler
 import signal
 import sys
@@ -43,11 +43,19 @@ if __name__ == "__main__":
             # schema must never have the march apps' cron flows fired into it;
             # only the fleet entry's exact bootstrap surface, plus the
             # production logging setup.
+            #
+            # ignore_sigterm_on_exit=True: this loop is the caller's, so
+            # the guard runs where worker_main_async hands back — SIGTERM
+            # masked, this loop's handler removed, ignored, mask restored
+            # — and the Runner's close below finds no handler to reset.
             code = runner.run(
-                worker_main_async(settings, actor_registry=REGISTRY, cron_registry=[])
+                worker_main_async(
+                    settings,
+                    actor_registry=REGISTRY,
+                    cron_registry=[],
+                    ignore_sigterm_on_exit=True,
+                )
             )
-        with contextlib.suppress(ValueError):  # Why: not the main thread -> no window to guard.
-            signal.signal(signal.SIGTERM, signal.SIG_IGN)
         sys.exit(code)
     except KeyboardInterrupt:
         sys.exit(0)

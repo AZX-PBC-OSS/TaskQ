@@ -700,6 +700,9 @@ class CapSampler:
 _RELEASE_FALLBACK_MARKERS = (
     "release-pg-write-failed",
     "shutdown-release-failed",
+    "unstarted-claim-release-failed",
+    "unstarted-claim-cancel-failed",
+    "cancel-fenced-release-failed",
     "terminal-write-failed",
 )
 
@@ -758,8 +761,10 @@ async def _assert_corpse_owns_nothing(
     lease-expiry reclaim (the shutdown release's own error path), and
     probe settlement does not settle corpse rows. A running row is
     waited out ONLY with row-specific evidence in that worker's own
-    log: a ``release-pg-write-failed``, ``shutdown-release-failed``, or
-    ``terminal-write-failed`` record naming that job id. A residual
+    log: a ``release-pg-write-failed``, ``shutdown-release-failed``,
+    ``unstarted-claim-release-failed``, ``unstarted-claim-cancel-failed``,
+    ``cancel-fenced-release-failed``, or ``terminal-write-failed`` record
+    naming that job id. A residual
     running row without its evidence fails immediately - a wait here
     would mask a release miss - and every row in a mixed group needs
     its own evidence; one marker does not excuse siblings. The wait's
@@ -813,7 +818,9 @@ async def _assert_corpse_owns_nothing(
                     f"{label}: {len(unevidenced)} running row(s) stayed locked by "
                     "the worker that exited rc=0 with no release-fallback evidence "
                     "in its log (release-pg-write-failed / shutdown-release-failed "
-                    "/ terminal-write-failed naming the job id) - a release miss "
+                    "/ unstarted-claim-release-failed / unstarted-claim-cancel-failed "
+                    "/ cancel-fenced-release-failed / terminal-write-failed naming "
+                    "the job id) - a release miss "
                     "is not waited out: "
                     f"{await _corpse_ownership_report(conn, schema, worker_id)}"
                 )

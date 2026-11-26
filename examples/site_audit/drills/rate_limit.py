@@ -75,7 +75,10 @@ def _worker() -> int:
     from taskq.worker.run import worker_main
 
     settings = WorkerSettings.load()
-    return worker_main(settings, actor_registry={})
+    # ignore_sigterm_on_exit: this spawned subprocess's next act is its own
+    # death, so the drill's SIGTERM at teardown cannot replace its exit
+    # status with -15.
+    return worker_main(settings, actor_registry={}, ignore_sigterm_on_exit=True)
 
 
 async def _driver() -> None:

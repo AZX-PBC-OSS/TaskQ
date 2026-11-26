@@ -16,7 +16,7 @@ See [../getting-started/quick-start.md](../getting-started/quick-start.md) for i
 
 **Producer loop.** Polls the `jobs` table for `pending` rows via the dispatch CTE. Each tick acquires a direct connection from `dispatcher_pool`, runs the strict-FIFO dispatch SQL (atomic `FOR UPDATE SKIP LOCKED` + `UPDATE … SET status='running'`), and pushes dispatched rows onto an in-process `asyncio.Queue[JobRow]` (`local_queue`). The local queue's `maxsize` is set to `max_concurrency`; back-pressure from a full queue naturally throttles the producer.
 
-**Consumer loops.** `max_concurrency` concurrent coroutines drain `local_queue`. Each iteration pops one `JobRow`, resolves the actor's DI scope via `build_actor_scope`, validates the payload against `actor_ref.payload_type`, registers the job with `ActiveJobRegistry`, invokes the actor function, writes the terminal state to Postgres, and deregisters. All Postgres writes inside a consumer are wrapped in `asyncio.shield` so that cancellation during shutdown cannot strand a row in `running` status.
+**Consumer loops.** `max_concurrency` concurrent coroutines drain `local_queue`. Each iteration pops one `JobRow`, resolves the actor's DI scope via `build_actor_scope`, validates the payload against `actor_ref.payload_type`, registers the job with `ActiveJobRegistry`, invokes the actor function, writes the terminal state to Postgres, and deregisters. Terminal Postgres writes are shielded against cancellation; pre-registration release-and-cancel sequences also stay owned by the consumer until they finish, so shutdown cannot detach the row's only remaining writer before its pool closes.
 
 **Heartbeat loop.** On every `heartbeat_interval` tick, acquires one connection from `heartbeat_pool`, opens a single transaction, and atomically updates `workers.last_seen_at`, extends `jobs.lock_expires_at` for all running jobs owned by this worker, extends `reservation_slots.lease_expires_at`, and (if this worker is the leader) pings `maintenance_leader.last_seen_at`. After the transaction commits, runs the cancel-controller's `run_post_tx` to drain any phase-3 abandonment queue. Consecutive failures increment `heartbeat_failures`; exceeding `max_heartbeat_failures` triggers `isolate_self`.
 
@@ -92,26 +92,28 @@ exit_code = worker_main(settings, actor_registry=registry)
 `worker_main` returns an `int` exit code (0 on clean shutdown). In a container entrypoint:
 
 ```python no-exec — not executed: continues the user-local module the guide is building
-import contextlib
-import signal
 import sys
 from taskq.settings import WorkerSettings
 from taskq.worker.run import worker_main
 from myapp.actors import registry
 
 if __name__ == "__main__":
-    code = worker_main(WorkerSettings.load(), actor_registry=registry)
-    # Why: worker_main deliberately leaves the host's SIGTERM disposition
-    # alone (an ignored disposition leaks into every process the host forks
-    # afterwards); the entrypoint whose next act is its own death installs
-    # the ignore here, so a redundant stop-signal landing in the teardown
-    # window cannot erase the drain's exit status with -15.
-    with contextlib.suppress(ValueError):  # not the main thread -> no window to guard
-        signal.signal(signal.SIGTERM, signal.SIG_IGN)
+    # ignore_sigterm_on_exit=True: this process's next act is its own exit.
+    code = worker_main(
+        WorkerSettings.load(),
+        actor_registry=registry,
+        ignore_sigterm_on_exit=True,
+    )
     sys.exit(code)
 ```
 
-**The entrypoint-side drain-verdict guard.** `worker_main` deliberately does not touch the host's SIGTERM disposition: an ignored disposition is process-global and inherited, so one that leaked from the worker loop would land in every process the host forks afterwards (a proven `-9`-class CI failure). The trade is that between `worker_main` returning and the entrypoint's own exit, a redundant stop-signal — from a supervisor that has not yet noticed the drain finished — is delivered by the *default* disposition and kills the process with `-15`, replacing the drain's exit code the same way a SIGKILL would. An entrypoint whose next act after `worker_main` returns is its own death should therefore install `signal.signal(signal.SIGTERM, signal.SIG_IGN)` right after the call, before exiting, as the example above and `examples/worker.py`'s `_run_worker_with_verdict_guard` do; the `contextlib.suppress(ValueError)` guard covers the not-the-main-thread case, where the window no longer exists to guard.
+**The entrypoint-side drain-verdict guard.** Left at its default (`False`), `worker_main` does not touch the host's SIGTERM disposition or signal mask: an ignored disposition is process-global and inherited, so one that leaked from the worker loop would land in every process the host forks afterwards (a proven `-9`-class CI failure). The trade is that between the worker returning and the entrypoint's own exit, a redundant stop-signal — from a supervisor that has not yet noticed the drain finished — would be delivered by the *default* disposition and kill the process with `-15`, replacing the drain's exit code the same way a SIGKILL would.
+
+`ignore_sigterm_on_exit=True` closes that window for a *dedicated worker process*: SIGTERM is blocked across the event loop's teardown, set to `SIG_IGN` once the loop is closed (which discards any pending blocked signal), and then unblocked. For a process with no other live threads at exit, nothing between `worker_main` returning and `sys.exit` can then kill it. The scope matters: POSIX signal masks are per-thread while the disposition is process-global, so a straggler non-main thread that does not block SIGTERM can still take a process-directed signal in the window where `asyncio` has reset `SIG_DFL` and before `SIG_IGN` is installed. Set it only from an entrypoint whose remaining work after the worker returns is bounded teardown and exit — flushing a profiler dump, closing a caller-owned pool, calling `sys.exit`. A caller that keeps running, or forks children afterwards, must leave it `False`: an ignored disposition survives `exec`, so a child spawned later would ignore its own SIGTERM.
+
+The guard needs the main thread: the disposition is process-global and `signal.signal` raises elsewhere, while the mask is per-thread and covers the main thread's close transition. Called from a worker thread it cannot install the disposition. `worker_main_async` takes the same flag, with the guard covering its handover back to the caller's loop: the worker's own SIGTERM handler is removed and `SIG_IGN` installed, so the caller's later `loop.close()` finds no handler to reset.
+
+`SIGINT` is untouched everywhere; its `KeyboardInterrupt` contract stays live throughout.
 
 ---
 
@@ -405,7 +407,7 @@ Each consumer loop iteration follows this sequence:
 
 7. **Actor invocation.** The actor function is called with `(payload, ctx, **di_kwargs)`. If a LOOP-scope `asyncpg.Connection` is registered, the invocation and `mark_succeeded_with_conn` are wrapped in a single transaction, making the job status update and any sub-enqueues transactional. On a single-slot worker (`TASKQ_MAX_CONCURRENCY=1`) that transaction runs on the registered LOOP-scope connection; at higher concurrency the worker opens a per-slot transaction pool, each job transacts on its own slot connection, and the actor receives that same slot connection by injection, so the actor's own writes join the transaction and concurrent slots never share a connection.
 
-8. **Result / exception handling.** See [Retry and backoff](#retry-and-backoff). All terminal Postgres writes are wrapped in `asyncio.shield`.
+8. **Result / exception handling.** See [Retry and backoff](#retry-and-backoff). Terminal Postgres writes are owned through cancellation in two shapes: a write for a registered attempt is detached with `shield_with_retrieval` (an `asyncio.shield` that retrieves and logs the detached outcome), while the pre-registration release-and-cancel sequence - whose row has no registry entry yet, so the write is its only writer - is held to completion by `shield_until_complete` before the consumer's cancellation is re-raised. The hold, not the shield, is what keeps that write off a pool the teardown is about to close.
 
 9. **TRANSIENT scope teardown.** Runs unconditionally after each invocation regardless of outcome.
 
@@ -565,7 +567,7 @@ Non-leader workers re-attempt election every `heartbeat_interval` seconds.
 
 ## Graceful shutdown
 
-SIGTERM (or SIGINT) triggers `orchestrate_shutdown`. A second signal fast-advances CANCELLING → FORCING. A third signal calls `sys.exit(1)` (Kubernetes SIGKILL is the hard backstop). A third signal sent while the tracked-actor reap gate is waiting exits through `sys.exit(1)`'s interpreter unwind, which joins the default executor like any join: a still-running actor thread is waited out, not killed. That shape is operator-forced, predates this design, and the two-legged promise below does not cover it.
+SIGTERM (or SIGINT) triggers `orchestrate_shutdown`. A second signal fast-advances CANCELLING → FORCING. A third signal calls `sys.exit(1)` while the worker's event loop is running (Kubernetes SIGKILL is the hard backstop). Once the worker has returned and an entrypoint passed `ignore_sigterm_on_exit=True`, the loop is closed and SIGTERM is ignored through the rest of the process's exit; SIGINT and SIGKILL are unaffected. A third signal sent while the tracked-actor reap gate is waiting exits through `sys.exit(1)`'s interpreter unwind, which joins the default executor like any join: a still-running actor thread is waited out, not killed. That shape is operator-forced, predates this design, and the two-legged promise below does not cover it.
 
 **Phase sequence:**
 
@@ -573,7 +575,7 @@ SIGTERM (or SIGINT) triggers `orchestrate_shutdown`. A second signal fast-advanc
 |---|---|---|
 | DRAINING | 1 | Sets `producer_stop_event`; calls `drain_local_queue_to_pending` to re-pend locked-but-not-started rows (the claim's attempt increment is refunded) |
 | CANCELLING | 2 | Sets `cancel_event` on all in-flight jobs and stamps their cancel origin as the shutdown; waits up to `cancellation_grace_period` for cooperative exit |
-| FORCING | 3 | Calls `task.cancel()` on remaining jobs (even when a job's `write_cancel_escalation` PG write fails; the local cancel is the process-side half of the phase and is never skipped); issues `write_cancel_escalation(phase=2)` per job, which lands only on rows already carrying an operator's cancel request (the row says who asked) |
+| FORCING | 3 | Delivers the first and only cancellation to remaining jobs via `deliver_first_cancel` — first delivery only, never a second one that would interrupt a consumer already unwinding its terminal write — even when a job's `write_cancel_escalation` PG write fails; an entry already at `ABANDON_PENDING` belongs to the abandon drain. Also issues `write_cancel_escalation(phase=2)` per job, which lands only on rows already carrying an operator's cancel request (the row says who asked) |
 | RELEASING | 4 | Releases still-running jobs back to the fleet via `mark_interrupted`; the spent attempt stands (no refund), one `interrupted` event, held `scheduled` behind the remaining `termination_grace_period` budget **plus the watchdog's exit tail** (the dump-interval lag before the deadline trip is observed, and the bounded metrics flush before `os._exit`); or `lock_lease` when the shutdown watchdog is disabled; jobs under an operator cancel are terminalised here with the operator's OWN verdict (`mark_cancelled`, forced - the same fenced write the unwinding consumer races), never `abandoned`; closes `leader_conn` (releasing the advisory lock) |
 
 **DRAINING phase detail.** `drain_local_queue_to_pending` re-pends DB-level rows where `status='running' AND locked_by_worker` is this worker, excluding jobs with a live consumer. The claim stamps `started_at` at claim time, so the predicate cannot distinguish "claimed but unstarted" from "executing"; only this process's active-jobs registry can, which is what the exclusion reads. The producer loop repeats the same hand-back on its own exit, so a claim round that was in flight when the stop event landed is caught too. Rows the consumer loops took off the local queue before the stop signal are never dispatched past it.

@@ -358,10 +358,21 @@ class _FailingSnoozeBackend(FakeBackend):
 
 
 class _NoopSnoozeBackend(FakeBackend):
-    """mark_snoozed answers noop: the row moved underneath this worker."""
+    """mark_snoozed answers noop: the row moved underneath this worker.
+
+    The seam falls through to the fenced ``mark_cancelled`` on a noop, and
+    that write declines too: the docstring's premise is that this worker no
+    longer owns the row, so nothing here can terminalise it. A backend that
+    answered ``noop`` here and then let the cancel land would model the
+    other noop arm - the operator-cancelled row - which is
+    ``tests/test_rt_shutdown_cancel_and_exit_sigterm_races.py``'s pin.
+    """
 
     async def mark_snoozed(self, *args: Any, **kwargs: Any) -> str:  # type: ignore[override]  # Why: as above
         return "noop"
+
+    async def mark_cancelled(self, *args: Any, **kwargs: Any) -> bool:  # type: ignore[override]  # Why: the fake's own return type is bool; the override's shape is the base's
+        return False
 
 
 def _shutdown_deps() -> MagicMock:

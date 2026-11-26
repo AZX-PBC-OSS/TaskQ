@@ -165,8 +165,9 @@ from tests.web_admin._fixtures import (
 # The worker-start signal baseline for _host_signal_dispositions_restored
 # (below); snapshotted on the fixture's first run in each xdist worker. A
 # one-slot list, not a bare global: the fixture mutates the slot instead of
-# rebinding the name.
-_WORKER_BASELINE_SIGNALS: list[tuple[object, object] | None] = [None]
+# rebinding the name. The mask slot carries the blocked-signal set the same
+# snapshot took (None on a platform without pthread_sigmask).
+_WORKER_BASELINE_SIGNALS: list[tuple[object, object, set[int | signal.Signals]] | None] = [None]
 
 # ── Health-socket isolation ──────────────────────────────────────────────
 # WorkerSettings.health_socket_path defaults to the shared production path
@@ -282,7 +283,7 @@ def _isolate_workflow_app_registry() -> Iterator[None]:  # pyright: ignore[repor
 
 @pytest.fixture(autouse=True)
 def _host_signal_dispositions_restored() -> Iterator[None]:  # pyright: ignore[reportUnusedFunction]  # Why: autouse fixture consumed implicitly by the test runner.
-    """Restore the worker's SIGTERM/SIGINT dispositions after every test.
+    """Restore the worker's SIGTERM/SIGINT dispositions and signal mask.
 
     Defense-in-depth against the signal-leak class, of which the proven
     member is ``worker_main``'s former trailing ``SIGTERM = SIG_IGN``: an
@@ -294,24 +295,36 @@ def _host_signal_dispositions_restored() -> Iterator[None]:  # pyright: ignore[r
     2026-09-25/26). The leak itself is fixed at the entrypoints and pinned
     by ``test_worker_main_leaves_the_host_signal_disposition_alone``; this
     fixture is the floor that keeps any future in-process mutation from
-    spilling into a subsequent test's subprocesses. Snapshot is taken once
-    per worker (the dispositions a fresh pytest worker starts with are the
-    baseline) and the restore is unconditional and cheap (two
-    ``signal.signal`` calls).
+    spilling into a subsequent test's subprocesses.
+
+    The mask is part of the same floor: ``worker_main(...
+    ignore_sigterm_on_exit=True)`` blocks SIGTERM across the loop's
+    teardown, and a blocked signal is inherited across ``fork``/``exec``
+    exactly like an ignored disposition is - a leaked block would leave a
+    spawned child unable to receive its stop signal at all. Snapshot is
+    taken once per worker (the dispositions and mask a fresh pytest worker
+    starts with are the baseline) and the restore is unconditional and
+    cheap. The mask half needs ``pthread_sigmask`` (POSIX); where the
+    platform has none there is no mask to leak, and only the dispositions
+    are held.
     """
+    sigmask = getattr(signal, "pthread_sigmask", None)
     if _WORKER_BASELINE_SIGNALS[0] is None:
         _WORKER_BASELINE_SIGNALS[0] = (
             signal.getsignal(signal.SIGTERM),
             signal.getsignal(signal.SIGINT),
+            sigmask(signal.SIG_BLOCK, set()) if sigmask is not None else set(),
         )
     yield
     baseline = _WORKER_BASELINE_SIGNALS[0]
     assert baseline is not None  # Why: set above on the same call's setup pass.
-    sigterm_baseline, sigint_baseline = baseline
+    sigterm_baseline, sigint_baseline, mask_baseline = baseline
     if signal.getsignal(signal.SIGTERM) is not sigterm_baseline:
         signal.signal(signal.SIGTERM, sigterm_baseline)
     if signal.getsignal(signal.SIGINT) is not sigint_baseline:
         signal.signal(signal.SIGINT, sigint_baseline)
+    if sigmask is not None and sigmask(signal.SIG_BLOCK, set()) != mask_baseline:
+        sigmask(signal.SIG_SETMASK, mask_baseline)
 
 
 @pytest.fixture(autouse=True)

@@ -189,15 +189,15 @@ async def test_cancel_phase_ordering_property(
     - ``INSERT_EVENT_SQL`` sits between the UPDATE and ``task.cancel()``.
     - ``cancel_phase`` only increases monotonically.
     - ``cancel_observed_at`` is set at most once with a finite value.
-    - ``task.cancelling()`` equals the number of legitimate cancellation
-      deliveries: one per completed non-abandon escalation arm, plus the
-      drain's first delivery for an applied abandon.  The same-tick
-      abandon arm delivers none in-transaction; its cancellation is the
-      drain's, after ``mark_abandoned`` makes the abandon durable.
-      Escalation may legitimately fire more than once
-      per job - the rolled-back-write healing arm re-issues it while PG
-      still reads COOPERATIVE - so the count is tracked across steps, not
-      compared against a constant.
+    - ``task.cancelling()`` equals the number of first cancellation
+      deliveries: a completed non-abandon escalation arm delivers only when
+      the task was not already cancelling, plus the drain's first delivery
+      for an applied abandon. The same-tick abandon arm delivers none
+      in-transaction; its cancellation is the drain's, after
+      ``mark_abandoned`` makes the abandon durable. Escalation may
+      legitimately fire more than once per job - the rolled-back-write
+      healing arm re-issues it while PG still reads COOPERATIVE - but a
+      re-issue must not deliver a second cancel into the terminal write.
     """
     job_id = new_job_id()
     ctx = _make_ctx()
@@ -236,6 +236,8 @@ async def test_cancel_phase_ordering_property(
         backend = _FakeBackend()
 
         controller = make_cancel_controller(deps, new_uuid(), backend)  # type: ignore[arg-type] # Why: _FakeBackend only implements mark_abandoned; the controller never calls the other Backend protocol methods
+        cancelling_before_tick = task.cancelling()
+        done_before_tick = task.done()
         await controller.run_in_tx(recorder)  # type: ignore[arg-type] # Why: _Recorder is a test stub; asyncpg.Connection[Record] cannot be structurally satisfied without the real driver
 
         # Escalation arms are checked before the deregister-break so an
@@ -268,6 +270,8 @@ async def test_cancel_phase_ordering_property(
             if escalated_this_step
             and intermediate is not None
             and intermediate.cancel_phase == CancelPhase.FORCED
+            and cancelling_before_tick == 0
+            and not done_before_tick
             else 0
         )
 
@@ -285,15 +289,15 @@ async def test_cancel_phase_ordering_property(
         cancellations_delivered += arm_cancels + drain_cancels
 
         # The counter must match exactly: it catches a stray cancel from
-        # another path (e.g. fast-advance), a double cancel inside a
-        # single arm, and an in-tx cancel on the same-tick abandon arm
+        # another path (e.g. fast-advance), a double cancel on a re-issued
+        # escalation, and an in-tx cancel on the same-tick abandon arm
         # (whose rollback-rollback recovery depends on the entry staying
         # registered until the drain's cancellation).
         assert task.cancelling() == cancellations_delivered, (
-            f"task.cancelling() must equal the number of legitimate "
-            f"cancellation deliveries ({cancellations_delivered}) - one "
-            f"per completed non-abandon escalation arm or per applied "
-            f"abandon's drain, no other cancel path (step {step_idx})"
+            f"task.cancelling() must equal the number of first "
+            f"cancellation deliveries ({cancellations_delivered}) - a "
+            f"re-issued escalation must not cancel an unwinding task again "
+            f"(step {step_idx})"
         )
 
         active = registry.get(job_id)

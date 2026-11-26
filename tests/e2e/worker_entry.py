@@ -6,9 +6,7 @@ not run here: the e2e conftest migrates the module schema before the
 container starts (``TASKQ_MIGRATE_ON_START=false``).
 """
 
-import contextlib
 import os
-import signal
 import sys
 from typing import Any
 
@@ -101,15 +99,9 @@ if __name__ == "__main__":
         di_registry=build_registry(),
         cron_registry=_e2e_cron_registry(),
         until_idle=until_idle,
+        # This process's next act is its own exit, so the worker's teardown
+        # may ignore SIGTERM: a redundant stop-signal landing after the
+        # loop closed must not erase the drain's exit status with -15.
+        ignore_sigterm_on_exit=True,
     )
-    # The drain's verdict guard, here and not in worker_main: the loop is
-    # closed and the escalation contract has nothing left to escalate, so a
-    # redundant stop-signal in the teardown window must not erase the exit
-    # status with -15. The guard lives at the entrypoint (the process is
-    # about to die); a guard inside worker_main would leak an inherited
-    # SIG_IGN into every process this host forks afterwards (the proven
-    # -9 leak). The system-e2e worker entry carries the same guard for the
-    # same reason.
-    with contextlib.suppress(ValueError):  # Why: not the main thread -> no window to guard.
-        signal.signal(signal.SIGTERM, signal.SIG_IGN)
     sys.exit(code)

@@ -11,8 +11,6 @@ and passed to ``worker_main`` so that ``FakeHttpClient`` (LOOP scope) and
 """
 
 import asyncio
-import contextlib
-import signal
 import sys
 from typing import Any
 
@@ -115,25 +113,21 @@ CLI_ACTORS: dict[str, ActorRef[Any, Any]] = {
 }
 
 
-def _run_worker_with_verdict_guard(settings: WorkerSettings) -> int:
-    """worker_main plus the drain's verdict guard.
-
-    worker_main no longer sets ``SIGTERM = SIG_IGN`` itself (an ignored
-    disposition leaks into every process the host forks afterwards);
-    instead each entrypoint whose next act is its own death installs it
-    right after ``worker_main`` returns, so a redundant stop-signal in the
-    teardown window cannot erase the drain's exit status with -15.
-    """
-    code = worker_main(settings, actor_registry=ACTORS, di_registry=build_registry())
-    with contextlib.suppress(ValueError):  # Why: not the main thread -> no window to guard.
-        signal.signal(signal.SIGTERM, signal.SIG_IGN)
-    return code
-
-
 if __name__ == "__main__":
     settings = WorkerSettings.load()
 
     asyncio.run(
         apply_pending_locked(str(settings.resolved_pg_dsn_direct), schema=settings.schema_name)
     )
-    sys.exit(_run_worker_with_verdict_guard(settings))
+    # ignore_sigterm_on_exit: this process's next act is its own death, so
+    # a redundant stop-signal landing after the drain must not replace its
+    # exit status with -15 (see worker_main's docstring for the mechanism
+    # and why a library caller must leave the flag alone).
+    sys.exit(
+        worker_main(
+            settings,
+            actor_registry=ACTORS,
+            di_registry=build_registry(),
+            ignore_sigterm_on_exit=True,
+        )
+    )

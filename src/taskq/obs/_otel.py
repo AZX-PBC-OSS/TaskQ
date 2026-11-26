@@ -373,9 +373,14 @@ _cancels_actored = get_meter().create_counter(
 def record_cancel_actored(actor: str) -> None:
     """Count one operator cancel the worker began acting on, labeled by actor.
 
-    Called from the cancel controller's two first-observation arms only
-    (``worker/cancel.py``): the phase-1 cooperative observation, and the
-    PG-observation fast-advance when the local phase was still NONE. A
+    Called from the cancel controller's first-observation arms only
+    (``worker/cancel.py``): the phase-1 cooperative observation, the
+    PG-observation fast-advance when the local phase was still NONE, and
+    the phase-2 escalation that proves a request appeared between the poll
+    and its write. The shutdown orchestrator's FORCING probe is the fourth
+    site (``worker/shutdown.py``): its escalation landing on a row still at
+    ``cancel_phase = 1`` proves an operator asked, and no later tick can
+    record that request once the probe restamps the origin OPERATOR. A
     re-issue arm or a later tick walking an already-observed row records
     nothing, so one cancel request is one increment no matter how many
     heartbeat ticks it spans.

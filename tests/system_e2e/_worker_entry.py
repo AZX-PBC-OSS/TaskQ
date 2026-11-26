@@ -10,20 +10,19 @@ the harness tees the child's stderr continuously and sends its stdout
 to DEVNULL - a spawn path that leaves a pipe undrained is the wedge
 class the harness exists to prevent), no business logic, no
 per-test seams - the scenario injects its chaos from the outside
-(signals, kills, SQL, the broker). The post-drain SIGTERM guard is the
-entrypoint pattern every worker exit shares (the taskq worker command,
-the e2e worker entry): the loop close restores SIG_DFL, and the
-harness's stop signal must not erase a drained pod's verdict.
+(signals, kills, SQL, the broker).
+
+``run_worker_to_exit`` carries the post-drain SIGTERM guard every
+dedicated worker process exit needs: closing the loop restores SIG_DFL,
+and the harness's stop signal must not erase a drained pod's verdict.
 """
 
-import asyncio
-import contextlib
 import faulthandler
 import signal
 import sys
 
 from taskq.settings import WorkerSettings
-from taskq.worker.run import _main
+from taskq.worker.run import _main, run_worker_to_exit
 from tests.system_e2e._kill_actors import ACTORS as KILL9_ACTORS
 from tests.system_e2e.actors import ACTORS
 
@@ -39,14 +38,6 @@ if __name__ == "__main__":
     faulthandler.register(signal.SIGUSR2, all_threads=True)
     settings = WorkerSettings.load()
     try:
-        with asyncio.Runner() as runner:
-            code = runner.run(_main(settings, actor_registry=REGISTRY))
-        # Same post-drain guard worker_main carries (see its comment): the
-        # closed loop restored SIG_DFL, and the harness's graceful_stop
-        # signals a second time - a pod that drained cleanly must exit
-        # with the drain's verdict, not die by the redundant signal.
-        with contextlib.suppress(ValueError):  # Why: not the main thread -> no window to guard.
-            signal.signal(signal.SIGTERM, signal.SIG_IGN)
-        sys.exit(code)
+        sys.exit(run_worker_to_exit(_main(settings, actor_registry=REGISTRY)))
     except KeyboardInterrupt:
         sys.exit(0)

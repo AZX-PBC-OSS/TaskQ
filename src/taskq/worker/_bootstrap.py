@@ -19,6 +19,8 @@ import asyncio
 import contextlib
 import importlib
 import math
+import signal
+import threading
 from collections.abc import Awaitable, Callable, Coroutine, Mapping, Sequence
 from datetime import datetime, timedelta
 from typing import Any, cast
@@ -110,6 +112,7 @@ __all__ = [
     "_main",
     "_maybe_open_slot_pool",
     "_slot_pool_factory",
+    "run_worker_to_exit",
     "worker_main",
     "worker_main_async",
 ]
@@ -3275,6 +3278,77 @@ async def _reload_coordinator_loop(
                 _startup_log.info("di-worker-pool-refreshed")
 
 
+def _sigterm_teardown_guard(teardown: Callable[[], None]) -> None:
+    """Run ``teardown`` with SIGTERM masked, then leave SIGTERM ignored.
+
+    Why a mask: closing the event loop restores SIGTERM's *default*
+    disposition. ``asyncio.Runner.close()`` ends in ``loop.close()``,
+    whose ``remove_signal_handler(SIGTERM)`` writes SIG_DFL back, so every
+    later step - the rest of the close, the worker's post-drain teardown,
+    the interpreter's exit path and its thread joins - would run under a
+    live SIG_DFL, and a supervisor's redundant stop signal in that window
+    killed an already-drained worker with ``rc = -15``, erasing the
+    drain's verdict. Setting ``SIG_IGN`` only *after* the close cannot
+    close that window, because the close is what writes SIG_DFL back.
+    Masking SIGTERM across the whole transition does: the disposition is
+    rewritten to ``SIG_IGN`` while the signal is blocked, so a pending
+    blocked SIGTERM is discarded by that write instead of delivered on
+    unblock.
+
+    Applies to dedicated worker process entrypoints only (whose next act
+    after the worker returns is their own exit), never to a library
+    caller that keeps running or forks children afterwards: an ignored
+    disposition survives ``exec``, so a child spawned later would eat its
+    own stop signals.
+
+    Main thread only: the disposition is process-global and
+    ``signal.signal`` raises off the main thread. The mask is per-thread,
+    so this guard covers the main thread's close transition. A non-main
+    caller cannot install the disposition, so only ``teardown`` runs there;
+    no ``SIG_IGN`` fallback is possible. The mask is POSIX-only; without
+    ``pthread_sigmask`` (Windows) the ``SIG_IGN`` install still lands,
+    after the close rather than around it.
+    """
+    if threading.current_thread() is not threading.main_thread():
+        teardown()
+        return
+    sigmask = getattr(signal, "pthread_sigmask", None)
+    prev_mask = sigmask(signal.SIG_BLOCK, {signal.SIGTERM}) if sigmask is not None else None
+    try:
+        teardown()
+    finally:
+        try:
+            signal.signal(signal.SIGTERM, signal.SIG_IGN)
+        finally:
+            if sigmask is not None and prev_mask is not None:
+                sigmask(signal.SIG_SETMASK, prev_mask)
+
+
+def _run_worker_runner(coro: Coroutine[Any, Any, int], *, guard_sigterm: bool) -> int:
+    """Drive a worker coroutine on a fresh loop the caller owns."""
+    runner = asyncio.Runner()
+    try:
+        return runner.run(coro)
+    finally:
+        if guard_sigterm:
+            _sigterm_teardown_guard(runner.close)
+        else:
+            runner.close()
+
+
+def run_worker_to_exit(coro: Coroutine[Any, Any, int]) -> int:
+    """Run a worker coroutine to completion, guarding SIGTERM to process exit.
+
+    The dedicated-worker-process entrypoint shape, for entries that drive
+    :func:`_main` (or another worker coroutine) directly instead of going
+    through :func:`worker_main` - they bypass ``setup_logging`` on purpose
+    and must keep doing so. Same guard, same reason: see
+    :func:`_sigterm_teardown_guard`. The caller's next act after this
+    returns should be ``sys.exit`` of the returned code.
+    """
+    return _run_worker_runner(coro, guard_sigterm=True)
+
+
 def worker_main(
     settings: WorkerSettings,
     *,
@@ -3288,6 +3362,7 @@ def worker_main(
     idle_settle_window: float | None = None,
     idle_poll_interval: float | None = None,
     idle_max_runtime: float | None = None,
+    ignore_sigterm_on_exit: bool = False,
 ) -> int:
     """Worker process entry point (synchronous).
 
@@ -3349,39 +3424,43 @@ def worker_main(
     ``idle_max_runtime`` override the corresponding settings when
     ``until_idle`` is True; they are ignored otherwise.
 
+    ``ignore_sigterm_on_exit`` selects the caller's contract. Left
+    ``False`` (the default, and the only correct value for a library
+    caller) the host's SIGTERM disposition and signal mask come back
+    exactly as they were found. A *dedicated worker process entrypoint* -
+    one whose next act after this returns is its own death, at most
+    flushing a profile or closing a caller-owned pool first - passes
+    ``True``: SIGTERM is then masked across the loop's teardown, ignored
+    once the loop is closed, and unblocked, so a supervisor's redundant
+    stop signal cannot kill an already-drained process and erase the
+    drain's verdict with ``rc = -15``. Never pass ``True`` from a caller
+    that keeps running or forks children afterwards: an ignored
+    disposition survives ``exec``, so such a child would ignore its own
+    SIGTERM.
+
     Returns the exit code from :func:`_main`, 0 on clean shutdown,
     3 if any jobs failed in drain mode, 4 if ``idle_max_runtime`` was
     exceeded.
     """
-    with asyncio.Runner() as runner:
-        code = runner.run(
-            worker_main_async(
-                settings,
-                actor_registry=actor_registry,
-                di_registry=di_registry,
-                connections=connections,
-                cron_registry=cron_registry,
-                pg_credential_provider=pg_credential_provider,
-                rate_limit_registry=rate_limit_registry,
-                until_idle=until_idle,
-                idle_settle_window=idle_settle_window,
-                idle_poll_interval=idle_poll_interval,
-                idle_max_runtime=idle_max_runtime,
-            )
-        )
-    # The drain's verdict is guarded by the entrypoints (the taskq worker
-    # command and the e2e/system-e2e worker entries), not here. This must
-    # not end with ``signal.signal(SIGTERM, SIG_IGN)`` - correct for a
-    # process about to ``sys.exit``, poison for any other caller: an
-    # ignored disposition is inherited by every process this host forks
-    # from then on (a child spawned after an in-process ``worker_main``
-    # ignores SIGTERM and dies to SIGKILL, rc -9). A library function
-    # returns control to its caller and must leave the host's signal state
-    # exactly as it found it; the verdict guard belongs where the process
-    # is genuinely about to die. SIGINT is left alone everywhere: its
-    # default disposition is KeyboardInterrupt, a live interactive
-    # contract, not a silent status eraser.
-    return code
+    return _run_worker_runner(
+        worker_main_async(
+            settings,
+            actor_registry=actor_registry,
+            di_registry=di_registry,
+            connections=connections,
+            cron_registry=cron_registry,
+            pg_credential_provider=pg_credential_provider,
+            rate_limit_registry=rate_limit_registry,
+            until_idle=until_idle,
+            idle_settle_window=idle_settle_window,
+            idle_poll_interval=idle_poll_interval,
+            idle_max_runtime=idle_max_runtime,
+            # The Runner this function owns is where the teardown happens,
+            # so its close is what carries the guard (see the helper).
+            ignore_sigterm_on_exit=False,
+        ),
+        guard_sigterm=ignore_sigterm_on_exit,
+    )
 
 
 async def worker_main_async(
@@ -3397,6 +3476,7 @@ async def worker_main_async(
     idle_settle_window: float | None = None,
     idle_poll_interval: float | None = None,
     idle_max_runtime: float | None = None,
+    ignore_sigterm_on_exit: bool = False,
 ) -> int:
     """Run a worker to completion on the **caller's** event loop.
 
@@ -3431,6 +3511,17 @@ async def worker_main_async(
     behaviour. The caller owns whatever it built - TaskQ closes only the
     resources it created itself (see :class:`~taskq.connections.WorkerConnections`
     for the ownership rule that governs anything passed via ``connections``).
+
+    ``ignore_sigterm_on_exit`` follows :func:`worker_main`'s contract with
+    one difference that matters here: the loop belongs to the caller, so
+    the guard covers the worker's own handover back to it - SIGTERM is
+    masked, this loop's own SIGTERM handler is removed (so the caller's
+    later ``loop.close()`` cannot rewrite the disposition), the
+    disposition is set to ``SIG_IGN``, and the mask is restored. The
+    caller's post-worker work - closing a pool, dumping a profile,
+    exiting - then runs with SIGTERM ignored. Use it only when that
+    remaining work is bounded teardown and exit, never when the process
+    keeps running or forks children afterwards.
     """
     from taskq.scheduler import get_registered_crons
 
@@ -3440,16 +3531,31 @@ async def worker_main_async(
         log_format=settings.log_format,
         events_level=settings.log_events_level,
     )
-    return await _main(
-        settings,
-        actor_registry=actor_registry,
-        _registry=di_registry,
-        _cron_registry=schedule_specs,
-        connections=connections,
-        pg_credential_provider=pg_credential_provider,
-        rate_limit_registry=rate_limit_registry,
-        until_idle=until_idle,
-        idle_settle_window=idle_settle_window,
-        idle_poll_interval=idle_poll_interval,
-        idle_max_runtime=idle_max_runtime,
-    )
+    try:
+        return await _main(
+            settings,
+            actor_registry=actor_registry,
+            _registry=di_registry,
+            _cron_registry=schedule_specs,
+            connections=connections,
+            pg_credential_provider=pg_credential_provider,
+            rate_limit_registry=rate_limit_registry,
+            until_idle=until_idle,
+            idle_settle_window=idle_settle_window,
+            idle_poll_interval=idle_poll_interval,
+            idle_max_runtime=idle_max_runtime,
+        )
+    finally:
+        if ignore_sigterm_on_exit:
+            running_loop = asyncio.get_running_loop()
+
+            def _remove_sigterm_handler() -> None:
+                # The caller owns this loop and will close it: a handler still
+                # registered here is reset to SIG_DFL by that close, over the
+                # guard's SIG_IGN. Windows loops do not implement signal
+                # handlers; the normal installer treats that as optional, so
+                # the exit guard must still reach its SIG_IGN fallback.
+                with contextlib.suppress(NotImplementedError):
+                    running_loop.remove_signal_handler(signal.SIGTERM)
+
+            _sigterm_teardown_guard(_remove_sigterm_handler)

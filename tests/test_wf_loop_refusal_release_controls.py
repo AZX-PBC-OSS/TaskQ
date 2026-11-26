@@ -347,6 +347,8 @@ async def _drive_through_consumer_loop(
         shutdown_phase=ShutdownPhase.NONE,
         disowned_jobs=set(),
         drain_failures=0,
+        redis_client=None,
+        progress_buffers={},
     )
 
     witness = JobRow(

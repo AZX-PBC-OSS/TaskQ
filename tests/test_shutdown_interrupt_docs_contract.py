@@ -9,13 +9,18 @@ established; see tests/test_outbox_exemption_docs_contract.py).
 
 Surfaces pinned: ``docs/guides/cancellation.md``, ``docs/guides/ops.md``,
 ``docs/guides/deployment.md``, ``docs/guides/jobs-clients.md`` (the four
-guide surfaces), plus the upgrade note in ``docs/guides/upgrading.md``
-and the phase tables in ``docs/architecture.md`` / ``docs/guides/cli.md``.
+guide surfaces), plus the upgrade note in ``docs/guides/upgrading.md``,
+the phase tables in ``docs/architecture.md`` / ``docs/guides/cli.md``, the
+FORCING rows of both shutdown-phase tables, the ladder walkthrough in
+``docs/architecture.md``, and the dispatch sequence in
+``docs/guides/workers.md``.
 """
 
 from __future__ import annotations
 
 from pathlib import Path
+
+import pytest
 
 _ROOT = Path(__file__).resolve().parent.parent
 _DOCS = _ROOT / "docs"
@@ -201,3 +206,123 @@ def test_phase_labels_in_architecture_and_cli_tables() -> None:
             f"{name} still names ABANDONING; the phase is RELEASING (value 4 "
             "unchanged - /health JSON and the CLI keep their numbers)"
         )
+
+
+# ── The FORCING delivery rule and the held-write exception ─────────────
+
+
+_SRC = _ROOT / "src" / "taskq"
+_SHUTDOWN_PHASE_TABLES = [
+    ("docs/architecture.md", _DOCS / "architecture.md"),
+    ("docs/guides/workers.md", _DOCS / "guides" / "workers.md"),
+]
+_TABLE_IDS = [name for name, _ in _SHUTDOWN_PHASE_TABLES]
+
+
+def _table_row(text: str, phase: str) -> str:
+    """The shutdown-phase table row for ``phase``, whitespace-normalized.
+
+    Selection is by first cell so a phase mentioned in another table's row
+    (the ``FORCED`` enum entries) cannot satisfy a pin.
+    """
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line.startswith("|"):
+            continue
+        cells = [cell.strip() for cell in line.strip("|").split("|")]
+        if cells and cells[0].strip("`") == phase:
+            return " ".join(line.split())
+    raise AssertionError(f"no table row for phase {phase!r} in the shutdown-phase table")
+
+
+def _section(text: str, start: str, end: str, *, where: str) -> str:
+    """The whitespace-normalized slice of ``text`` between two literal markers."""
+    head = text.find(start)
+    assert head != -1, f"{where} no longer contains the heading {start!r}"
+    tail = text.find(end, head)
+    assert tail != -1, f"{where}: {end!r} no longer follows {start!r}"
+    return " ".join(text[head:tail].split())
+
+
+@pytest.mark.parametrize(("name", "path"), _SHUTDOWN_PHASE_TABLES, ids=_TABLE_IDS)
+def test_forcing_row_states_the_first_delivery_only_rule(name: str, path: Path) -> None:
+    """The FORCING row must say a delivery is delivered once, not always."""
+    row = _table_row(path.read_text(), "FORCING")
+    assert "first delivery" in row.lower(), (
+        f"{name}'s shutdown-phase table still describes forcing as an "
+        "unconditional delivery. The shipped arm calls "
+        "`deliver_first_cancel(active.task)`, which delivers nothing to a task "
+        "that is already cancelling or done, and skips entries at "
+        "ABANDON_PENDING entirely."
+    )
+
+
+@pytest.mark.parametrize(("name", "path"), _SHUTDOWN_PHASE_TABLES, ids=_TABLE_IDS)
+def test_forcing_row_does_not_promise_an_unskippable_local_cancel(name: str, path: Path) -> None:
+    """`the local cancel is never skipped` is false in two reachable states."""
+    row = _table_row(path.read_text(), "FORCING")
+    assert "never skipped" not in row, (
+        f"{name}'s FORCING row claims the local cancel is never skipped. It is "
+        "skipped for an entry at ABANDON_PENDING (the abandon drain owns its "
+        "verdict) and for any attempt already cancelling or done. What "
+        "survives is narrower: the delivery is not conditional on the "
+        "escalation PG write succeeding."
+    )
+
+
+def test_architecture_phase_two_walkthrough_routes_through_the_shared_rule() -> None:
+    """The ladder's own walkthrough must not describe a bare task.cancel()."""
+    where = "docs/architecture.md"
+    walkthrough = _section(
+        (_DOCS / "architecture.md").read_text(),
+        "**Phase 2: Forced**",
+        "**Phase 3: Abandonment**",
+        where=where,
+    )
+    assert "Calls `active.task.cancel()`" not in walkthrough, (
+        f"{where}'s 'Phase 2: Forced' walkthrough still says "
+        "`- Calls `active.task.cancel()` (asyncio task cancellation).` That "
+        "call site no longer exists; the arm calls "
+        "`deliver_first_cancel(active.task)`."
+    )
+    assert "first delivery" in walkthrough.lower(), (
+        f"{where}'s 'Phase 2: Forced' walkthrough never states the "
+        "first-delivery-only rule, so it teaches the pre-change delivery "
+        "semantics while the FORCING rows teach the new ones."
+    )
+
+
+def test_no_shipped_prose_points_at_the_removed_direct_cancel_call() -> None:
+    """`active.task.cancel()` left the worker; its citations must follow it.
+
+    Boundary: ``src/taskq/**/*.py`` (docstrings, comments and code). Test
+    doubles may legitimately cancel their own fake task, so ``tests/`` is out
+    of scope.
+    """
+    offenders = sorted(
+        f"{path.relative_to(_ROOT)}:{lineno}"
+        for path in _SRC.rglob("*.py")
+        for lineno, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1)
+        if "active.task.cancel()" in line
+    )
+    assert not offenders, (
+        "shipped prose still cites `active.task.cancel()` as the delivery: " + ", ".join(offenders)
+    )
+
+
+def test_workers_dispatch_sequence_does_not_claim_every_terminal_write_is_shielded() -> None:
+    """The dispatch walkthrough must carry the held-write exception."""
+    where = "docs/guides/workers.md"
+    sequence = _section(
+        (_DOCS / "guides" / "workers.md").read_text(),
+        "## Dispatch sequence",
+        "## Retry and backoff",
+        where=where,
+    )
+    assert "All terminal Postgres writes are wrapped in `asyncio.shield`" not in sequence, (
+        f"{where}'s dispatch sequence still says all terminal Postgres writes "
+        "are wrapped in `asyncio.shield`. A row cancelled before it registered "
+        "has no registry entry, so its release is its only writer and the "
+        "fenced `mark_cancelled` is held to completion (`shield_until_complete`) "
+        "instead of detached."
+    )

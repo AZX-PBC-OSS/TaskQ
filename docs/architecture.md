@@ -918,8 +918,10 @@ locally without writing to PG (another controller already escalated).
 After `cancellation_grace_period` elapses since `cancel_observed_at`:
 - Executes `CANCEL_ESCALATION_SQL` (`SET cancel_phase = 2 WHERE cancel_phase = 1`).
 - Inserts a `job_events` row (`kind='state_change'`, phase 1→2 detail).
-- Calls `active.task.cancel()` (asyncio task cancellation).
-- **PG write happens BEFORE `task.cancel()` with no intervening `await`.**
+- Delivers the cancellation through the shared helper
+  `deliver_first_cancel(active.task)` — the first delivery only, so a task
+  already cancelling or done takes no second one.
+- **PG write happens BEFORE the cancel delivery with no intervening `await`.**
 
 **Phase 3: Abandonment**
 
@@ -1295,7 +1297,7 @@ begins, so health endpoints and consumers can observe the current phase:
 | `NONE` | 0 | Running normally |
 | `DRAINING` | 1 | Stop accepting new dispatch; re-pend locked-but-unstarted jobs (attempt refunded) |
 | `CANCELLING` | 2 | Cooperative cancel of remaining in-flight jobs (set `cancel_event`, stamp the shutdown origin) |
-| `FORCING` | 3 | Force-cancel grace: `task.cancel()` (delivered even when the escalation PG write fails; the local cancel is never skipped) + `write_cancel_escalation(phase=2)` (lands only on rows carrying an operator's cancel request) |
+| `FORCING` | 3 | Force-cancel grace: the first delivery only of `deliver_first_cancel(active.task)` (an attempt already cancelling or done takes no second cancel; an entry at `ABANDON_PENDING` is left to the abandon drain) — delivered even when a job's escalation PG write fails — plus `write_cancel_escalation(phase=2)` per job, which lands only on rows carrying an operator's cancel request |
 | `RELEASING` | 4 | Release never-unwound jobs back to the fleet via `mark_interrupted` (the spent attempt stands, no refund; held behind the remaining termination budget **plus the watchdog's exit tail** past the deadline; the dump-interval check lag and the bounded pre-`os._exit` flush); operator-cancelled jobs are terminalised with the operator's own verdict (`mark_cancelled`, forced - the same fenced write the unwinding consumer races), never `abandoned` |
 
 Phase ordering invariant: `NONE → DRAINING → CANCELLING → FORCING → RELEASING`.
@@ -2193,11 +2195,13 @@ These invariants must remain true across all changes.
    expires the lock before the next renewal arrives (validated at startup,
    `settings.py`'s `post_load`).
 
-2. **PG-write before task.cancel()**: in the phase-2 cancel path, the
+2. **PG-write before cancel delivery**: in the phase-2 cancel path, the
    `CANCEL_ESCALATION_SQL` UPDATE is executed and the `job_events` row is
-   inserted BEFORE `active.task.cancel()` is called, with no intervening `await`.
-   If the write fails, the exception propagates and `task.cancel()` is never
-   called; the job retains phase 1 and the heartbeat retries on the next tick.
+   inserted BEFORE `deliver_first_cancel(active.task)` is called, with no
+   intervening `await`. If the write fails, the exception propagates and the
+   cancel is never delivered; the job retains phase 1 and the heartbeat
+   retries on the next tick. The delivery is first-delivery-only: a task
+   already cancelling or done takes no second cancel.
 
 3. **Terminal writes own their row**: `mark_succeeded`, `mark_failed_or_retry`,
    `mark_cancelled`, `mark_abandoned` all guard with

@@ -53,7 +53,7 @@ from taskq.backend.postgres import PostgresBackend
 from taskq.context import JobContext
 from taskq.retry import RetryPolicy
 from taskq.settings import WorkerSettings
-from taskq.worker.run import _main
+from taskq.worker.run import _main, run_worker_to_exit
 
 _QUEUE = "consv_q"
 
@@ -221,5 +221,4 @@ if __name__ == "__main__":
         "consv_slow": consv_slow,
         **_HARNESS_GRACE_REGISTRY,
     }
-    with asyncio.Runner() as runner:
-        sys.exit(runner.run(_main(settings, actor_registry=registry)))
+    sys.exit(run_worker_to_exit(_main(settings, actor_registry=registry)))

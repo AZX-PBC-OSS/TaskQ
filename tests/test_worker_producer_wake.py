@@ -118,6 +118,8 @@ def _producer_deps(
         ),
         disowned_jobs=set(),
         dispatcher_pool=_NoopPool(),
+        redis_client=None,
+        progress_buffers={},
     )
 
 
@@ -309,6 +311,7 @@ async def test_di_consumer_loop_signals_slot_release_when_it_takes_a_job() -> No
             delay: object,
             *,
             metadata_update: dict[str, object] | None = None,
+            progress_seq: int = 0,
             attempt: int | None = None,
             claim_epoch: int | None = None,
         ) -> str:
@@ -333,6 +336,9 @@ async def test_di_consumer_loop_signals_slot_release_when_it_takes_a_job() -> No
                 active_jobs=ActiveJobRegistry(),
                 disowned_jobs=set(),
                 drain_failures=0,
+                settings=SimpleNamespace(),
+                redis_client=None,
+                progress_buffers={},
             ),  # type: ignore[arg-type]  # Why: minimal stand-in carrying the fields the loop reads on this path; the signature still requires the full WorkerDeps.
             local_queue,
             shutdown_event,

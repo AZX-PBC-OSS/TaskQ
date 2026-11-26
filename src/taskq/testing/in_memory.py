@@ -332,10 +332,11 @@ class InMemoryBackend:
         # The (job, task) of the attempt run_until_drained is currently
         # executing, keyed by job id so only the abandon of the job
         # actually in flight can act on it. tick_cancel_polling's
-        # both-graces arm cancels it, the runner's mirror of production
-        # phase 2's active.task.cancel(), so a non-cooperative attempt
-        # cannot park the drain forever beside a row that already says
-        # abandoned. None whenever no attempt is executing.
+        # both-graces arm cancels it through the shared first-delivery
+        # cancel (deliver_first_cancel), the runner's mirror of production
+        # phase 2, so a non-cooperative attempt cannot park the drain
+        # forever beside a row that already says abandoned. None whenever no
+        # attempt is executing.
         self._inflight_attempt: tuple[JobId, asyncio.Task[object]] | None = None
         self._wake_subscribers: set[asyncio.Event] = set()
         self._wake_queues: dict[asyncio.Event, frozenset[str] | None] = {}

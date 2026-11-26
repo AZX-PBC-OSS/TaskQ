@@ -791,6 +791,7 @@ async def test_failed_actor_not_found_release_disowns_the_job() -> None:
             delay: object,
             *,
             metadata_update: dict[str, object] | None = None,
+            progress_seq: int = 0,
             attempt: int | None = None,
             claim_epoch: int | None = None,
         ) -> str:
@@ -805,10 +806,15 @@ async def test_failed_actor_not_found_release_disowns_the_job() -> None:
     await asyncio.wait_for(
         di_consumer_loop(
             SimpleNamespace(
+                settings=WorkerSettings.load_from_dict(
+                    {"TASKQ_PG_DSN": "postgresql://x:x@localhost/x"}
+                ),
                 producer_stop_event=asyncio.Event(),
                 disowned_jobs=disowned,
                 active_jobs=ActiveJobRegistry(),
                 drain_failures=0,
+                redis_client=None,
+                progress_buffers={},
             ),  # type: ignore[arg-type]  # Why: the fields the loop reads on this path; the signature still requires the full WorkerDeps.
             local_queue,
             shutdown_event,

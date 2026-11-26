@@ -58,10 +58,11 @@ from taskq.constants import (
     require_schema,
 )
 from taskq.context import CancelOrigin
-from taskq.obs import get_logger
+from taskq.obs import get_logger, record_cancel_actored
 from taskq.progress._buffer import (
     _terminal_seq_and_state,  # pyright: ignore[reportPrivateUsage]  # Why: the release write carries the coalesced buffer exactly as the consumer's own terminal writes do, one seq/state projection, not a second copy.
 )
+from taskq.worker._cancel_delivery import deliver_first_cancel
 from taskq.worker._transient import TRANSIENT_PG_ERRORS
 from taskq.worker._watchdog import dump_task_stacks
 
@@ -458,8 +459,8 @@ async def orchestrate_shutdown(
         # doctrine), but a non-transient one - a data error, a dropped
         # table, the schema-identifier contract - escapes it. Uncontained
         # here, the exception collapses the phase train: cancelling never
-        # stamps the in-flight jobs' origins, forcing never delivers
-        # task.cancel(), releasing never releases, and the jobs the
+        # stamps the in-flight jobs' origins, forcing never delivers its
+        # cancel, releasing never releases, and the jobs the
         # shutdown owes its writes are thrown to the watchdog's os._exit
         # and the lease-expiry sweep while the exception sits unretrieved
         # in the orchestrator task until _main joins it after the whole
@@ -525,61 +526,136 @@ async def orchestrate_shutdown(
             active_jobs_count=deps.active_jobs.count(),
             elapsed_seconds=loop.time() - t0,
         )
+        deliveries_delivered = 0
+        deliveries_refused = 0
         for active in deps.active_jobs.all():
-            try:
-                # shield_with_retrieval, not plain asyncio.shield: shutdown
-                # races escalating cancellation, so a detached write here can
-                # be double-cancelled, its outcome must be retrieved (see
-                # taskq._shield).
-                #
-                # The escalation write doubles as the origin probe: it lands
-                # only when the row is at cancel_phase = 1, i.e. carrying an
-                # operator's cancel request. A shutdown-stamped entry whose
-                # probe lands was racing an unobserved operator cancel (the
-                # heartbeat poll had not seen the row yet), the row says
-                # who asked, so the entry re-stamps operator and stays on
-                # the operator ladder (releasing abandons it past the
-                # graces). A probe that misses on an operator-stamped entry
-                # means the row moved under the ladder (already terminal or
-                # reclaimed); that is logged, never silently discarded.
-                escalated = await shield_with_retrieval(
-                    backend.write_cancel_escalation(active.job_id, worker_id, phase=2)
-                )
-            except Exception as e:
-                _log.warning(
-                    "force-cancel-pg-write-failed",
-                    job_id=str(active.job_id),
-                    error=str(e),
-                )
-                # The local cancel is delivered even when the row-side
-                # write failed: skipping it let a cancellable actor run
-                # untouched into releasing and be released-with-hold
-                # while still alive: the exact overlap the hold exists
-                # to prevent. The escalation probe is the row-side
-                # half of forcing; task.cancel() is the process-side
-                # half, and only both together advance the entry. The
-                # phase stamp mirrors the success path below so the
-                # registry's local ladder stays truthful either way.
-                active.task.cancel()
-                active.cancel_phase = CancelPhase.FORCED
+            # The abandon drain owns an entry already queued for abandonment:
+            # its mark_abandoned write is the terminal verdict, and cancelling
+            # here would unwind and deregister the entry while that write may
+            # still roll back.
+            if active.cancel_phase >= CancelPhase.ABANDON_PENDING:
                 continue
-            if escalated and active.cancel_origin is CancelOrigin.SHUTDOWN:
-                active.cancel_origin = CancelOrigin.OPERATOR
-                active.ctx._set_cancel_origin(CancelOrigin.OPERATOR)  # pyright: ignore[reportPrivateUsage]  # Why: the orchestrator is the designated shutdown-side writer of the context's origin stamp (per the field's contract).
-                _log.info(
-                    "force-cancel-escalation-observed-operator-cancel",
-                    kind="cancel_origin",
+            # A local FORCED stamp can describe an escalation whose heartbeat
+            # transaction rolled back. Probe in that state too: the write
+            # re-issues a phase-1 row, while an already-durable phase-2 row
+            # simply returns False and is handled without a spurious warning.
+            if active.cancel_phase <= CancelPhase.FORCED:
+                try:
+                    # shield_with_retrieval, not plain asyncio.shield: shutdown
+                    # races escalating cancellation, so a detached write here can
+                    # be double-cancelled, its outcome must be retrieved (see
+                    # taskq._shield).
+                    #
+                    # The escalation write doubles as the origin probe: it lands
+                    # only when the row is at cancel_phase = 1, i.e. carrying an
+                    # operator's cancel request. A shutdown-stamped entry whose
+                    # probe lands was racing an unobserved operator cancel (the
+                    # heartbeat poll had not seen the row yet), the row says
+                    # who asked, so the entry re-stamps operator and stays on
+                    # the operator ladder (releasing abandons it past the
+                    # graces). A probe that misses on an operator-stamped entry
+                    # means the row moved under the ladder (already terminal or
+                    # reclaimed); that is logged, never silently discarded.
+                    escalated = await shield_with_retrieval(
+                        backend.write_cancel_escalation(active.job_id, worker_id, phase=2)
+                    )
+                except Exception as e:
+                    _log.warning(
+                        "force-cancel-pg-write-failed",
+                        job_id=str(active.job_id),
+                        error=str(e),
+                    )
+                    # The local cancel is delivered even when the row-side
+                    # write failed: skipping it let a cancellable actor run
+                    # untouched into releasing and be released-with-hold
+                    # while still alive: the exact overlap the hold exists
+                    # to prevent. The escalation probe is the row-side
+                    # half of forcing; deliver_first_cancel is the
+                    # process-side half, and only both together advance the
+                    # entry. The phase stamp mirrors the success path below
+                    # so the registry's local ladder stays truthful either
+                    # way.
+                    if active.cancel_phase < CancelPhase.ABANDON_PENDING:
+                        if deliver_first_cancel(active.task):
+                            deliveries_delivered += 1
+                        else:
+                            deliveries_refused += 1
+                            _log.debug(
+                                "force-cancel-delivery-refused",
+                                kind="cancel_delivery",
+                                job_id=str(active.job_id),
+                                worker_id=str(worker_id),
+                                cancel_phase=int(active.cancel_phase),
+                                deliveries_refused=deliveries_refused,
+                            )
+                        if active.cancel_phase < CancelPhase.FORCED:
+                            active.cancel_phase = CancelPhase.FORCED
+                    continue
+                # The await above is an interleaving point: the cancel
+                # controller's own tick can force this entry or queue it for
+                # abandonment while the probe is in flight. Both outcomes
+                # belong to the controller from here on.
+                if active.cancel_phase >= CancelPhase.ABANDON_PENDING:
+                    continue
+                if escalated and active.cancel_origin is CancelOrigin.SHUTDOWN:
+                    active.cancel_origin = CancelOrigin.OPERATOR
+                    active.ctx._set_cancel_origin(CancelOrigin.OPERATOR)  # pyright: ignore[reportPrivateUsage]  # Why: the orchestrator is the designated shutdown-side writer of the context's origin stamp (per the field's contract).
+                    # The probe is the first observer of this request: the row
+                    # still carried cancel_phase = 1, so the controller never
+                    # polled it. Count the request the worker now acts on; no
+                    # later tick can (the OPERATOR stamp closes the phase-1
+                    # arm, the FORCED phase closes the fast-advance's
+                    # ``local was NONE`` gate).
+                    record_cancel_actored(active.ctx.actor)
+                    _log.info(
+                        "force-cancel-escalation-observed-operator-cancel",
+                        kind="cancel_origin",
+                        job_id=str(active.job_id),
+                        worker_id=str(worker_id),
+                    )
+                elif (
+                    not escalated
+                    and active.cancel_origin is CancelOrigin.OPERATOR
+                    and active.cancel_phase < CancelPhase.FORCED
+                ):
+                    # Not when the phase already reached forced during the
+                    # await: the controller's escalation won that race, and this
+                    # probe losing to it is not the vanished-bookkeeping shape
+                    # the warning exists for.
+                    _log.warning(
+                        "force-cancel-escalation-unmatched",
+                        job_id=str(active.job_id),
+                        worker_id=str(worker_id),
+                    )
+            # The delivery is first-delivery-only, so a consumer already
+            # unwinding its terminal write is left alone. The probe above is
+            # still required for a locally-forced entry whose escalation
+            # rolled back; the PG-observation fast-advance can also raise an
+            # entry to forced without cancelling anything.
+            if deliver_first_cancel(active.task):
+                deliveries_delivered += 1
+            else:
+                deliveries_refused += 1
+                _log.debug(
+                    "force-cancel-delivery-refused",
+                    kind="cancel_delivery",
                     job_id=str(active.job_id),
                     worker_id=str(worker_id),
+                    cancel_phase=int(active.cancel_phase),
+                    deliveries_refused=deliveries_refused,
                 )
-            elif not escalated and active.cancel_origin is CancelOrigin.OPERATOR:
-                _log.warning(
-                    "force-cancel-escalation-unmatched",
-                    job_id=str(active.job_id),
-                    worker_id=str(worker_id),
-                )
-            active.task.cancel()
-            active.cancel_phase = CancelPhase.FORCED
+            if active.cancel_phase < CancelPhase.FORCED:
+                active.cancel_phase = CancelPhase.FORCED
+
+        _log.info(
+            "shutdown-phase",
+            kind="shutdown_phase",
+            phase="FORCING",
+            active_jobs_count=deps.active_jobs.count(),
+            deliveries_delivered=deliveries_delivered,
+            deliveries_refused=deliveries_refused,
+            elapsed_seconds=loop.time() - t0,
+        )
 
         deadline = loop.time() + cleanup_grace
         while loop.time() < deadline and deps.active_jobs.count() > 0:  # noqa: ASYNC110  # Why: poll-for-exit with deadline is the intentional design for shutdown phases; the timed grace period cannot be expressed with Event alone.
@@ -617,7 +693,7 @@ async def orchestrate_shutdown(
             # (the fence mark_interrupted uses below), not mark_abandoned:
             # an entry still registered here is a consumer whose unwind
             # overran the cleanup grace - the forcing probe escalated its
-            # row to phase 2 and delivered task.cancel(), and the
+            # row to phase 2 and delivered its cancel, and the
             # consumer's own mark_cancelled is in flight (the unwind's
             # commit lags the grace under co-tenant load; the system
             # tier's cancel-racing-SIGTERM scenario). Two writers racing

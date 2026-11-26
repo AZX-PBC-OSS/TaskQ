@@ -36,7 +36,6 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import signal
 from collections.abc import AsyncGenerator
 from typing import TYPE_CHECKING, Any
 
@@ -109,18 +108,21 @@ def main() -> None:
         # and rely on process exit for cleanup.
         cred = DefaultAzureCredential()
         provider = EntraIdProvider(cred)
-        worker_main(
-            settings,
-            actor_registry=ACTORS,
-            connections=build_connections(settings, provider),
+        # The return value is the container's exit status: 3 means jobs failed
+        # during the drain and 4 means idle_max_runtime was exceeded, so a
+        # supervisor sees a failed drain instead of a successful one.
+        raise SystemExit(
+            worker_main(
+                settings,
+                actor_registry=ACTORS,
+                connections=build_connections(settings, provider),
+                # This process's next act is its own death, so the worker's
+                # teardown may ignore SIGTERM: a redundant stop-signal
+                # landing after the drain must not replace the exit status
+                # with -15.
+                ignore_sigterm_on_exit=True,
+            )
         )
-        # The drain's verdict guard: the loop is closed, so a redundant
-        # stop-signal in the teardown window must not erase the exit
-        # status with -15. Lives at the entrypoint (worker_main no longer
-        # sets it - an ignored disposition leaks to every process the
-        # host forks after).
-        with contextlib.suppress(ValueError):  # Why: not the main thread -> no window to guard.
-            signal.signal(signal.SIGTERM, signal.SIG_IGN)
     elif mode == "serve":
         try:
             import importlib
