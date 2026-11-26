@@ -107,6 +107,7 @@ from taskq.workflows.api._app import CompiledWorkflow
 from taskq.workflows.api._ctx import StepContext, build_step_context
 from taskq.workflows.api._ctx_wait import HoldMintFencedError, NodeHeldError
 from taskq.workflows.api._deps import deps_param_declared
+from taskq.workflows.api._deps_factory import DepsResolution
 from taskq.workflows.api._graph import (
     Exit,
     keyed_rate_limit_names,
@@ -335,6 +336,7 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
         deps: object | None = None,
         deps_factory: Callable[..., object] | None = None,
         deps_teardown: Callable[[object], object] | None = None,
+        deps_resolution: DepsResolution | None = None,
         default_start_to_close: timedelta | None = None,
     ) -> None:
         from taskq.workflows.api._deps_factory import DepsResolver, deps_factory_declaration
@@ -350,21 +352,42 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
         declared_factory = deps_factory_declaration(
             deps=deps, deps_factory=deps_factory, deps_teardown=deps_teardown
         )
+        if deps_resolution is not None and (deps is not None or declared_factory is not None):
+            raise ValueError(
+                "deps_resolution= is an already-owned deps resolution (the "
+                "worker-scoped one) and cannot be combined with deps=, "
+                "deps_factory= or deps_teardown=, which declare a binding this "
+                "runner would own"
+            )
         compiled_deps = compiled.deps if isinstance(compiled, CompiledWorkflow) else None
         compiled_factory = compiled.deps_factory if isinstance(compiled, CompiledWorkflow) else None
-        if deps is not None:
+        if deps_resolution is not None:
+            # the worker-hosted door's shared resolution: its own binding is
+            # what the bodies receive, so E12 validates against that rather
+            # than against whatever the compile happens to carry.
+            effective_deps, effective_factory = None, deps_resolution.binding
+            self._owns_deps_resolution = False
+        elif deps is not None:
             effective_deps, effective_factory = deps, None
+            self._owns_deps_resolution = False
         elif declared_factory is not None:
             effective_deps, effective_factory = None, declared_factory
+            self._owns_deps_resolution = True
         else:
             effective_deps, effective_factory = compiled_deps, compiled_factory
+            self._owns_deps_resolution = effective_factory is not None
         self._deps: object | None = effective_deps
         #: the lazy arm: one resolution per runner, created on the running
         #: loop at the first body that declares the deps shape (the resolution
         #: state — the lock, the instance, the single teardown attempt — lives
-        #: in ``_deps_factory.DepsResolver``).
-        self._deps_resolver: DepsResolver | None = (
-            DepsResolver(effective_factory) if effective_factory is not None else None
+        #: in ``_deps_factory.DepsResolver``). An injected one (the worker's,
+        #: shared across the app's runners) is already that shape.
+        self._deps_resolver: DepsResolution | None = (
+            deps_resolution
+            if deps_resolution is not None
+            else DepsResolver(effective_factory)
+            if effective_factory is not None
+            else None
         )
         validation_view = compiled
         if isinstance(compiled, CompiledWorkflow) and (
@@ -432,12 +455,17 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
         closed) and every child runner this runner built during a drive (each
         owns its own resolution, so each closes its own instance).
 
+        A resolution the runner did not mint (the worker-hosted door's shared,
+        worker-scoped one) is NOT closed here: its owner releases it at worker
+        shutdown, and closing it from one runner would tear it down under
+        every body still sharing it.
+
         Callers dispose deterministically with ``async with FlowRunner(…)``
         or ``await runner.aclose()``; the packaged ``run(…)`` does it for
         them. Teardown after the drive — never mid-body. Every owner is
         attempted even when an earlier child's release fails."""
         async with AsyncExitStack() as cleanup:
-            if self._deps_resolver is not None:
+            if self._deps_resolver is not None and self._owns_deps_resolution:
                 cleanup.push_async_callback(self._deps_resolver.aclose)
             # The stack unwinds LIFO: children close in creation order, then
             # the parent, and one failing release cannot skip the others.
@@ -1281,7 +1309,7 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
             return (self._deps,)
         if self._deps_resolver is None:
             return ()
-        return (await self._deps_resolver.get(),)
+        return (await self._deps_resolver.get(workflow=self.compiled.name),)
 
     def _body_deadline_seconds(self, row: dict[str, Any]) -> float | None:
         """The deadline resolution at the enforcement (the vanilla

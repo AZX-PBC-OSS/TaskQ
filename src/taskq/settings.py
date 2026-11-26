@@ -2809,6 +2809,8 @@ class WorkerSettings(TaskQSettings):
 
         The shutdown phase graces plus the bounded-close tail that unwinds
         after them (see :func:`taskq._close.worst_case_teardown_tail`).
+        Declaration-dependent workflow deps releases are added by the worker
+        bootstrap's own budget warning, which can see the live app bindings.
 
         This is deliberately not enforced by ``post_load``. The cross-field
         validator there rejects a config outright, and a budget below this

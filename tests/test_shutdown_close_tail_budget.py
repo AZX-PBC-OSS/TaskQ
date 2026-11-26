@@ -8,7 +8,8 @@ than ``termination_grace_period``, get SIGKILLed mid-unwind, and leave terminal
 writes unlanded. The shipped default (85/30/10) covers the modelled worst case;
 custom grace combinations can still fall short, which is why the shortfall is
 surfaced as a startup warning rather than a validation error (an operator may
-deliberately run a tighter budget than the dead-backend worst case).
+deliberately run a tighter budget than the dead-backend worst case). This is
+the base model; the bootstrap adds declared workflow deps bindings separately.
 """
 
 from __future__ import annotations
@@ -50,10 +51,10 @@ def test_worst_case_shutdown_is_phases_plus_tail() -> None:
     assert s.worst_case_shutdown_seconds == 30.0 + 10.0 + worst_case_teardown_tail()
 
 
-def test_taskq_defaults_cover_the_modelled_worst_case() -> None:
-    """The shipped default must cover the modelled worst case.
+def test_taskq_defaults_cover_the_base_modelled_worst_case() -> None:
+    """The shipped default must cover the base modelled worst case.
 
-    The default must cover the modelled worst case: a default below it
+    The default must cover the base modelled worst case: a default below it
     (60s against a 67s worst case at the default graces) makes every
     default deployment raise its own
     ``shutdown-budget-exceeds-termination-grace`` boot
@@ -80,6 +81,36 @@ def test_taskq_defaults_cover_the_modelled_worst_case() -> None:
     assert s.shutdown_budget_is_sufficient is True
 
 
+def test_workflow_deps_close_tail_warning_includes_each_declared_app_binding() -> None:
+    """Workflow deps releases unwind sequentially before the role pools.
+    One hung binding adds a full close timeout to the base model, so the
+    default's three-second headroom is no longer enough."""
+    from taskq.worker._bootstrap import _emit_workflow_deps_shutdown_budget_warning
+
+    with structlog.testing.capture_logs() as logs:
+        _emit_workflow_deps_shutdown_budget_warning(_settings(), 1)
+    entry = next(
+        log
+        for log in logs
+        if log["event"] == "workflow-deps-shutdown-budget-exceeds-termination-grace"
+    )
+    assert entry["workflow_deps_bindings"] == 1
+    assert entry["workflow_deps_close_tail_seconds"] == CLOSE_TIMEOUT_SECS
+    assert entry["worst_case_seconds"] == 82.0 + CLOSE_TIMEOUT_SECS
+    assert entry["termination_grace_period"] == 85.0
+    assert "87" in entry["remedy"]
+
+    with structlog.testing.capture_logs() as no_bindings:
+        _emit_workflow_deps_shutdown_budget_warning(_settings(), 0)
+    assert no_bindings == []
+
+    with structlog.testing.capture_logs() as sufficient:
+        _emit_workflow_deps_shutdown_budget_warning(
+            _settings(TASKQ_TERMINATION_GRACE_PERIOD="90"), 1
+        )
+    assert sufficient == []
+
+
 def test_sufficient_budget_is_recognised() -> None:
     s = _settings(
         TASKQ_TERMINATION_GRACE_PERIOD="60",
@@ -104,10 +135,11 @@ def test_sufficient_budget_is_recognised() -> None:
 # spelled.
 
 
-def test_no_startup_warning_at_default_settings() -> None:
-    """The control: the shipped defaults must be silent, or the warning is
-    noise on every default deployment and operators learn to ignore it
-    (the downstream redteam finding that motivated raising the default)."""
+def test_no_base_budget_warning_at_default_settings() -> None:
+    """The base-model control: shipped defaults are silent unless app-scoped
+    deps releases add to the total (the dynamic warning above owns that arm).
+    A warning on every default deployment would be noise operators learn to
+    ignore."""
     from taskq.worker._bootstrap import _emit_startup_warnings
 
     s = _settings()

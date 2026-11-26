@@ -50,11 +50,11 @@ from collections.abc import (
     Callable,
     Coroutine,
 )
-from typing import Any, Self, cast, get_args, get_origin
+from typing import Any, Protocol, Self, cast, get_args, get_origin
 
 from taskq.workflows.api._hints import body_hints
 
-__all__ = ["DepsFactory", "DepsResolver", "deps_factory_declaration"]
+__all__ = ["DepsFactory", "DepsResolution", "DepsResolver", "deps_factory_declaration"]
 
 #: One resolution's release: the single teardown attempt the owner may make.
 #: ``object`` is the honest return width — an async context manager's exit
@@ -119,6 +119,35 @@ class DepsFactory:
         return self._invoke()
 
 
+class DepsResolution(Protocol):
+    """The resolution state a runner drives, whichever owner minted it.
+
+    :class:`DepsResolver` is the per-runner owner (the direct door mints
+    and closes it). The worker-hosted door injects its worker-and-loop-scoped
+    resolution instead (``taskq.workflows._worker_deps``), which composes
+    the same resolver and owns the resolve/teardown telemetry; the runner
+    reads only these three members, and it closes a resolution only when it
+    minted that resolution itself.
+    """
+
+    @property
+    def binding(self) -> DepsFactory:
+        """The declaration this resolution resolves (E12's view of a
+        resolution the runner did not mint)."""
+        ...
+
+    async def get(self, *, workflow: str | None = None) -> object:
+        """The resolved instance, created on the running loop at first use.
+
+        *workflow* identifies the resolving body to an owner's telemetry;
+        local owners need no label and ignore it."""
+        ...
+
+    async def aclose(self) -> None:
+        """The one teardown attempt (a no-op when nothing resolved)."""
+        ...
+
+
 class DepsResolver:
     """One owner's lazy resolution of a :class:`DepsFactory`."""
 
@@ -130,9 +159,17 @@ class DepsResolver:
         self._resolved = False
         self._closed = False
 
-    async def get(self) -> object:
+    @property
+    def binding(self) -> DepsFactory:
+        """The declaration this resolution was built from."""
+        return self._binding
+
+    async def get(self, *, workflow: str | None = None) -> object:
         """The resolved instance, created on the RUNNING loop at the first
         claim and reused from then on.
+
+        *workflow* is the shared protocol's telemetry hint; this local owner
+        emits no workflow lifecycle telemetry and ignores it.
 
         Concurrent first claims serialize on the lock, so the factory runs
         exactly once. A failed initialization caches NOTHING: the factory's
@@ -140,6 +177,7 @@ class DepsResolver:
         retries the factory — the lock is released by the ``async with``
         unwind, never wedged.
         """
+        del workflow
         if self._closed:
             raise _closed_error()
         if self._resolved:
@@ -150,6 +188,14 @@ class DepsResolver:
             if self._resolved:
                 return self._instance
             instance, release = await self._acquire()
+            if self._closed:
+                # aclose() may have timed out waiting for this acquisition's
+                # lock. The resource arrived after its owner closed: release it
+                # here rather than handing a live dependency to a body whose
+                # worker has already unwound its teardown stack.
+                if release is not None:
+                    await release()
+                raise _closed_error()
             # Assign only after a fully successful acquisition: a factory that
             # raised leaves no half-state behind, and ``__aexit__`` is never
             # called for a context manager whose ``__aenter__`` failed.

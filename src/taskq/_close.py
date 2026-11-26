@@ -60,7 +60,10 @@ CLOSE_TIMEOUT_SECS: float = 5.0
 # provider, and each is closed once, after every resource built through
 # it (open_worker_deps pushes them first so they unwind last).
 #
-# Scope note: this models the boot-time stack. Each credential reload
+# Scope note: this models the boot-time stack. Workflow deps factories are
+# declaration-dependent, so the bootstrap adds their per-app close timeouts
+# to this base in its own startup budget warning rather than guessing a count
+# here. Each credential reload
 # pushes one more bounded close per factory-backed pool onto the same
 # stack, so a worker that has rotated K times unwinds (this count + K)
 # sequential closes, a pre-existing property of the reload

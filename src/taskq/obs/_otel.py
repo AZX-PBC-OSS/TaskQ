@@ -118,6 +118,8 @@ __all__ = [
     "record_sub_enqueue_failure",
     "record_sweep_timeout",
     "record_sweep_unexpected_error",
+    "record_workflow_deps_resolved",
+    "record_workflow_deps_torn_down",
     "safe_start_span",
     "set_otel_enabled",
     "update_cancel_pending_cache",
@@ -3722,6 +3724,84 @@ def record_sse_rejection(surface: SseSurface, topic: str) -> None:
             "the configured cap beside a rising rejection rate."
         ),
     ).add(1, {"topic": _bounded_sse_topic(topic), "surface": surface})
+
+
+# ── The workflow deps factory lifecycle ────────────────────────────────
+#
+# taskq.workflows.deps_resolved / taskq.workflows.deps_torn_down: the
+# worker-scoped deps factory's one instance per (app, worker, event
+# loop) and its exactly-once release. The dimensions are the app's
+# DECLARED WORKFLOW NAME (bounded by the code the operator ships, the
+# same dimension the progress rollup carries) and the factory's
+# GENERATION; worker_id is identity and deliberately NOT a dimension
+# (the cardinality contract above: a per-worker series mints a time
+# series per deploy and autoscale), so per-worker attribution lives on
+# the workflow-deps-resolved / workflow-deps-torn-down log lines.
+
+
+def record_workflow_deps_resolved(workflow: str, generation: int) -> None:
+    """Count one workflow deps instance resolved on a worker.
+
+    Called once per resolved instance: the first body of the app that
+    declares the deps parameter mints it, and every later body (any
+    workflow of the app, same worker and loop) reuses it. Attributes:
+    workflow (the declared registration name) and generation (the factory
+    generation that minted it). More than one per worker lifecycle is a
+    scope leak; zero while bodies execute is a resolution that never
+    reached the seam.
+    Respects ``_otel_enabled``, no-op when False.
+    """
+    if not _otel_enabled:
+        return
+    try:
+        _lazy_counter(
+            "taskq.workflows.deps_resolved",
+            description=(
+                "Workflow deps instances resolved lazily on a worker. "
+                "Attributes: workflow (the declared registration name), "
+                "generation (the factory generation that minted it). One "
+                "per resolved instance: the per-worker proof; worker_id "
+                "rides the workflow-deps-resolved log line, never a metric "
+                "dimension."
+            ),
+        ).add(1, {"workflow": workflow, "generation": generation})
+    except Exception:
+        _log.warning("otel-metric-record-failed", instrument_name="taskq.workflows.deps_resolved")
+
+
+def record_workflow_deps_torn_down(workflow: str, generation: int, *, failed: bool) -> None:
+    """Count one workflow deps instance torn down on a worker.
+
+    Called by the worker's shutdown teardown, once per resolved instance
+    (the exactly-once release), before the worker's role pools close.
+    Attributes: workflow, generation, and ``outcome`` (the closed enum
+    ``ok`` / ``failed``); the failing half joins the
+    workflow-deps-teardown-error / -timeout log lines, which carry the
+    cause and the per-worker attribution.
+    Respects ``_otel_enabled``, no-op when False.
+    """
+    if not _otel_enabled:
+        return
+    try:
+        _lazy_counter(
+            "taskq.workflows.deps_torn_down",
+            description=(
+                "Workflow deps instances released by a worker's shutdown "
+                "teardown. Attributes: workflow (the declared registration "
+                "name), generation, outcome (ok | failed, the closed enum). "
+                "Exactly one per resolved instance; a gap against "
+                "taskq.workflows.deps_resolved is a leaked instance."
+            ),
+        ).add(
+            1,
+            {
+                "workflow": workflow,
+                "generation": generation,
+                "outcome": "failed" if failed else "ok",
+            },
+        )
+    except Exception:
+        _log.warning("otel-metric-record-failed", instrument_name="taskq.workflows.deps_torn_down")
 
 
 # ── The workflow progress rollup ────────────────────────────────
