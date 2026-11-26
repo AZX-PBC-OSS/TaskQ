@@ -28,6 +28,8 @@ green pin of the current, non-existent guard.
 """
 
 import asyncio
+import contextlib
+from dataclasses import replace
 from datetime import UTC, datetime
 from typing import Any, cast
 
@@ -184,4 +186,75 @@ async def test_di_consumer_loop_stops_dequeuing_once_draining_starts(
         "shutdown_event still unset - the stale local_queue copy of a "
         "DRAINING-re-pended job was dispatched by this worker's own "
         "consumer loop."
+    )
+
+
+async def test_di_consumer_claim_intent_carries_the_reclaimed_jobs_epoch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The DI take must fence the exact re-claim until registration.
+
+    The dispatch double parks before the real consumer registers the job,
+    leaving the intent as the only hand-back coverage. Forwarding a constant
+    first-claim epoch would let the drain re-pend this live take.
+    """
+    job = replace(make_job_row(actor="rt_drain_stale_actor", status="running"), claim_epoch=2)
+    fb = FakeBackend()
+    backend = as_backend(fb)
+    dispatch_started = asyncio.Event()
+
+    async def _actor_fn(payload: object, ctx: object) -> None:
+        return None
+
+    actor_ref: ActorRef[Any, Any] = ActorRef(
+        name="rt_drain_stale_actor",
+        queue="default",
+        fn=_actor_fn,
+        wants_ctx=True,
+        dependencies={},
+        payload_type=None,  # type: ignore[arg-type]  # Why: dispatch_one_job is doubled at the execution boundary.
+        result_adapter=None,  # type: ignore[arg-type]  # Why: dispatch_one_job is doubled at the execution boundary.
+        retry=RetryPolicy(),
+        result_ttl=None,
+    )
+
+    async def _parked_dispatch(**kwargs: object) -> str:
+        dispatch_started.set()
+        await asyncio.Event().wait()
+        return "succeeded"
+
+    monkeypatch.setattr(run_module, "dispatch_one_job", _parked_dispatch)
+    local_queue: asyncio.Queue[JobRow] = asyncio.Queue(maxsize=1)
+    local_queue.put_nowait(job)
+    shutdown_event = asyncio.Event()
+    deps = _DepsStub()
+    consumer = asyncio.create_task(
+        di_consumer_loop(
+            deps,  # type: ignore[arg-type]  # Why: the established duck-typed deps carries every field this path reads.
+            local_queue,
+            shutdown_event,
+            backend=backend,
+            worker_id=new_uuid(),
+            registry=ProviderRegistry(),
+            process_scope=_ScopeStub(),  # type: ignore[arg-type]
+            thread_scope=_ScopeStub(),  # type: ignore[arg-type]
+            loop_scope=_ScopeStub(),  # type: ignore[arg-type]
+            actor_registry={"rt_drain_stale_actor": actor_ref},
+            enqueuer=SubJobEnqueuer(loop_scope_resolved=None, worker_pool=None, backend=backend),
+        )
+    )
+    try:
+        await asyncio.wait_for(dispatch_started.wait(), timeout=1.0)
+        assert deps.active_jobs.held_claims() == [(job.id, 2)], (
+            "the DI consumer must forward the re-claim's epoch into its intent; "
+            "a stale or constant epoch makes the hand-back exclusion miss the "
+            "live take-to-register claim"
+        )
+    finally:
+        consumer.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await consumer
+
+    assert deps.active_jobs.held_claims() == [], (
+        "the cancelled dispatch must unwind through the loop's finally and resolve its intent"
     )

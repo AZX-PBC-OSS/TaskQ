@@ -2530,8 +2530,8 @@ async def test_heartbeat_tick_reconcile_excludes_held_queued_disowned() -> None:
     pool = _LostClaimPool(fetch_rows=[{"id": lost_id}])
 
     def _seed(deps: WorkerDeps) -> None:
-        deps.active_jobs.mark_enqueued(queued_id)
-        deps.active_jobs.mark_claimed(held_id)
+        deps.active_jobs.mark_enqueued(queued_id, 1)
+        deps.active_jobs.mark_claimed(held_id, 1)
         deps.disowned_jobs.add(disowned_id)
 
     deps, _shutdown = await _run_tick(pool=pool, deps_hook=_seed)

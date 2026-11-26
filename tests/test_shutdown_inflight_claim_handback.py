@@ -17,8 +17,10 @@ crashed attempt against a job that never ran.
 """
 
 import asyncio
+import json
 import logging
 from datetime import UTC, datetime, timedelta
+from typing import cast
 
 import pytest
 
@@ -37,9 +39,26 @@ pytestmark = pytest.mark.integration
 _BACKLOG = 20
 
 
-def _assert_a_claim_round_actually_happened(
-    local_queue: asyncio.Queue[JobRow], caplog: pytest.LogCaptureFixture
-) -> None:
+def _event_payload(record: logging.LogRecord) -> dict[str, object] | None:
+    """The structlog event dict a captured record carries, if it has one.
+
+    structlog's stdlib bridge hands the handler the event dict as the
+    record's message; once a formatter has rendered it (the production
+    JSON/console chain runs ahead of caplog's own handler in some runs) the
+    message is the rendered string instead. Both shapes are read so the
+    premise below cannot fail on handler ordering alone.
+    """
+    payload = record.msg
+    if isinstance(payload, dict):
+        return cast("dict[str, object]", payload)
+    try:
+        parsed = json.loads(record.getMessage())
+    except (TypeError, ValueError):
+        return None
+    return cast("dict[str, object]", parsed) if isinstance(parsed, dict) else None
+
+
+def _assert_a_claim_round_actually_happened(caplog: pytest.LogCaptureFixture) -> None:
     """The precondition every hand-back assertion below depends on: the
     producer's dispatch path worked, and a claim round committed rows into
     this worker's hands.
@@ -54,8 +73,16 @@ def _assert_a_claim_round_actually_happened(
     round, no row is ever claimed, the exit hand-back has nothing to do,
     ``stranded == []`` is trivially true, and the test passes over a
     producer that did nothing. So assert the observable premise: no
-    dispatch error was logged, and claimed rows actually reached the local
-    queue.
+    dispatch error was logged, and a hand-back pass actually re-pended
+    claimed rows.
+
+    Why the hand-back record and not the local queue: a claim round still
+    in flight when the stop lands is handed straight back by the producer's
+    exit pass, so those rows never enter ``local_queue``. The
+    ``drain-local-queue-completed`` record with ``rows_re_pended > 0`` is
+    the shape that fires whichever pass wins the race (the orchestrator's
+    DRAINING pass or the producer's exit pass), so an empty queue cannot
+    make the premise vacuous.
     """
     dispatch_errors = [
         record for record in caplog.records if "dispatch-batch-error" in record.getMessage()
@@ -65,11 +92,21 @@ def _assert_a_claim_round_actually_happened(
         "below are vacuous - nothing was ever claimed, so nothing could be "
         f"left locked: {[r.getMessage() for r in dispatch_errors]}"
     )
-    assert local_queue.qsize() > 0, (
-        "the producer never claimed a row - with a backlog deeper than one "
-        "claim round, a working dispatch fills the local queue; an empty "
-        "queue means the scenario this test pins (SIGTERM with a claim in "
-        "hand) never happened"
+    hand_backs: list[dict[str, object]] = []
+    for record in caplog.records:
+        payload = _event_payload(record)
+        if payload is not None and payload.get("event") == "drain-local-queue-completed":
+            hand_backs.append(payload)
+    assert hand_backs, (
+        "the producer never handed a claimed row back - with a backlog "
+        "deeper than one claim round, a working dispatch leaves rows claimed "
+        f"to this worker for the hand-back to re-pend; got {hand_backs!r}"
+    )
+    re_pended = sum(int(payload.get("rows_re_pended", 0) or 0) for payload in hand_backs)
+    assert re_pended > 0, (
+        "no hand-back pass re-pended a row: the scenario this test pins "
+        "(SIGTERM with a claim in hand) never happened, and the stranded-row "
+        f"assertion below would be vacuous. Hand-back records: {hand_backs!r}"
     )
 
 
@@ -149,7 +186,7 @@ async def test_sigterm_during_a_claim_round_leaves_no_job_locked_to_the_dead_pod
     # in flight - the state a pod is in when a deploy rolls it under load.
     await asyncio.sleep(0)
 
-    with caplog.at_level(logging.ERROR):
+    with caplog.at_level(logging.INFO):
         exit_code = await orchestrate_shutdown(
             deps, deps.settings, worker_id, shutdown_event, None, backend=backend
         )
@@ -160,7 +197,7 @@ async def test_sigterm_during_a_claim_round_leaves_no_job_locked_to_the_dead_pod
     )
     assert shutdown_event.is_set(), "every phase must have completed before this assertion"
 
-    _assert_a_claim_round_actually_happened(local_queue, caplog)
+    _assert_a_claim_round_actually_happened(caplog)
 
     stranded = await _rows_locked_by(deps, schema, worker_id)
     assert stranded == [], (
@@ -214,7 +251,7 @@ async def test_work_claimed_during_shutdown_returns_to_the_fleet(
         )
     )
     await asyncio.sleep(0)
-    with caplog.at_level(logging.ERROR):
+    with caplog.at_level(logging.INFO):
         await orchestrate_shutdown(
             deps, deps.settings, draining, shutdown_event, None, backend=backend
         )
@@ -225,7 +262,7 @@ async def test_work_claimed_during_shutdown_returns_to_the_fleet(
     # every round hands the assertion an empty backlog to "recover" - the
     # surviving worker then claims all of it trivially, and the test would
     # pass having exercised nothing.
-    _assert_a_claim_round_actually_happened(local_queue, caplog)
+    _assert_a_claim_round_actually_happened(caplog)
 
     claimed: set[JobId] = set()
     while True:

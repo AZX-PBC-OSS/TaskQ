@@ -1039,9 +1039,14 @@ _SELECT_RUNNING_JOBS_SQL_TEMPLATE = (
     # its own RETURNING cannot carry it - see
     # 01.00.20_04_pre_attempt_due_at.sql).
     "SELECT id, attempt, started_at, scheduled_at, max_attempts, retry_kind, cancel_phase "
-    'FROM "{schema}".jobs '
+    'FROM "{schema}".jobs j '
     "WHERE locked_by_worker = $1 AND status = 'running'"
-    " AND id <> ALL($2::uuid[])"
+    # The still-owned claims, paired: a bare id array would spare every
+    # epoch of a held row, including an unstarted re-claim this process
+    # took while an older attempt of the same row was still unwinding.
+    " AND NOT EXISTS (SELECT 1"
+    " FROM unnest($2::uuid[], $3::bigint[]) AS h(id, claim_epoch)"
+    " WHERE h.id = j.id AND h.claim_epoch = j.claim_epoch)"
 )
 
 # Recovery transitions via isolate_self: running→cancelled when a
@@ -1322,10 +1327,11 @@ async def isolate_self(
                 # The re-pend's exclusion set, captured as late as the
                 # statement boundary allows: after the actor join above,
                 # with no await between this capture and the SELECT below
-                # that binds it. held_ids() covers both maps, the
+                # that binds it. held_claims() covers both maps, the
                 # registered consumers (executing now) and the claim
-                # intents (taken off local_queue, not yet registered). The
-                # intents are the easy one to miss: a consumer parked in
+                # intents (taken off local_queue, not yet registered), each
+                # paired with the claim epoch this process holds it at.
+                # The intents are the easy one to miss: a consumer parked in
                 # the take-to-register window has already claimed its row
                 # (running, locked, this worker) but owns no registry
                 # entry, so a snapshot of ``all()`` alone misses it and the
@@ -1335,8 +1341,8 @@ async def isolate_self(
                 # runs it concurrently with the local body, a double run,
                 # and the local terminal write then loses the
                 # attempt-epoch fence (silently discarded).
-                # queued_ids() is included here even though the draining
-                # exit hand-back excludes it on purpose (held_ids' own
+                # queued_claims() is included here even though the draining
+                # exit hand-back excludes it on purpose (held_claims' own
                 # docstring): a row parked in local_queue during this
                 # window is still this process's to execute - the consumer
                 # loops are free to take and run it (only their next
@@ -1350,20 +1356,23 @@ async def isolate_self(
                 # committed but not yet marked in either map) is closed by
                 # the producer_stop_event set at entry, not by this
                 # capture: after it, a taken row is never dispatched.
-                excluded_ids: list[JobId] = [
-                    *deps.active_jobs.held_ids(),
-                    *deps.active_jobs.queued_ids(),
+                excluded_claims: list[tuple[JobId, int]] = [
+                    *deps.active_jobs.held_claims(),
+                    *deps.active_jobs.queued_claims(),
                 ]
+                excluded_ids: list[JobId] = [job_id for job_id, _epoch in excluded_claims]
+                excluded_epochs: list[int] = [epoch for _job_id, epoch in excluded_claims]
                 async with conn.transaction():
                     rows = await conn.fetch(  # pyright: ignore[reportUnknownVariableType]  # Why: conn type suppressed above due to asyncpg-stubs limitation on connect().
                         select_running_jobs_sql,
                         worker_id,
-                        # The still-owned rows: their release belongs to the
-                        # consumers' interrupt arms (the hold and the spent
-                        # attempt), not to this re-pend. An empty array
-                        # vacuously matches every row, so the statement
-                        # shape never varies.
+                        # The still-owned claims, paired by (row, claim
+                        # epoch): their release belongs to the consumers'
+                        # interrupt arms (the hold and the spent attempt),
+                        # not to this re-pend. Empty arrays vacuously match
+                        # every row, so the statement shape never varies.
                         excluded_ids,
+                        excluded_epochs,
                     )
                     for row in rows:  # pyright: ignore[reportUnknownVariableType]  # Why: rows type suppressed above, propagates from conn.fetch() suppression.
                         # The guarded UPDATE is the race arbiter, so its

@@ -122,6 +122,8 @@ def _producer_deps(poll_interval: float) -> SimpleNamespace:
             queued_ids=registry.queued_ids,
             mark_claimed=registry.mark_claimed,
             held_ids=registry.held_ids,
+            held_claims=registry.held_claims,
+            queued_claims=registry.queued_claims,
         ),
         disowned_jobs=set(),
         dispatcher_pool=_NoopPool(),
@@ -195,10 +197,10 @@ async def test_availability_counts_claim_intents() -> None:
     queued rows and the registered entries, and register absorbs it."""
     registry = ActiveJobRegistry()
     job_id = new_uuid()
-    registry.mark_enqueued(job_id)
+    registry.mark_enqueued(job_id, 1)
     assert registry.intent_count() == 0, "a queued row is not yet a claim intent"
 
-    token = registry.mark_claimed(job_id)
+    token = registry.mark_claimed(job_id, 1)
     assert registry.count() == 0
     assert registry.intent_count() == 1, (
         "a taken-but-unregistered job must be counted: the producer's "
@@ -215,7 +217,7 @@ async def test_availability_counts_claim_intents() -> None:
         actor="a",
         queue=_QUEUE,
         attempt=1,
-        claim_epoch=0,
+        claim_epoch=1,
         snooze_count=0,
         worker_id=new_uuid(),
         payload=None,
@@ -421,7 +423,7 @@ async def test_burst_fan_out_does_not_stall_on_a_queue_cap(pg_dsn: str) -> None:
                     continue
                 claimed = await pod.claim([_QUEUE], available)
                 for job in claimed:
-                    pod.deps.active_jobs.mark_enqueued(job.id)
+                    pod.deps.active_jobs.mark_enqueued(job.id, job.claim_epoch)
                     await local_queue.put(job)
                 if not claimed:
                     await asyncio.sleep(0.02)
@@ -432,7 +434,7 @@ async def test_burst_fan_out_does_not_stall_on_a_queue_cap(pg_dsn: str) -> None:
                     job = await asyncio.wait_for(local_queue.get(), timeout=0.05)
                 except TimeoutError:
                     continue
-                claim = pod.deps.active_jobs.mark_claimed(job.id)
+                claim = pod.deps.active_jobs.mark_claimed(job.id, job.claim_epoch)
                 slot_freed.set()
 
                 async def _run_actor(_row: JobRow, ctx: object) -> None:

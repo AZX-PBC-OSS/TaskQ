@@ -119,7 +119,7 @@ def _make_ctx(job_id: JobId, worker_id: Any) -> JobContext[BaseModel]:
         actor=_ACTOR,
         queue=_QUEUE,
         attempt=1,
-        claim_epoch=0,
+        claim_epoch=1,
         worker_id=worker_id,
         payload=_SeamPayload(),
         jobs=SubJobEnqueuer(loop_scope_resolved=None, worker_pool=None, backend=FakeBackend()),
@@ -145,7 +145,7 @@ async def _take_exit_and_strand(fleet: Fleet, job_id: JobId) -> None:
     holding NOBODY - not parked, not intent-held, truly orphaned.
     """
     pod_a = fleet.pod("pod-a")
-    claim = pod_a.deps.active_jobs.mark_claimed(job_id)
+    claim = pod_a.deps.active_jobs.mark_claimed(job_id, 1)
 
     async def _body_exits_unwritten() -> None:
         return None
@@ -223,7 +223,7 @@ async def _parked_row_ticks(fleet: Fleet, job_id: JobId) -> None:
     await _claim_one_to_pod(fleet, "pod-a", job_id)
     # The producer's park mark: the row sits in local_queue, unclaimed by
     # any consumer. The registry has no entry for it - the parked shape.
-    pod_a.deps.active_jobs.mark_enqueued(job_id)
+    pod_a.deps.active_jobs.mark_enqueued(job_id, 1)
 
     requested = await pod_a.backend.write_cancel_request(job_id, "operator")
     assert requested, "the cancel request must stamp the running row"
@@ -374,7 +374,7 @@ async def test_intent_window_row_is_never_abandoned_while_the_claim_stands(
         await _claim_one_to_pod(fleet, "pod-a", job_id)
         # The take: the intent stands, the register has not happened. The
         # take-to-register window is the map the token scoping fences.
-        pod_a.deps.active_jobs.mark_claimed(job_id)
+        pod_a.deps.active_jobs.mark_claimed(job_id, 1)
 
         requested = await pod_a.backend.write_cancel_request(job_id, "operator")
         assert requested, "the cancel request must stamp the running row"
@@ -636,7 +636,7 @@ async def test_reconcile_never_refunds_a_row_a_claim_intent_holds(pg_dsn: str) -
         pod_b = fleet.pod("pod-b")
         await _claim_one_to_pod(fleet, "pod-a", job_id)
         # The intent stands; the register never happens in this window.
-        pod_a.deps.active_jobs.mark_claimed(job_id)
+        pod_a.deps.active_jobs.mark_claimed(job_id, 1)
         # started_at aged past the lease grace: the reconcile's only row
         # predicate besides ownership and the exclusion array.
         await fleet.fetch(

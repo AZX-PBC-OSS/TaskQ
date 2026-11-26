@@ -427,7 +427,7 @@ async def test_success_round_resets_midstream_and_claimed_rounds_count(
     reader = _patch_counter(monkeypatch)
     _patch_budget(monkeypatch, 3)
     ns = [ValueError(f"fault {i}") for i in range(5)]
-    job = SimpleNamespace(id=new_uuid())
+    job = SimpleNamespace(id=new_uuid(), claim_epoch=1)
     backend = _ScriptedBackend([ns[0], ns[1], [job], ns[2], ns[3], ns[4]])
     outcome = await _run_producer(monkeypatch, backend, stop_after_rounds=64)
     assert isinstance(outcome, ValueError) and not isinstance(outcome, _CleanExit), (

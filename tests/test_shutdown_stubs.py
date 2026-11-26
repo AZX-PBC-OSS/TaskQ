@@ -9,12 +9,17 @@
 
 import asyncio
 import contextlib
+from dataclasses import replace
 from typing import cast
 from unittest.mock import create_autospec
 
+from pydantic import BaseModel
+
 from taskq._ids import new_uuid
 from taskq.backend._protocol import Backend, JobId, JobRow
+from taskq.context import JobContext
 from taskq.settings import WorkerSettings
+from taskq.worker.cancel import _ActiveJob
 from taskq.worker.deps import WorkerDeps
 from taskq.worker.run import consumer_loop_stub, producer_loop_stub
 from tests._stub_job_row import make_job as _make_job
@@ -478,6 +483,54 @@ async def test_no_pending_task_leak_consumer_cancelled_before_dequeue() -> None:
 
     after = len(asyncio.all_tasks(loop))
     assert before == after
+
+
+async def test_consumer_claim_intent_carries_the_reclaimed_jobs_epoch() -> None:
+    """The take forwards the row's claim identity into the drain exclusion.
+
+    Park registration so the intent is the only coverage. A constant
+    first-claim epoch would pass every first-claim fixture but let a drain
+    re-pend this re-claimed row while its consumer is about to execute it.
+    """
+    deps = _stub_deps()
+    job = replace(_make_job(), claim_epoch=2)
+    backend = _make_backend_mock()
+    queue: asyncio.Queue[JobRow] = asyncio.Queue()
+    queue.put_nowait(job)
+    shutdown_event = asyncio.Event()
+    register_started = asyncio.Event()
+    original_register = deps.active_jobs.register
+
+    async def _park_register(
+        job_id: JobId,
+        task: asyncio.Task[object],
+        ctx: JobContext[BaseModel],
+    ) -> _ActiveJob:
+        register_started.set()
+        await asyncio.Event().wait()
+        return await original_register(job_id, task, ctx)
+
+    deps.active_jobs.register = _park_register  # type: ignore[method-assign]  # Why: park the real registry at the production register boundary so the standing intent is observable.
+    consumer = asyncio.create_task(
+        consumer_loop_stub(
+            deps,
+            queue,
+            shutdown_event,
+            backend=backend,
+            worker_id=new_uuid(),
+        )
+    )
+    try:
+        await asyncio.wait_for(register_started.wait(), timeout=1.0)
+        assert deps.active_jobs.held_claims() == [(job.id, 2)], (
+            "the consumer must forward the re-claim's epoch into its intent; "
+            "a stale or constant epoch makes the hand-back exclusion miss the "
+            "live take-to-register claim"
+        )
+    finally:
+        consumer.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await consumer
 
 
 # ── draining ownership handoff ───────────────────────────────────

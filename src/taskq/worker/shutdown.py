@@ -129,9 +129,14 @@ async def drain_local_queue_to_pending(deps: "WorkerDeps", worker_id: UUID) -> i
 
        Issues a single bounded-timeout UPDATE that clears the lock on rows
        where ``locked_by_worker = $worker_id and status = 'running'``,
-       excluding the jobs with live consumers (``deps.active_jobs``):
+       excluding the claims with live consumers (``deps.active_jobs``):
        CANCELLING owns those, and re-pending one would unlock a row
-       another worker can claim while its consumer still executes it. On
+       another worker can claim while its consumer still executes it. The
+       exclusion names the claim, not the row: a ``(job_id, claim_epoch)``
+       pair, because this process can hold an older attempt of a row while
+       a claim round in flight re-claims that same row at a newer epoch,
+       and a row-scoped exclusion would shield the newer unstarted claim
+       and leave it locked to the worker on its way out. On
        pool exhaustion or connection error the helper logs a warning and
        returns 0 so the recovery sweep acts as the backstop rather than a
        deadlocked shutdown.
@@ -273,11 +278,13 @@ async def drain_local_queue_to_pending(deps: "WorkerDeps", worker_id: UUID) -> i
             # Why the explicit list[UUID] annotation: JobId is
             # NewType(UUID), so the bare comprehension infers
             # list[JobId], and list invariance would refuse the uuid[]
-            # bind parameter's declared type below. held_ids() covers
+            # bind parameter's declared type below. held_claims() covers
             # both maps: registered consumers (executing now) and claim
             # intents (taken off local_queue, not yet registered, the
             # window the registry's comment documents).
-            active_ids: list[JobId] = deps.active_jobs.held_ids()
+            held_claims: list[tuple[JobId, int]] = deps.active_jobs.held_claims()
+            active_ids: list[JobId] = [job_id for job_id, _epoch in held_claims]
+            active_epochs: list[int] = [epoch for _job_id, epoch in held_claims]
             # The disowned rows are never this pass's population (the
             # docstring's disowned-exclusion paragraph): their attempts
             # may have started, so the refund is wrong for them, and
@@ -286,10 +293,24 @@ async def drain_local_queue_to_pending(deps: "WorkerDeps", worker_id: UUID) -> i
             # NewType, and list invariance would refuse the uuid[] bind
             # parameter's declared type below.
             disowned_ids: list[JobId] = [JobId(job_id) for job_id in sorted(deps.disowned_jobs)]
-            params: list[UUID | list[JobId]] = [worker_id]
+            params: list[UUID | list[JobId] | list[int]] = [worker_id]
             if active_ids:
-                sql += " AND id <> ALL($2::uuid[])"
+                # The exclusion pairs each held row with the claim epoch
+                # this process holds it at. A bare job_id exclusion lets
+                # a dying attempt still registered under the same id
+                # shield a newer, unstarted claim of that row: the
+                # UPDATE matches nothing, the worker exits rc=0, and the
+                # fresh claim stays running and locked to the process
+                # that just left. Postgres stamps claim_epoch
+                # monotonically on every claim, so the pair names exactly
+                # one attempt and a re-claim never collides with it.
+                sql += (
+                    " AND NOT EXISTS (SELECT 1"
+                    " FROM unnest($2::uuid[], $3::bigint[]) AS h(id, claim_epoch)"
+                    " WHERE h.id = j.id AND h.claim_epoch = j.claim_epoch)"
+                )
                 params.append(active_ids)
+                params.append(active_epochs)
             if disowned_ids:
                 sql += f" AND NOT j.id = ANY(${len(params) + 1}::uuid[])"
                 params.append(disowned_ids)

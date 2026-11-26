@@ -492,6 +492,21 @@ async def producer_loop(
                     # this claim took back is a live job of ours again:
                     # its lease must be renewed from here on.
                     deps.disowned_jobs.discard(job.id)
+                if producer_stop_event.is_set():
+                    # A round that commits after the draining stop landed
+                    # has no consumer left to dispatch to: every take loop
+                    # exits on this event, so the rows would sit in
+                    # local_queue unclaimed (and in the queued map, which
+                    # nothing clears once the consumers stop). They are
+                    # not stranded, the exit hand-back below re-pends
+                    # them, so breaking straight to it is the whole
+                    # handling. Gated on producer_stop_event alone, not on
+                    # shutdown_event: a bare shutdown_event exit (an
+                    # external stop with no orchestration) runs no exit
+                    # hand-back and its consumer loops may still execute a
+                    # queued row, so those claims must be enqueued.
+                    break
+                for job in jobs:
                     # Fence the claim before the first await: the put is
                     # this loop's first yield since the claim committed,
                     # and the lost-claim probe (the heartbeat tick) must
@@ -499,7 +514,7 @@ async def producer_loop(
                     # locked here, through the queue residence, until the
                     # consumer's take moves the coverage to the intent
                     # map.
-                    deps.active_jobs.mark_enqueued(job.id)
+                    deps.active_jobs.mark_enqueued(job.id, job.claim_epoch)
                     await local_queue.put(job)
                 continue
 
@@ -1293,14 +1308,15 @@ async def consumer_loop_stub(
 
         job: JobRow = q_get.result()
 
-        # Record the claim intent before any await: between this take and
-        # register() the DB row is running, locked here, and invisible to
-        # active_jobs, and a hand-back pass running in that window would
-        # re-pend it to the fleet while this loop is about to execute it.
+        # Record the claim intent before dispatch and registration: between
+        # this take and register() the DB row is running, locked here, and
+        # invisible to active_jobs without it. The waiter cleanup above can
+        # yield after the get, so the registry's epoch guard is what stops a
+        # delayed stale local copy displacing a newer take's coverage.
         # The token is what scopes this iteration's resolve_claim below
         # to its own claim (the issue-461 class): a same-worker re-claim
         # can re-mark the key before this iteration unwinds.
-        _claim = deps.active_jobs.mark_claimed(job.id)
+        _claim = deps.active_jobs.mark_claimed(job.id, job.claim_epoch)
 
         # Slot-release point #1 of 2: the get() above dropped
         # qsize by one, so a producer held up on queue capacity can
@@ -1512,14 +1528,15 @@ async def di_consumer_loop(
 
         job: JobRow = q_get.result()
 
-        # Record the claim intent before any await: between this take and
-        # register() the DB row is running, locked here, and invisible to
-        # active_jobs, and a hand-back pass running in that window would
-        # re-pend it to the fleet while this loop is about to execute it.
+        # Record the claim intent before dispatch and registration: between
+        # this take and register() the DB row is running, locked here, and
+        # invisible to active_jobs without it. The waiter cleanup above can
+        # yield after the get, so the registry's epoch guard is what stops a
+        # delayed stale local copy displacing a newer take's coverage.
         # The token scopes this iteration's resolve_claim below to its
         # own claim (the issue-461 class): a same-worker re-claim's take
         # can re-mark the key while this iteration's attempt unwinds.
-        _claim = deps.active_jobs.mark_claimed(job.id)
+        _claim = deps.active_jobs.mark_claimed(job.id, job.claim_epoch)
 
         # Slot-release point #1 of 2: the get() above dropped
         # qsize by one, so a producer held up on queue capacity can

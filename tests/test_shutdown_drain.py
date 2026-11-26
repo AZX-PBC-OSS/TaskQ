@@ -8,13 +8,32 @@ from unittest.mock import MagicMock
 
 import asyncpg
 import pytest
+import structlog
 
 from taskq._ids import new_uuid
 from taskq.backend._protocol import JobId
+from taskq.client._enqueuer import SubJobEnqueuer
 from taskq.context import JobContext
 from taskq.settings import WorkerSettings
+from taskq.testing.actor import EmptyPayload
 from taskq.worker.deps import WorkerDeps
 from taskq.worker.shutdown import ShutdownPhase, drain_local_queue_to_pending
+
+
+def _make_ctx(job_id: JobId, claim_epoch: int) -> JobContext[EmptyPayload]:
+    """A real context carrying the claim identity a registry entry holds."""
+    return JobContext(
+        job_id=job_id,
+        actor="test_actor",
+        queue="default",
+        attempt=1,
+        claim_epoch=claim_epoch,
+        worker_id=new_uuid(),
+        payload=EmptyPayload(),
+        jobs=SubJobEnqueuer(loop_scope_resolved=None, worker_pool=None, backend=None),
+        log=structlog.get_logger("taskq.test"),
+    )
+
 
 # ── Minimal fakes ──────────────────────────────────────────────────────────
 
@@ -266,11 +285,11 @@ async def test_drain_excludes_jobs_a_consumer_is_already_executing() -> None:
     )
 
     running_ids = [JobId(new_uuid()) for _ in range(2)]
-    for jid in running_ids:
+    for epoch, jid in enumerate(running_ids, start=1):
         await deps.active_jobs.register(
             jid,
             cast("asyncio.Task[object]", MagicMock()),
-            cast("JobContext[Any]", MagicMock()),
+            _make_ctx(jid, epoch),
         )
 
     await drain_local_queue_to_pending(deps, worker_id)
@@ -278,13 +297,17 @@ async def test_drain_excludes_jobs_a_consumer_is_already_executing() -> None:
     assert len(pool.execute_calls) == 1
     sql, args = pool.execute_calls[0]
     assert args[0] == worker_id
-    assert len(args) == 2, (
-        "the hand-back UPDATE must bind the in-flight job ids so rows with a "
-        f"live consumer are excluded from the re-pend; bound args were {args!r}"
+    assert len(args) == 3, (
+        "the hand-back UPDATE must bind the in-flight (job id, claim epoch) "
+        f"pairs so rows with a live consumer are excluded from the re-pend; "
+        f"bound args were {args!r}"
     )
-    assert set(cast("list[object]", args[1])) == set(running_ids), (
+    assert set(zip(cast("list[object]", args[1]), cast("list[object]", args[2]), strict=True)) == {
+        (jid, epoch) for epoch, jid in enumerate(running_ids, start=1)
+    }, (
         "every job registered as in-flight on this worker must appear in the "
-        f"exclusion list; got {args[1]!r} for registry {running_ids!r}"
+        f"exclusion list with the epoch it is held at; got {args[1:]!r} for "
+        f"registry {running_ids!r}"
     )
     assert "<>" in sql or "NOT" in sql.upper(), (
         f"the bound in-flight ids must be used as an exclusion predicate: {sql!r}"
@@ -351,7 +374,7 @@ async def test_drain_exclusion_captures_a_take_that_lands_during_the_pool_acquir
 
     The fake pool marks the take inside ``acquire`` - the take's exact
     timing, deterministically. RED on a capture-before-acquire tree: the
-    exclusion binds empty and the UPDATE runs with no ``<> ALL`` predicate.
+    exclusion binds empty and the UPDATE runs with no claim-pair predicate.
     """
     worker_id = new_uuid()
     taken_id = JobId(new_uuid())
@@ -376,7 +399,7 @@ async def test_drain_exclusion_captures_a_take_that_lands_during_the_pool_acquir
         # The consumer's take: the row is claimed (running, locked) and this
         # loop's take records the claim intent - the registry's own fast
         # path, no awaits, exactly what mark_claimed does at a real take.
-        deps.active_jobs.mark_claimed(taken_id)
+        deps.active_jobs.mark_claimed(taken_id, 1)
         async with real_acquire(timeout=timeout) as conn:
             yield conn
 
@@ -385,7 +408,7 @@ async def test_drain_exclusion_captures_a_take_that_lands_during_the_pool_acquir
     await drain_local_queue_to_pending(deps, worker_id)
 
     sql, args = pool.execute_calls[0]
-    assert len(args) == 2, (
+    assert len(args) == 3, (
         "the drain captured its exclusion BEFORE the pool acquire: the take "
         f"that landed during the acquire's park is missing from the bound "
         f"exclusion (bound args {args!r}), and the UPDATE re-pends a row its "
@@ -395,6 +418,9 @@ async def test_drain_exclusion_captures_a_take_that_lands_during_the_pool_acquir
     assert set(cast("list[object]", args[1])) == {taken_id}, (
         "the take that landed during the pool acquire must appear in the "
         f"exclusion list; got {args[1]!r}"
+    )
+    assert cast("list[object]", args[2]) == [1], (
+        f"the exclusion must carry the claim epoch the take landed at; got {args[2]!r}"
     )
     assert "<>" in sql or "NOT" in sql.upper(), (
         f"the exclusion must be a bound predicate of the UPDATE: {sql!r}"

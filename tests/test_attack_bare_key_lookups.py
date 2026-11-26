@@ -242,8 +242,8 @@ async def test_stale_generation_resolve_spares_the_live_claim_intent() -> None:
     registry = ActiveJobRegistry()
     job_id = new_job_id()
 
-    token_a = registry.mark_claimed(job_id)
-    token_b = registry.mark_claimed(job_id)  # the re-claim's take overwrote the key
+    token_a = registry.mark_claimed(job_id, 1)
+    token_b = registry.mark_claimed(job_id, 2)  # the re-claim's take overwrote the key
     assert token_a is not token_b
 
     registry.resolve_claim(job_id, token_a)  # the stale generation's exit
@@ -256,14 +256,16 @@ async def test_stale_generation_resolve_spares_the_live_claim_intent() -> None:
     assert job_id not in registry.held_ids()
 
 
-async def test_register_absorbs_the_intent_whatever_generation_it_came_from() -> None:
-    """``register`` still absorbs the intent at its key: the intent's
-    whole purpose is the pre-registration window, any registration of
-    the key covers whatever intent stands."""
+async def test_register_absorbs_the_intent_for_the_same_claim() -> None:
+    """``register`` absorbs the intent at the context's own claim epoch.
+
+    The registration now covers that claim's pre-registration window. An
+    intent belonging to a newer re-claim is not this registration's to drop.
+    """
     registry = ActiveJobRegistry()
     job_id = new_job_id()
 
-    registry.mark_claimed(job_id)  # token dropped: register's absorb covers it
+    registry.mark_claimed(job_id, 1)  # token dropped: register's absorb covers it
     task = asyncio.current_task()
     assert task is not None
     await registry.register(job_id, task, _stub_ctx(job_id))
@@ -285,7 +287,7 @@ def _stub_ctx(job_id: Any) -> JobContext[BaseModel]:
         actor=row.actor,
         queue=row.queue,
         attempt=row.attempt,
-        claim_epoch=row.claim_epoch,
+        claim_epoch=1,
         worker_id=_WORKER_ID,
         payload=EmptyPayload(),
         jobs=_FakeEnqueuer(),

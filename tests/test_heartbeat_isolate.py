@@ -780,6 +780,7 @@ async def test_isolate_self_cancels_live_actors_and_excludes_their_rows() -> Non
         ctx=SimpleNamespace(
             cancel_event=cancel_event,
             _set_cancel_origin=origin_stamps.append,
+            claim_epoch=1,
         ),
         cancel_phase=CancelPhase.NONE,
         cancel_observed_at=None,
@@ -823,13 +824,16 @@ async def test_isolate_self_cancels_live_actors_and_excludes_their_rows() -> Non
     )
     assert entry_task.done()
 
-    # The re-pend's SELECT excluded the owned row: the exclusion array is
-    # the fetch's second bound parameter.
+    # The re-pend's SELECT excluded the owned row: the exclusion binds the
+    # row's id and the claim epoch this process holds it at.
     assert len(conn.fetch_calls) == 1
     _sql, fetch_args = conn.fetch_calls[0]
-    assert len(fetch_args) == 2
+    assert len(fetch_args) == 3
     assert job_id in fetch_args[1], (
         "the re-pend selection must exclude the row the local actor owns"
+    )
+    assert fetch_args[2] == [1], (
+        "the exclusion must name the claim epoch this process holds the row at"
     )
     assert shutdown.is_set()
 
@@ -846,17 +850,18 @@ async def test_isolate_self_excludes_claim_intent_rows() -> None:
     claimed (running, locked, this worker), a peer claimed the re-pended
     row and ran it concurrently with the local body, a double run, and
     the local terminal write then lost the attempt-epoch fence. The
-    exclusion array must come from held_ids(), which covers both maps.
+    exclusion arrays must come from held_claims(), which covers both maps.
     """
 
     job_id = new_uuid()
     deps = _make_deps()
     # only a claim intent, no registered entry: the exact window shape.
-    deps.active_jobs.mark_claimed(job_id)
+    deps.active_jobs.mark_claimed(job_id, 1)
 
     row: dict[str, object] = {
         "id": job_id,
         "attempt": 1,
+        "claim_epoch": 1,
         "started_at": "2025-01-01T00:00:00Z",
         "max_attempts": 3,
         "retry_kind": "transient",
@@ -867,12 +872,16 @@ async def test_isolate_self_excludes_claim_intent_rows() -> None:
         async def fetch(self, sql: str, *args: object) -> list[dict[str, object]]:
             self.fetch_calls = getattr(self, "fetch_calls", [])
             self.fetch_calls.append((sql, args))
-            # Mirror the statement's exclusion predicate: rows whose id
-            # sits in the second bound parameter (the uuid[] exclusion
-            # array) never come back, so a missed exclusion shows up
-            # here as a re-pended row rather than only as a bad bind.
-            excluded = set(args[1]) if len(args) > 1 else set()
-            return [candidate for candidate in self._fetch_rows if candidate["id"] not in excluded]
+            # Mirror the statement's exclusion predicate: a row whose
+            # (id, claim_epoch) pair is bound never comes back, so a missed
+            # exclusion shows up here as a re-pended row rather than only as
+            # a bad bind.
+            excluded = set(zip(args[1], args[2], strict=True)) if len(args) > 2 else set()
+            return [
+                candidate
+                for candidate in self._fetch_rows
+                if (candidate["id"], candidate["claim_epoch"]) not in excluded
+            ]
 
     conn = _ExclusionAwareConn(fetch_rows=[row])
 
@@ -896,14 +905,15 @@ async def test_isolate_self_excludes_claim_intent_rows() -> None:
     finally:
         apg.connect = orig_connect  # type: ignore[method-assign]
 
-    # The exclusion array (the fetch's second bound parameter) carries
-    # the intent's id even though the registry holds no entry for it.
+    # The exclusion arrays carry the intent's id and its claim epoch even
+    # though the registry holds no entry for it.
     assert len(conn.fetch_calls) == 1
     _sql, fetch_args = conn.fetch_calls[0]
-    assert len(fetch_args) == 2
+    assert len(fetch_args) == 3
     assert job_id in fetch_args[1], (
         "the re-pend selection must exclude the claimed-but-unregistered row"
     )
+    assert fetch_args[2] == [1], "the exclusion must name the claim epoch the intent stands at"
     # The row was not re-pended: no disposition UPDATE, no crashed
     # attempt INSERT, the local body's epoch keeps the row.
     assert conn.execute_calls == [], "the claim intent's row must never enter the isolate's re-pend"
@@ -947,6 +957,7 @@ async def test_isolate_self_preserves_an_already_cancelled_entry() -> None:
         ctx=SimpleNamespace(
             cancel_event=asyncio.Event(),
             _set_cancel_origin=origin_stamps.append,
+            claim_epoch=1,
         ),
         cancel_phase=CancelPhase.FORCED,
         cancel_observed_at=None,
@@ -1035,6 +1046,7 @@ async def test_isolate_self_does_not_double_cancel_an_unwinding_consumer() -> No
         ctx=SimpleNamespace(
             cancel_event=asyncio.Event(),
             _set_cancel_origin=lambda origin: None,
+            claim_epoch=1,
         ),
         cancel_phase=CancelPhase.FORCED,
         cancel_observed_at=None,
@@ -1114,6 +1126,7 @@ async def test_isolate_self_warns_and_proceeds_when_an_actor_ignores_cancellatio
         ctx=SimpleNamespace(
             cancel_event=asyncio.Event(),
             _set_cancel_origin=lambda origin: None,
+            claim_epoch=1,
         ),
         cancel_phase=CancelPhase.NONE,
         cancel_observed_at=None,

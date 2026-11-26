@@ -29,6 +29,7 @@ import asyncio
 import contextlib
 import random
 import time
+from dataclasses import replace
 from datetime import UTC, datetime
 from types import SimpleNamespace
 from typing import Any, cast
@@ -115,6 +116,8 @@ def _producer_deps(
             queued_ids=registry.queued_ids,
             mark_claimed=registry.mark_claimed,
             held_ids=registry.held_ids,
+            held_claims=registry.held_claims,
+            queued_claims=registry.queued_claims,
         ),
         disowned_jobs=set(),
         dispatcher_pool=_NoopPool(),
@@ -605,7 +608,9 @@ async def test_claim_marks_enqueued_before_the_queue_put() -> None:
     hand-back must keep re-pending queued rows). The unfenced claim is
     exactly the dispatch batch whose response died with the connection:
     the probe would disown a row this worker is about to run."""
-    job = make_job_row(status="pending")
+    # A re-claim, not the first claim: forwarding a constant epoch 1 here
+    # would corrupt the pair isolate_self binds for this parked row.
+    job = replace(make_job_row(status="pending"), claim_epoch=2)
     backend = _RecordingBackend(jobs=[job])
     deps = _producer_deps(poll_interval=5.0, maxsize=1)
     local_queue: asyncio.Queue[JobRow] = asyncio.Queue(maxsize=1)
@@ -632,6 +637,10 @@ async def test_claim_marks_enqueued_before_the_queue_put() -> None:
         )
         assert deps.active_jobs.queued_ids() == [job.id], (
             "the claimed row must be fenced as queued from the put onward"
+        )
+        assert deps.active_jobs.queued_claims() == [(job.id, 2)], (
+            "the producer must forward the claim's own epoch, not a first-claim "
+            "constant: isolate_self's exclusion names (job_id, claim_epoch)"
         )
         assert job.id not in deps.active_jobs.held_ids()
     finally:

@@ -96,7 +96,13 @@ def _make_task() -> asyncio.Task[object]:
     return loop.create_task(asyncio.sleep(9999))
 
 
-def _make_ctx(job_id: JobId) -> JobContext[BaseModel]:
+def _make_ctx(job_id: JobId, claim_epoch: int = 1) -> JobContext[BaseModel]:
+    """A minimal context for a registered attempt.
+
+    Defaults to the epoch a row's first claim stamps, so an entry always
+    carries a claim identity production can actually produce (epoch 0 is the
+    one value no claim stamps).
+    """
     clock = FakeClock(start=_START)
     backend = InMemoryBackend(clock=clock)
     return JobContext(
@@ -104,7 +110,7 @@ def _make_ctx(job_id: JobId) -> JobContext[BaseModel]:
         actor="test",
         queue="default",
         attempt=1,
-        claim_epoch=0,
+        claim_epoch=claim_epoch,
         worker_id=new_uuid(),
         payload=EmptyPayload(),
         jobs=SubJobEnqueuer(
@@ -161,8 +167,10 @@ async def test_drain_handback_keeps_the_cancel_fence_in_both_statement_shapes() 
     stop. The fence is the ``cancel_phase = 0`` conjunct, and it must hold
     in both statement shapes the helper issues: the empty-registry
     single-parameter shape (the common drained-worker case) and the
-    exclusion shape that binds the held ids. A regression that drops the
-    conjunct from either shape re-opens the double-run.
+    exclusion shape that binds the held claims. A regression that drops the
+    conjunct from either shape re-opens the double-run, and a regression
+    that binds bare ids in the exclusion shape re-opens the stranding the
+    pair exists to prevent.
     """
     for active_ids in ([], [JobId(new_uuid())]):
         deps = _make_deps()
@@ -170,13 +178,26 @@ async def test_drain_handback_keeps_the_cancel_fence_in_both_statement_shapes() 
             await deps.active_jobs.register(
                 jid,
                 cast("asyncio.Task[object]", MagicMock()),
-                cast("JobContext[Any]", MagicMock()),
+                _make_ctx(jid),
             )
         pool = _CapturePool()
         deps.dispatcher_pool = pool  # type: ignore[assignment] # Why: the drain reads only the dispatcher role; the capture pool is the seam.
         rowcount = await drain_local_queue_to_pending(deps, new_uuid())
         assert rowcount == 0
-        ((sql, _args),) = pool.conn.execute_calls
+        ((sql, args),) = pool.conn.execute_calls
+        assert len(args) == (3 if active_ids else 1), (
+            "the exclusion shape binds the held (job id, claim epoch) pairs; "
+            f"the empty-registry shape binds the worker id alone. Got {args!r} "
+            f"(exclusion shape: {bool(active_ids)})"
+        )
+        if active_ids:
+            assert list(cast("list[object]", args[1])) == active_ids, (
+                f"the exclusion must bind the held job ids: {args[1]!r}"
+            )
+            assert list(cast("list[object]", args[2])) == [1], (
+                "the exclusion must bind each held row's claim epoch, not a "
+                f"bare id array: {args[2]!r}"
+            )
         assert "cancel_phase = 0" in sql, (
             "the hand-back UPDATE lost the cancel fence (cancel_phase = 0): a "
             "row with an operator cancel in flight would be re-pended to the "

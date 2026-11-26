@@ -123,7 +123,7 @@ def _make_ctx(job_id: UUID, worker_id: UUID) -> JobContext[BaseModel]:
         actor="test_actor",
         queue="default",
         attempt=1,
-        claim_epoch=0,
+        claim_epoch=1,
         worker_id=worker_id,
         payload=_StubPayload(),
         jobs=SubJobEnqueuer(loop_scope_resolved=None, worker_pool=None, backend=None),
@@ -190,7 +190,7 @@ async def test_claim_landing_in_join_window_is_not_repended(
         pre-join snapshot has run: mark_claimed then register, the same
         take-to-register chain run.py's consumer walks."""
         await cancel_delivered.wait()
-        deps.active_jobs.mark_claimed(b_id)
+        deps.active_jobs.mark_claimed(b_id, 1)
         await deps.active_jobs.register(b_id, b_task, _make_ctx(b_id, worker_id))
 
     loop = asyncio.get_running_loop()
@@ -202,7 +202,7 @@ async def test_claim_landing_in_join_window_is_not_repended(
     await deps.active_jobs.register(a_id, a_task, _make_ctx(a_id, worker_id))
     # C: claimed, marked enqueued, parked in local_queue - in neither
     # held_ids map, still to be taken and executed by a consumer.
-    deps.active_jobs.mark_enqueued(c_id)
+    deps.active_jobs.mark_enqueued(c_id, 1)
     # Fixture integrity: B must still be unclaimed here - its claim only
     # fires once isolate_self is inside the join window.
     assert not registrar.done()
@@ -351,6 +351,68 @@ async def test_unmarked_inflight_claim_residual_is_handed_back_not_double_run(
         "the handed-back row must be rescheduled by the re-pend arm "
         "(assignment_routed + the reclaim delay), not left for the "
         "immediate-claim path"
+    )
+    assert len(attempts) == 1
+    assert attempts[0]["outcome"] == "crashed"
+    assert attempts[0]["error_class"] == ERROR_CLASS_HEARTBEAT_LOST
+
+
+async def test_stale_attempt_registration_does_not_shield_a_newer_claim_epoch(
+    rt_schema: tuple[str, str],
+) -> None:
+    """The exclusion names the claim, not the row.
+
+    An unwinding attempt of ``J`` can still be registered here while the
+    same worker re-claims ``J`` at a newer ``claim_epoch`` (a claim round
+    in flight across the release write). A row-scoped exclusion spares
+    every epoch of ``J``, so the isolate leaves the fresh unstarted claim
+    ``running`` and locked to a worker that walks away. Excluding the
+    held ``(job_id, claim_epoch)`` pair instead re-pends it: the stale
+    entry names the spent epoch and nothing else.
+    """
+    schema, dsn = rt_schema
+    worker_id = new_uuid()
+    stale_epoch = 1
+    live_epoch = 2
+    conn = await asyncpg.connect(dsn)
+    try:
+        await create_worker(conn, schema, worker_id)
+        # The row as the in-flight re-claim left it: attempt 2, epoch 2.
+        job_id = await create_running_job(conn, schema, worker_id, attempt=live_epoch)
+    finally:
+        await conn.close()
+
+    deps = _isolate_deps(dsn, schema)
+    # The unwinding attempt 1 is still registered (its deregister has not
+    # run yet) and its body is already done, so the actor join is a no-op.
+    stale_task = asyncio.create_task(asyncio.sleep(0))
+    await stale_task
+    stale_ctx = _make_ctx(job_id, worker_id)
+    assert stale_ctx.claim_epoch == stale_epoch
+    stale_entry = await deps.active_jobs.register(job_id, stale_task, stale_ctx)
+    assert deps.active_jobs.held_claims() == [(job_id, stale_epoch)]
+
+    shutdown = asyncio.Event()
+    try:
+        await isolate_self(deps, worker_id, shutdown)
+        conn = await asyncpg.connect(dsn)
+        try:
+            states = await _row_states(conn, schema, [job_id])
+            attempts = await conn.fetch(
+                f'SELECT outcome, error_class FROM "{schema}".job_attempts WHERE job_id = $1',
+                job_id,
+            )
+        finally:
+            await conn.close()
+    finally:
+        await deps.active_jobs.deregister(job_id, stale_entry)
+
+    status, holder = states[job_id]
+    assert (status, holder) == ("pending", None), (
+        f"the unstarted claim_epoch={live_epoch} row must be handed back pending and "
+        f"unlocked; the stale claim_epoch={stale_epoch} registration shielded it "
+        f"(status={status!r}, locked_by_worker={holder!r}) and the departing worker "
+        "left it locked to itself"
     )
     assert len(attempts) == 1
     assert attempts[0]["outcome"] == "crashed"
