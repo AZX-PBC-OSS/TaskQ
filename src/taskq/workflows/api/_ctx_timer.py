@@ -2,7 +2,8 @@
 CLOCK: ``ctx.wait_until(when)`` mints a hold row whose deadline-pass is
 the WAKE, never the fail-close. (The wake's replay/consume runs the
 wait machinery's PER-SITE cursor — the timer counts its own
-consumptions under its own key.)
+consumptions under its own key, scoped to the executing claim so a
+refunded-attempt re-claim replays the wake instead of sleeping again.)
 
 the TIMER'S FACE INVERTS the EXPIRY'S (the design law this module
 implements; the guide's §4b carries the same text): the HITL wait's
@@ -50,9 +51,15 @@ from typing import Literal
 
 from pydantic import BaseModel
 
-from taskq._json import dumps_jsonb_str
 from taskq._json import loads as _json_loads
-from taskq.workflows.api._ctx_wait import LoopWaitShapeError, NodeHeldError, WaitHost
+from taskq.workflows.api._ctx_wait import (
+    LoopWaitShapeError,
+    NodeHeldError,
+    WaitHost,
+    read_claim_marker,
+    require_claim_epoch,
+    write_claim_marker,
+)
 from taskq.workflows.api._sql_runner import render_sql
 
 __all__ = ["CtxTimerOps", "TimerWake"]
@@ -168,9 +175,10 @@ class CtxTimerOps(WaitHost):
         *key* names the timer (the wake's ``key``; the timer's queue is
         THIS site's own — the reserved name filters it — and the
         timer's cursor counts its own consumptions under its own
-        per-site key, never a key shared with the body's signal waits:
-        a body may wait on the clock and then on a human, and the
-        human's delivered answer reaches ITS site). The LOOP kind keeps
+        per-site key scoped to the executing claim, never a key shared
+        with the body's signal waits: a body may wait on the clock and
+        then on a human, and the human's delivered answer reaches ITS
+        site). The LOOP kind keeps
         the iteration counter as the cursor — the loop's
         one-wait-per-iteration shape law reads both the same way. A
         key beginning with the reserved ``__timer__`` prefix is the
@@ -194,6 +202,7 @@ class CtxTimerOps(WaitHost):
             TIMER_SIGNAL_PREFIX,
             TIMER_WAKE_SCHEMA_NAME,
             mark_awaited,
+            reassert_hold,
             refuse_reserved_timer_name,
             register_timer_hold,
         )
@@ -217,7 +226,7 @@ class CtxTimerOps(WaitHost):
                 await mark_awaited(conn, self._wsql.schema, self._ledger_id)
 
         async with self._pool.acquire() as conn:
-            # The cursor/kind read — the wait machinery's own shape (the
+            # The kind/iteration read — the wait machinery's own shape (the
             # answer queue is this site's own — the timer's reserved
             # name filters the queue; the loop's counter is the advance
             # statement's own write). the per-site cursor (the per-site cursor fix
@@ -230,27 +239,37 @@ class CtxTimerOps(WaitHost):
             # the operator's decision a dead letter).
             row_meta = await conn.fetchrow(
                 render_sql(
-                    "SELECT (metadata ->> $2)::int AS cursor, "
-                    "metadata->>'kind' AS kind, "
+                    "SELECT metadata->>'kind' AS kind, "
                     "(metadata->>'iteration')::int AS iteration "
                     "FROM {schema}.jobs WHERE id = $1",
                     self._wsql.schema,
                 ),
                 self.job_id,
-                f"hold_cursor_{self.attempt}_{signal_name}",
             )
             is_loop_kind = row_meta is not None and row_meta["kind"] == "loop"
-            row_cursor = (
-                int(row_meta["cursor"])
-                if row_meta is not None and row_meta["cursor"] is not None
-                else 0
-            )  # pyright: ignore[reportIndexType,reportArgumentType]
             row_iteration = (
                 int(row_meta["iteration"])
                 if row_meta is not None and row_meta["iteration"] is not None
                 else 0
             )  # pyright: ignore[reportIndexType,reportArgumentType]
-            cursor = row_iteration if is_loop_kind else row_cursor
+            # The timer's own cursor key carries the signal name (its
+            # reserved ``__timer__`` prefix makes it distinguishable from
+            # every plain signal site's ordinal key) and its value is the
+            # claim-scoped marker: the count belongs to THIS claim's
+            # execution, so a re-claim at a refunded attempt ordinal (a
+            # ``Snooze`` or a free ``RetryAfter`` raised after the wake was
+            # consumed) replays the fired wake instead of sleeping out a
+            # second timer period.
+            cursor = row_iteration
+            if not is_loop_kind:
+                marker = await read_claim_marker(
+                    conn,
+                    schema=self._wsql.schema,
+                    job_id=self.job_id,
+                    key=f"hold_replay_timer_{self.attempt}_{signal_name}",
+                    claim_epoch=self.claim_epoch,
+                )
+                cursor = int(marker.get("n", 0))
             queue = await conn.fetch(
                 render_sql(
                     "SELECT id, payload, hold_epoch FROM {schema}.wf_signals "
@@ -278,7 +297,7 @@ class CtxTimerOps(WaitHost):
                     "move the timer out of the loop"
                 )
             if cursor < len(queue):
-                # the delivered receipt is the answer (the per-attempt cursor
+                # the delivered receipt is the answer (the claim's own cursor
                 # advances — the loop's counter is the advance statement's own
                 # write, never this one).
                 wake_row = queue[cursor]
@@ -288,13 +307,19 @@ class CtxTimerOps(WaitHost):
                     else wake_row["payload"]
                 )
                 if not is_loop_kind:
-                    await conn.execute(
-                        render_sql(
-                            "UPDATE {schema}.jobs SET metadata = metadata || $2::jsonb WHERE id = $1",
-                            self._wsql.schema,
-                        ),
-                        self.job_id,
-                        dumps_jsonb_str({f"hold_cursor_{self.attempt}_{signal_name}": cursor + 1}),
+                    require_claim_epoch(
+                        "ctx.wait_until",
+                        flow_id=self.flow_id,
+                        node_key=self.node_key,
+                        claim_epoch=self.claim_epoch,
+                    )
+                    await write_claim_marker(
+                        conn,
+                        schema=self._wsql.schema,
+                        job_id=self.job_id,
+                        key=f"hold_replay_timer_{self.attempt}_{signal_name}",
+                        claim_epoch=self.claim_epoch,
+                        marker={"n": cursor + 1},
                     )
                 self._runtime["hold_epoch"] = int(wake_row["hold_epoch"])
                 return TimerWake.model_validate(payload)
@@ -306,7 +331,7 @@ class CtxTimerOps(WaitHost):
             # step's NULL keeps exact via is not DISTINCT FROM.
             held_row = await conn.fetchrow(
                 render_sql(
-                    "SELECT id FROM {schema}.wf_signals "
+                    "SELECT id, signal_name, expires_at FROM {schema}.wf_signals "
                     "WHERE workflow_id = $1 AND node_key = $2 AND signal_name = $3 "
                     "AND map_index IS NOT DISTINCT FROM $4::bigint "
                     "AND status = 'held' ORDER BY hold_epoch DESC LIMIT 1",
@@ -318,6 +343,17 @@ class CtxTimerOps(WaitHost):
                 self._map_index,
             )
             if held_row is not None:
+                # this claim re-entered onto the standing timer: park the row
+                # onto it, at the timer's own wake time.
+                await reassert_hold(
+                    conn,
+                    schema=self._wsql.schema,
+                    node_id=self.job_id,
+                    hold_id=held_row["id"],
+                    signal_name=str(held_row["signal_name"]),
+                    expires_at=held_row["expires_at"],
+                    claim_epoch=self.claim_epoch,
+                )
                 raise NodeHeldError(hold_id=str(held_row["id"]), signal_names=(signal_name,))
                 # no 'abandoned' arm here — the expiry sweep excludes the reserved
             # prefix by law, so a past-due timer is a due timer (the arm fires

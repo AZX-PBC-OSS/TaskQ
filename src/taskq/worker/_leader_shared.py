@@ -29,7 +29,7 @@ from taskq.backend._sweeps import (
     _validate_positive,  # pyright: ignore[reportPrivateUsage]  # Why: the single typed boundary for sweep bounds; a second validator here would drift from the backend's.
 )
 from taskq.backend.clock import Clock
-from taskq.backend.statemachine import TERMINAL_STATUSES
+from taskq.backend.statemachine import ACTIVE_STATUSES, TERMINAL_STATUSES
 from taskq.constants import (
     _IDENT_RE,  # pyright: ignore[reportPrivateUsage]  # Why: reusing the canonical identifier regex rather than redefining
     DEFAULT_EVENT_WRITER_BATCH_SIZE,
@@ -447,6 +447,12 @@ _JOB_ATTEMPTS_COLUMNS_QUALIFIED_CSV = ", ".join(f"ja.{c}" for c in _JOB_ATTEMPTS
 # law binds taskq.workflows only, and backend is the engine's own layer).
 _TERMINAL_SQL_LITERAL = "('" + "','".join(sorted(TERMINAL_STATUSES)) + "')"
 
+# The non-terminal status SQL literal — the root hold-back's "still live
+# child" set: exactly statemachine.ACTIVE_STATUSES (the valid transitions
+# minus the terminal set), so a status the state machine adds is covered
+# here the day it is added.
+_ACTIVE_SQL_LITERAL = "('" + "','".join(sorted(ACTIVE_STATUSES)) + "')"
+
 # The base candidate predicate: terminal status + the retention age.
 _ARCHIVE_CANDIDATE_PREDICATE_BASE_SQL = (
     'SELECT id FROM "{schema}".jobs'
@@ -458,10 +464,11 @@ _ARCHIVE_CANDIDATE_PREDICATE_BASE_SQL = (
 # ledger recount (the lock-first re-derive) reads parent rows as truth; a
 # pruned parent mid-run breaks the recount (the recount's count is corrupted by
 # the missing row). A row that is no parent (no wf_edge row points at it)
-# prunes on the normal schedule, and a terminal/cancelled run's rows prune on
-# the normal schedule too (the guard is liveness-scoped, not a retention
-# exemption -- the over-hold shape is its own defect variant, the pin rides
-# it). Index-backed: the guard's probe rides wf_edge_parent_idx + the flow
+# prunes on the normal schedule, and the parent leg releases a run's rows once
+# the run is terminal (the separate root hold below still applies while live
+# children or undelivered intents remain). The parent guard is liveness-scoped,
+# not a retention exemption -- the over-hold shape is its own defect variant,
+# the pin rides it. Index-backed: the guard's probe rides wf_edge_parent_idx + the flow
 # root's primary key, one bounded probe per candidate. The rolling-deploy
 # tolerance composes it away (see _compose_candidate_sql): a pre-workflow
 # schema has no wf_edge table, and a guard that cannot resolve is the prune's
@@ -475,7 +482,100 @@ _WORKFLOW_LIVENESS_GUARD_SQL = (
     '       JOIN "{schema}".jobs fl ON fl.id = e.flow_id'
     '       WHERE e.parent_id = "{schema}".jobs.id'
     "         AND fl.status NOT IN " + _TERMINAL_SQL_LITERAL + ")"
+    # THE ROOT HOLD-BACK: the parent leg above protects terminal PARENT NODES
+    # of a live run; a finished run ROOT is nobody's parent edge and is itself
+    # terminal, so nothing held it while a non-terminal child still sat in
+    # jobs. Pruning that root leaves the child in the live table with no run
+    # root to resolve: it fails the claim/probe fences' root-existence leg
+    # forever, the worker's execution-door release has no root stamp to run
+    # the body from, and the stranded auditor reads root-missing corruption
+    # the prune itself produced. So a terminal-aged ``__flow__`` candidate is
+    # withheld while any non-terminal child of its flow remains -- the same
+    # hold the sweep's step-ledger retention already applies to a run's other
+    # capacity rows. An UNDELIVERED wf_outbox intent is live work too:
+    # terminal effects and loop escalations commit that intent with the
+    # terminal transition, then the drain materializes their child on the
+    # already-terminal root; holding the root across that handoff preserves
+    # the durable delivery, and archiving it first makes the drain's root join
+    # insert nothing.
+    #
+    # The held set is computed once by the ``held`` CTE (see
+    # ``_workflow_root_hold_cte``) and excluded here. ``held.id`` is a
+    # primary key, so ``NOT IN`` has no NULL trap.
+    '   AND "{schema}".jobs.id NOT IN (SELECT id FROM held)'
 )
+
+
+# THE ROOT HOLD-BACK'S SET, stated once and shared by the candidate windows
+# (retention ``$2``) and the archive write's lock arm (retention ``$4``):
+# terminal-aged ``__flow__`` roots that still own live work.
+#
+# WHY A CTE INSTEAD OF A PER-CANDIDATE OR. The obvious shape -- an
+# ``AND (step_key IS DISTINCT FROM '__flow__' OR <child probe>)`` conjunct --
+# keeps the vanilla short-circuit but makes every candidate row carry the
+# child predicate. Postgres prices a correlated scalar subplan once per
+# SCANNED row even when the OR short-circuits at runtime, so the drained
+# candidate window's estimate crossed ``jit_above_cost`` (measured 106k on the
+# shipped 70k-row pin corpus, where the same window without the hold costs
+# ~6k) and JIT compiled a statement that executes in microseconds. Restricting
+# the child probe to candidate ROOTS inside this materialized CTE keeps the
+# per-row work on that tiny set, keeps the outer window an index-only scan
+# (``jobs_finished_at_idx``, whose only outer reference is ``id``), and holds
+# the estimate near 5k. The roots themselves are served by the partial
+# ``jobs_wf_root_retention_idx`` (``WHERE step_key = '__flow__'``), so the
+# held-set scan never walks the vanilla population.
+#
+# THE VANILLA SHORT-CIRCUIT survives as an execution property: with no root
+# rows in the CTE, both the child probe and the undelivered-intent scan are
+# ``never executed`` on a vanilla-only prune backlog (pinned by
+# tests/test_index_audit.py).
+#
+# THE CHILD LEG is a correlated scalar ``LIMIT 1`` subquery, deliberately not
+# an ``EXISTS`` sharing the CTE's filter with the outbox set: an ``EXISTS`` in
+# that position can be decorrelated into a hashed ``= ANY`` set built from the
+# ENTIRE live workflow population (the regression this shape exists to
+# prevent). The scalar cannot: it is one bounded seek on
+# ``jobs_wf_flow_nodes_idx`` (the uuid-cast expression, ``status``; partial on
+# ``step_key IS NOT NULL AND metadata ? 'flow_id'``) per held-candidate root.
+# ``metadata ? 'flow_id'`` and ``step_key IS NOT NULL`` are the clauses that
+# make that partial index provable. The ``step_key <> '__flow__'`` test is
+# omitted deliberately: a candidate root is terminal and its own row is
+# excluded by the active-status leg, so any row the probe matches is a genuine
+# child, and leaving the test out keeps the probe on the index instead of the
+# heap.
+#
+# THE OUTBOX LEG stays the uncorrelated ``IN`` form: the undelivered set is
+# hashed once per statement (``wf_outbox.flow_id`` is NOT NULL, so no NULL
+# trap) and the retention hold keeps that set near-empty in steady state.
+def _workflow_root_hold_cte(retention_param: str) -> str:
+    """The held-root CTE body (a ``WITH`` item) for one retention parameter.
+
+    *retention_param* is the candidate statement's ``$2`` or the archive
+    write's ``$4`` -- the two statements bind the same values in different
+    positions. ``{schema}`` is rendered by the caller's ``.format``.
+    """
+    return (
+        "held AS MATERIALIZED ("
+        "    SELECT r.id"
+        '    FROM "{schema}".jobs r'
+        "    WHERE r.step_key = '__flow__'"
+        '      AND r.status = $1::"{schema}".job_status'
+        "      AND r.finished_at < statement_timestamp() - " + retention_param + "::interval"
+        "      AND ("
+        '          (SELECT 1 FROM "{schema}".jobs wf_ch'
+        "           WHERE (wf_ch.metadata->>'flow_id')::uuid = r.id"
+        "             AND wf_ch.metadata ? 'flow_id'"
+        "             AND wf_ch.step_key IS NOT NULL"
+        "             AND wf_ch.status IN "
+        + _ACTIVE_SQL_LITERAL
+        + "           LIMIT 1) IS NOT NULL"
+        "          OR r.id IN ("
+        '              SELECT wf_ob.flow_id FROM "{schema}".wf_outbox wf_ob'
+        "              WHERE NOT wf_ob.delivered)"
+        "      )"
+        ")"
+    )
+
 
 #: The rolling-deploy fallback: logged once per process, never per batch.
 _workflow_guard_fallback_logged = False
@@ -524,9 +624,16 @@ def _unguarded_candidate_actor_sql(schema: str) -> str:
 
 #: The composed candidate windows: the guarded predicate is the shipped
 #: shape (the guard rides every candidate read — the prune and the
-#: per-actor variant compose the same guard).
+#: per-actor variant compose the same guard). The root hold-back's set
+#: rides a materialized CTE ahead of the window (see
+#: ``_workflow_root_hold_cte``); the candidate statement's retention binds
+#: ``$2``.
 _ARCHIVE_CANDIDATE_PREDICATE_SQL = (
-    _ARCHIVE_CANDIDATE_PREDICATE_BASE_SQL + _WORKFLOW_LIVENESS_GUARD_SQL
+    "WITH "
+    + _workflow_root_hold_cte("$2")
+    + " "
+    + _ARCHIVE_CANDIDATE_PREDICATE_BASE_SQL
+    + _WORKFLOW_LIVENESS_GUARD_SQL
 )
 
 _ARCHIVE_CANDIDATE_SQL = _ARCHIVE_CANDIDATE_PREDICATE_SQL + " ORDER BY finished_at" + " LIMIT $3"
@@ -551,16 +658,19 @@ _ARCHIVE_CANDIDATE_ACTOR_SQL = (
 # id array (a pkey probe per candidate, bounded in every plan form,
 # custom and generic), and the scan's quals re-evaluate at lock time
 # (EvalPlanQual), against the row version the lock sees, not the
-# statement snapshot. Both candidate predicates are re-verified: the
-# terminal status, and the retention age. The age re-check is what a
+# statement snapshot. All three candidate predicates are re-verified: the
+# terminal status, the retention age, and the root hold-back (a child
+# re-pended or an intent written between the candidate fetch and this lock
+# must not leave a non-terminal workflow row without its ``__flow__``
+# root). The age re-check is what a
 # full retry-then-re-run cycle between the two statements needs: a
 # retried job that re-terminalizes in that gap is terminal again (the
 # status check alone would pass) but zero seconds old, and archiving
 # it would remove a just-finished job from the live tables without
 # serving its retention; the age qual fails on the fresh finished_at
 # and the row drops out here, to re-enter a later window when it has
-# actually aged. The age Filter rides the pkey-probed batch (at most
-# LIMIT ids), so it cannot reintroduce the population walk the
+# actually aged. The re-checks ride the pkey-probed batch (at most
+# LIMIT ids), so they cannot reintroduce the population walk the
 # candidate statement exists to prevent (pinned by
 # tests/test_index_audit.py). A retry_job that committed between the
 # candidate window's snapshot and this lock makes the row live; the
@@ -583,7 +693,7 @@ _ARCHIVE_CANDIDATE_ACTOR_SQL = (
 # The candidate ids bind as an array ($3::uuid[]), so the lock rides
 # the primary key: the plan stays index-bounded whatever the plancache
 # picks (pinned, prepared form included, by tests/test_index_audit.py).
-_ARCHIVE_CTE_SQL = (
+_ARCHIVE_CTE_CORE_SQL = (
     "WITH locked AS MATERIALIZED ("
     "  SELECT j.id"
     '  FROM "{schema}".jobs j'
@@ -678,6 +788,21 @@ _ARCHIVE_CTE_SQL = (
     "  FROM deleted GROUP BY actor, status"
 )
 
+# The guarded write: the core statement plus the root hold at both seats — the
+# ``held`` CTE (the candidate windows' own set, at retention ``$4``) and the
+# lock-time exclusion. A child re-pended or an intent written between the
+# candidate fetch and this lock drops the root out of the batch instead of
+# archiving it beneath live work.
+_ARCHIVE_CTE_SQL = _ARCHIVE_CTE_CORE_SQL.replace(
+    "  FOR UPDATE SKIP LOCKED",
+    "  AND j.id NOT IN (SELECT id FROM held)\n  FOR UPDATE SKIP LOCKED",
+    1,
+).replace(
+    "WITH locked AS MATERIALIZED (",
+    "WITH " + _workflow_root_hold_cte("$4") + ", locked AS MATERIALIZED (",
+    1,
+)
+
 _DB_NOW_SQL = "SELECT clock_timestamp()"
 
 #: The workflow-era columns the loop-budget round added (01.00.27 jobs,
@@ -696,13 +821,15 @@ _JOBS_PRE_BUDGET_COLUMNS = tuple(
 )
 
 #: The archive write's pre-budget variant (the rolling-deploy tolerance's
-#: write half): identical statement, the column lists minus the budget
-#: trio — a schema the budget round has not landed on cannot mirror
-#: columns it does not have, and the mirror's own law (name exactly the
-#: columns both sides carry) makes the variant the honest write there.
-#: The qualified list replaces first (the ``j.`` prefixes make it
+#: write half): the CORE statement (hold-free — a schema without the
+#: workflow tables has no ``wf_outbox`` to resolve, and the unguarded
+#: candidate window already ran the hold where it could) with the column
+#: lists minus the budget trio. A schema the budget round has not landed on
+#: cannot mirror columns it does not have, and the mirror's own law (name
+#: exactly the columns both sides carry) makes the variant the honest write
+#: there. The qualified list replaces first (the ``j.`` prefixes make it
 #: unambiguous), the plain list second.
-_ARCHIVE_CTE_PRE_BUDGET_SQL = _ARCHIVE_CTE_SQL.replace(
+_ARCHIVE_CTE_PRE_BUDGET_SQL = _ARCHIVE_CTE_CORE_SQL.replace(
     _JOBS_COLUMNS_QUALIFIED_CSV,
     ", ".join(f"j.{c}" for c in _JOBS_PRE_BUDGET_COLUMNS),
 ).replace(
@@ -851,8 +978,9 @@ async def _run_prune_archive_batch(
     generic form walks the terminal population), but they keep the
     single-batch guarantees: the candidate window is a bounded
     LIMIT-terminated read, the write statement locks the batch by
-    primary key and re-checks both candidate predicates (terminal
-    status and retention age) at lock time, and both run in the
+    primary key and re-checks all three candidate predicates (terminal
+    status, retention age, and the root hold-back) at lock time, and both
+    run in the
     transaction this helper opens, so the batch commits or not as a
     unit under the same
     server-side ``statement_timeout`` machinery

@@ -22,9 +22,11 @@ at or past the ceiling is terminal even when the ladder still has room.
 Outside that count, also pinned below: a hold's resume is a claim, so it
 spends crash headroom; a machinery fault after the body returned re-pends
 past the claim ceiling without spending the ladder, but its re-run is a
-claim too; a manual retry resets neither count; ``permanent`` runs once and
-``indefinite`` has no crash ceiling while its ladder still stops at the
-``max_attempts``-th body failure.
+claim too; a manual retry resets neither count; ``permanent`` runs once and a
+previously persisted legacy ``indefinite`` row has no crash ceiling while its
+ladder still stops at the ``max_attempts``-th body failure (a *new*
+``indefinite`` declaration is refused at compile time, so the case below
+stamps the row instead of declaring the kind).
 
 The crash is the in-process attack suite's established "worker died"
 shape (``test_wf_attack_loop``: the body raises ``CancelledError`` and the
@@ -161,16 +163,38 @@ async def test_crashes_and_body_failures_are_separate_budgets(
 
     app = WorkflowApp()
     name = f"crash_budget_{kind}_{script.lower()}"
+    # A new declaration refuses ``indefinite``; this pin is the *persisted
+    # legacy* row's crash accounting, so declare a finite kind and stamp the
+    # row the way a pre-fix release wrote it (below).
+    declared_kind = "transient" if kind == "indefinite" else kind
 
     @app.workflow(name)
     def _wf() -> Promise[object]:
         return build(
-            step(flaky, Ingest(doc_id="d1"), key="s", max_attempts=MAX_ATTEMPTS, retry_kind=kind)
+            step(
+                flaky,
+                Ingest(doc_id="d1"),
+                key="s",
+                max_attempts=MAX_ATTEMPTS,
+                retry_kind=declared_kind,
+            )
         )
 
     compiled = app.get(name)
     flow_id = (await FlowRunner(compiled, wf_pool, wf_schema).create_flow()).flow_id
     node_sql = _node_sql(wf_schema)
+    if kind == "indefinite":
+        await wf_conn.execute(
+            f"UPDATE \"{wf_schema}\".jobs SET retry_kind = 'indefinite' "
+            "WHERE step_key = 's' AND (metadata->>'flow_id')::uuid = $1",
+            flow_id,
+        )
+        stamped = await wf_conn.fetchval(
+            f'SELECT retry_kind FROM "{wf_schema}".jobs '
+            "WHERE step_key = 's' AND (metadata->>'flow_id')::uuid = $1",
+            flow_id,
+        )
+        assert stamped == "indefinite", stamped
 
     lives = 0
     while lives <= len(script):

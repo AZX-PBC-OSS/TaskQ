@@ -1153,14 +1153,18 @@ keeps winning.
     nothing under the very failure (election loss, another schema holding the
     old-style lock) it exists to expose, so every worker samples.
 11. **Stranded-jobs detector**: runs every 60 s. Warns about pending/scheduled
-    rows that cannot make progress, with three distinct meanings on the `reason`
+    rows that cannot make progress, with four distinct meanings on the `reason`
     label: `no_actor_config` (the actor has no `actor_config` row — e.g. the
     actor was removed from the registry but jobs remain enqueued; the row is
     invisible to every dispatch round), `unserved_queue` (no live worker serves
-    the row's routing queue — likewise never dispatched), and
+    the row's routing queue — likewise never dispatched), `stamp_unresolved`
+    (a workflow row whose `metadata.hold` stamp points
+    at a hold that is no longer `held`: the dispatch fence refuses it until
+    the leader's hold-stamp reconcile clears the stamp), and
     `workflow_root_missing` (a workflow node whose run has lost its own
-    `__flow__` root row — the row may dispatch and run, but the run cannot
-    progress; control-plane data corruption, the runbook owns the remedy).
+    `__flow__` root row — no claim fence admits it, since the body resolves
+    from the root's stamp, and the run cannot progress; control-plane data
+    corruption, the runbook owns the remedy).
 
 Failover SLA: a graceful stop resigns the row, so a follower's next election
 cycle already finds it free, and the leader gap is `heartbeat_interval` plus

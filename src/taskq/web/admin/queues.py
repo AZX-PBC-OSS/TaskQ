@@ -62,10 +62,11 @@ _QUEUE_LIVE_WORKERS_SQL = (
 # Stranded pending/scheduled rows per routing queue - the stranded-jobs
 # detector's SQL shape (worker/_leader_sweeps.py, _stranded_jobs_loop)
 # grouped by the queue dispatch routes on instead of by actor. THIS READ
-# MIRRORS ONLY THE DETECTOR'S TWO DISPATCH-INVISIBLE LEGS (no actor_config
-# row; unserved queue) — it does not implement the third leg (the run-
-# scoped workflow_root_missing detector); its comment/UI text must not
-# claim the whole detector. The routing discriminator (the actor's stored
+# MIRRORS ONLY THE DETECTOR'S TWO DISPATCH-INVISIBLE ROUTING LEGS (no
+# actor_config row; unserved queue) — it does not implement the dead-stamp
+# leg (stamp_unresolved; not a routing condition) or the run-scoped
+# workflow_root_missing detector; its comment/UI text must not claim the
+# whole detector. The routing discriminator (the actor's stored
 # assignment for a re-pended row, the row's own label otherwise) and the
 # mutual exclusion of the two strand shapes are the detector's own: a row
 # whose actor has no actor_config row counts once in the no-config shape

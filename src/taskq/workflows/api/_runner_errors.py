@@ -6,12 +6,39 @@ refused loudly; never a silent wedge."""
 
 from __future__ import annotations
 
+from typing import Final, Literal, get_args
+
 __all__ = [
+    "ClaimEpochMissingError",
+    "DuplicateSubstepError",
+    "RootMissingSeat",
     "VanishedNodeError",
+    "WorkflowResultDetailUnavailableError",
     "WorkflowRootMissingError",
     "WorkflowRunCancelledError",
     "WorkflowRunError",
 ]
+
+#: Every seat that raises :class:`WorkflowRootMissingError`. The set is
+#: closed: a caller cannot invent a fourth disposition at runtime, because
+#: the class validates the value against this literal and refuses anything
+#: else rather than silently asserting a transactional rollback it cannot
+#: know happened.
+RootMissingSeat = Literal["failed-parent", "park", "execution-door"]
+
+_ROOT_MISSING_SEATS: Final[frozenset[str]] = frozenset(get_args(RootMissingSeat))
+
+#: The per-seat disposition sentence. ``failed-parent`` and ``park`` raise at
+#: their transaction's entry and roll it back whole; ``execution-door`` runs
+#: after dispatch already claimed the row (``attempt``/``claim_epoch`` spent),
+#: so it must describe the worker's bounded release rather than a rollback.
+_SEAT_DISPOSITION: Final[dict[str, str]] = {
+    "failed-parent": "the transaction rolled back without any write",
+    "park": "the transaction rolled back without any write",
+    "execution-door": (
+        "the row's claim was already spent and no body ran, so the worker's bounded release owns it"
+    ),
+}
 
 
 class WorkflowRunError(RuntimeError):
@@ -42,6 +69,18 @@ class WorkflowRunCancelledError(WorkflowRunError):
         super().__init__(f"run {flow_id} was cancelled" + (f": {reason}" if reason else ""))
 
 
+class ClaimEpochMissingError(WorkflowRunError):
+    """A wait site was handed ``claim_epoch`` 0 — the executing claim's
+    identity was never supplied. Both claim doors grant at least 1, so 0
+    names a wiring defect, not a transient condition: a re-run cannot
+    supply the epoch the door never granted, and every stored marker would
+    compare unequal to it, so the re-executed site would treat its
+    already-delivered answer as spent.
+
+    DETERMINISTIC BY CONSTRUCTION (the ladder's deterministic route — the
+    retry budget is never spent on it)."""
+
+
 class VanishedNodeError(WorkflowRunError):
     """
     a deploy renamed or removed a node while
@@ -64,14 +103,94 @@ class VanishedNodeError(WorkflowRunError):
     detector's log)."""
 
 
+class DuplicateSubstepError(WorkflowRunError):
+    """One node execution issued ``ctx.substep(name, ...)`` while a call
+    with the same name was still running in it (#743). Both calls would
+    claim one ledger row, and the second claim's re-stamp drops the first
+    call's record. Every retry re-runs the same body, so the refusal is
+    DETERMINISTIC: uncaught, the node fails on its first attempt with this
+    class on the record (a loop body exhausts the loop as a body failure,
+    the class named in its message). Concurrent substeps need distinct
+    names. Fix the collision rather than retrying the node: the running
+    call is not cancelled, so a retry can run its effect again while the
+    first call is still inside ``fn``."""
+
+
+class WorkflowResultDetailUnavailableError(WorkflowRunError):
+    """A row's value cannot be READ from the durable state the bounded
+    collect's ``detail_home`` contract names: the row is a bounded summary
+    whose parent rows (the only home of the full collect) are missing,
+    purged, or do not reconcile with the recorded count; or the row's own
+    ``result`` is NULL because the result-TTL sweep claimed it or an
+    operator retry re-pended it.
+
+    THE FAIL-CLOSED FACE OF THE DETAIL RE-READ. The seats that enforce it
+    are the four workflow row readers: :meth:`FlowRunner.result`,
+    :meth:`FlowRunner._flow_state` (and ``_parent_results``, the body-arg
+    read they share) and :meth:`ChildHandle._ok_result`. Each either
+    rebuilds the whole declared value or raises THIS class — never a
+    truncated prefix, never ``[]``, never a bare ``None`` where a stored
+    value stood. A silent prefix is the defect family this class closes:
+    the caller's declared ``list[...]`` decoded fine over 64 KiB of a
+    106 KiB collect, and nobody could tell. A swept or re-pended row has
+    the same shape — its result is SQL NULL, which is never a collected
+    ``None`` (a body returning ``None`` is stored as the empty document).
+
+    DETERMINISTIC BY CONSTRUCTION (registered in
+    :func:`_deterministic_classes`): the detail rows are the record, and
+    no re-run, retry, or later tick can restore rows a purge removed or a
+    TTL claimed — the ladder's retry budget is never spent on it.
+
+    ``expected``/``rebuilt`` are the item counts when the failure is a
+    count mismatch (``None`` when the row itself is gone); ``reason``
+    names the concrete missing face. ``node_id``/``step_key`` locate the
+    row the operator must inspect. The reason and the counts lead the
+    message and the row id trails it: the CLI's failed-node line clamps
+    to ~100 characters, and the operator needs the diagnosis there more
+    than the uuid."""
+
+    def __init__(
+        self,
+        *,
+        node_id: object,
+        step_key: str,
+        reason: str,
+        expected: int | None = None,
+        rebuilt: int | None = None,
+    ) -> None:
+        self.node_id = node_id
+        self.step_key = step_key
+        self.reason = reason
+        self.expected = expected
+        self.rebuilt = rebuilt
+        counts = ""
+        if expected is not None:
+            counts = f" (expected {expected} items"
+            if rebuilt is not None:
+                counts += f", rebuilt {rebuilt}"
+            counts += ")"
+        super().__init__(
+            f"node {step_key!r} cannot be read{counts}: {reason}. (row {node_id}) "
+            "A bounded collect's row carries only the summary — the full "
+            "value lives on the parent rows — and the read fails closed rather than "
+            "handing back a truncated prefix"
+        )
+
+
 class WorkflowRootMissingError(WorkflowRunError):
     """Durable run-root corruption: the flow's own ``__flow__`` root row
     is gone while one of its nodes needs it. Raised at the root-ordered
     seats' ENTRY — the failed-parent propagation's seat (before any
-    cascade, fan-in, decrement, fire, or outbox write) and the capacity
-    park's seat (before any intent adoption or park write) — so the
+    cascade, fan-in, decrement, fire, or outbox write), the capacity
+    park's seat (before any intent adoption or park write), so the
     transaction rolls back whole and the already-committed state stands
-    untouched.
+    untouched — and at the worker EXECUTION DOOR's seat
+    (``seat='execution-door'``), where the claimed row's root-ordered read
+    finds no ``__flow__`` row at all. The execution-door seat is
+    pre-execution rather than transactional: no workflow transaction has
+    run, and the row was already claimed by dispatch (its
+    ``attempt``/``claim_epoch`` are spent), so the message says what the
+    worker's bounded release does.
 
     This is control-plane data corruption, never an author/body-resolution
     error and never a capacity fault: it is not converted into a
@@ -81,12 +200,22 @@ class WorkflowRootMissingError(WorkflowRunError):
     release arm owns it there). The remedy is the runbook's
     restore-or-quarantine recovery, not a worker knob."""
 
-    def __init__(self, flow_id: object, parent_id: object, seat: str = "failed-parent") -> None:
+    def __init__(
+        self,
+        flow_id: object,
+        parent_id: object,
+        seat: RootMissingSeat = "failed-parent",
+    ) -> None:
+        if seat not in _ROOT_MISSING_SEATS:
+            raise ValueError(
+                f"unknown WorkflowRootMissingError seat: {seat!r}; "
+                f"expected one of {sorted(_ROOT_MISSING_SEATS)!r}"
+            )
         self.flow_id = flow_id
         self.parent_id = parent_id
         self.seat = seat
         super().__init__(
             f"run {flow_id}'s __flow__ root row is missing while its node "
             f"{parent_id} reached the {seat} seat (durable run-root corruption; "
-            "the transaction rolled back without any write)"
+            f"{_SEAT_DISPOSITION[seat]})"
         )

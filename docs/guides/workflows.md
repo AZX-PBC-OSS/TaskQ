@@ -228,7 +228,16 @@ alternative. The refusal's class is
 DETERMINISTIC authoring failure (the run record carries
 `error_class='FanInBoundExceededError'`, the retry ladder never burns —
 re-running cannot shrink the corpus), and its message carries the
-remedy: the child-driven escape below, or partition the map.
+remedy: the child-driven escape below, or partition the map. A map wired
+on a join or `gather` counts the true item count, not the prefix the
+join row spells under the size cap (below): past 1000 items it
+terminal-fails `FanInBoundExceededError` unless the map declares
+`child_driven=True`; on a widened (POST) schema — or at exactly 32,768
+items on any schema — it terminal-fails even with `child_driven` on the
+join counter's own `FanInBoundExceededError`.
+While the identity carriers are still `smallint`, a map past 32,768
+items fails first with `error_class='MapIndexExhaustedError'`,
+`child_driven` or not. Partition the source.
 
 THE HONEST DERIVATION (never a line through points that
 don't share one): the three measured points — 200 → 14.9 ms, 1000 →
@@ -348,7 +357,15 @@ children before the join fires (a child's `result_expires_at` is held
 while a join-wait node counts it — after the join fires, the subtree ages
 together), and retention may not prune a parent row of a
 NON-terminal run (the sweep's ledger recount reads parent rows as
-truth). Terminal runs prune on the normal schedule. The guards are
+truth), nor a finished run's own `__flow__` root row while any
+non-terminal child or undelivered `wf_outbox` delivery intent of that run
+remains. The intent leg covers terminal effects and loop escalations,
+whose consumer materializes on the already-terminal root; archiving first
+would make the drain acknowledge a delivery it could not insert. A child
+left rootless would likewise have no body to resolve — no claim fence
+admits it, and the detector reads it as `workflow_root_missing`. Terminal
+runs whose children are all terminal and whose outbox intents are delivered
+prune on the normal schedule. The guards are
 WHERE-class conditions on the EXISTING arms — no new sweep process; the
 failure mode the guards prevent is Oban-Pro's documented
 `preserve_workflows` lesson (the reduce reading holes — the silent
@@ -362,7 +379,31 @@ compacts the row to the bounded summary (the `"__truncated__": N` marker
 counting the items no longer spelled + the ledger pointer); the FULL
 detail stays on the ledger/attempts — the record never loses it. The
 compacted row stays bounded forever (a later append increments the
-marker).
+marker). The collected result envelope of a map join or `gather` follows
+the same 64 KiB cap: past it the row keeps the prefix that fits,
+`__truncated__: N` and a `detail_home` pointer, and the full collect
+stays on the rows it was collected from (a map join's `.item` children,
+a `gather`'s parents). A map wired directly on the join forks one child per item the join
+packed, and every reader of a truncated join — a consumer step's
+arguments (`_parent_results`), `FlowRunner.result()`, a `skip=` / guard
+predicate's `state["results"]` (`_flow_state`), and a child flow's
+terminal read (`ChildHandle._ok_result`) — recursively rebuilds the full
+collect off the detail rows (`decode_result_with_detail`), including
+nested joins (such as a `gather` over truncated map joins or a `gather`
+over `gather`).
+
+**When the detail rows are gone, the read fails closed.** A truncated
+join's full collect lives only on its parent rows, so retention that
+expires or purges them costs more than a stored byte: reading that join
+raises `WorkflowResultDetailUnavailableError` on the FIRST attempt — no
+retry, because no retry can restore the rows — and the consuming node
+terminal-fails with the class on its row. The same class is raised when
+the terminal row's own result was swept, and when a re-pended (retried)
+row's result is NULL. `skip=` predicates are on the same path: their
+`state["results"]` view decodes through the same re-read, so an
+unreadable entry fails the gated node deterministically instead of
+deciding against a hole. The remedy is to re-run the flow; retrying the
+node that raised cannot succeed.
 
 ## The three cancel legs
 
@@ -385,6 +426,27 @@ attempt) DO UPDATE … RETURNING`) — the ledger row IS the claim, the
 arbiter physically blocks double-recording, and map children of one step
 key are DIFFERENT claims. `ctx.substep("name", fn)` is the user-facing
 shape: default idempotent ON, `idempotent=False` opts a step out.
+
+**A substep record belongs to the node execution that made it.** The
+owner is the calling node's job row and, inside a loop body, the loop
+iteration. The same name in two nodes, two map children, two maps or two
+iterations is a different record, so each runs its own `fn`. Within one
+execution, calling the same name again replays a `succeeded` record. A
+re-call after a failed one in the same attempt runs `fn` again, and that
+run is not recorded. A call made while one with the same name is still
+running (for example, both inside one `asyncio.gather`) raises
+`DuplicateSubstepError` before it claims anything, and the running call
+is left alone. Uncaught, the error fails the node on its first attempt;
+in a loop body the loop exhausts as a body failure whose message names
+it. Fix the collision instead of retrying the node: because the running
+call is not cancelled, a retry can run that effect a second time while
+the first call is still inside `fn`. `idempotent=False` calls write no
+row and are exempt. Give
+concurrent substeps distinct names. The
+row's `step_key` is `<job id>/<name>`, or `<job id>.iter<n>/<name>` in a
+loop body. Upgrading a fleet across this change needs a workflow-executor
+cutover: see
+[the upgrading entry](upgrading.md#ctxsubstep-names-are-scoped-to-the-calling-node).
 
 **The substep holds no connection across the body** (the measured tax,
 stated so nobody re-pays it): the claim and the
@@ -753,7 +815,7 @@ definition) never executed.
 
 ## The sweep arms (wired)
 
-Four healing arms register in the leader's maintenance sweep loop
+The healing arms register in the leader's maintenance sweep loop
 (the `_SweepSpec` tick table), gated on the backend's workflow capability
 marker (`workflow_sweeps_capable` — the same `hasattr` seam every
 maintenance sweep is admitted through, each capability its own marker; a
@@ -764,11 +826,20 @@ arms off):
   the join-wait children, count un-terminal parents from the edge ledger,
   reconcile the cache, stamp orphans, fire the firable) + the set-based
   fire;
+* `wf_signal_sweep` — the held rows' clock: the expiry arm (an overdue
+  `timeout_s` hold → the defined `abandoned` state, one batch of 100 per
+  tick) and the timer arm (`__timer__` holds due now → resolved
+  `delivered` with the wake record, drained to empty per tick);
+* `wf_child_join_wake` — the child flow's terminal as its join hold's
+  resolver (the held parent node resumes, the pointer-only transport
+  knocks);
 * `wf_outbox_drain` — the delivery half: consumer rows inserted
   idempotently on the composite arbiter, the undelivered flag flipped in
   the insert's transaction;
 * `wf_phantom_reap` — 'running' ledger rows on terminal flows fenced (the
-  rows-alone reconstruction reconciles).
+  rows-alone reconstruction reconciles). A `ctx.substep` row's fence is
+  provisional: a call still inside `fn` when it is reaped records its own
+  outcome over the fence when it returns.
 * `wf_nodeless_root_reap` — the orphan root's belt: a flow root with
   ZERO node rows (the create-atomicity's debris shape) is
   reaped `failed` past the grace — the derivation can never develop it.
@@ -776,6 +847,14 @@ arms off):
   The cache's own retention: the expired rows pruned (the in-DB TTL's dead weight; the
   freshness decision is the lookup's — the pruner never touches a fresh
   row).
+* `wf_hold_stamp_reconcile` — the hold-stamp reconcile (issue #748): a node
+  parked on a `metadata.hold` stamp whose hold is no longer `held` is
+  unclaimable by the dispatch fence, so this arm clears the dead stamp and
+  re-pends the row (the body's re-execution lands the next named state). The
+  live hold is left standing. It drains within its tick: up to
+  `sweep_drain_batches` batches of `event_writer_batch_size` rows (800 at the
+  defaults), and each heal emits `wf-hold-stamp-reclaimed` with the cleared
+  `job_ids`/`flow_ids`.
 * `wf_edge_retention` / `wf_join_fire_retention` /
   `wf_step_ledger_retention` / `wf_signals_retention` /
   `wf_node_progress_retention` — THE FIVE FLOW-HISTORY ARMS (below).
@@ -1014,7 +1093,7 @@ rides the SAME projection the placement rides:
 
 | the term | what it declares |
 | --- | --- |
-| `max_concurrent` | the per-round admission **damper** — NOT a hard fleet-wide cap. The dispatch claim's per-actor arithmetic reads `actor_config.max_concurrent` and admits up to the value per round per producer, so the in-flight count can exceed it under concurrent dispatchers (the over-dispatch bound is `(num_producers - 1) * max_concurrent` per round — the vanilla field's own law, [Actors](actors.md#choosing-a-concurrency-control)). **The strict instrument is `reservations`** — declare one when the bound must hold. |
+| `max_concurrent` | the per-round admission **damper** — NOT a hard fleet-wide cap. The dispatch claim's per-actor arithmetic reads `actor_config.max_concurrent` and admits up to the value per round per producer, so the in-flight count can exceed it under concurrent dispatchers (the over-dispatch bound is `(num_producers - 1) * max_concurrent` per round — the vanilla field's own law, [Actors](actors.md#choosing-a-concurrency-control)). A run's root row (`step_key = '__flow__'`), which stays `running` for the whole run, never counts toward the value **when it is written on `wf`** — every root the engine's own runner writes: only the actor's claimed steps do. These other surfaces still count each live run's root as running on `wf`, so they can show `wf` saturated while dispatch is still admitting its steps: Insights `running`, `saturation` and `unservable_backlog`; the `taskq.jobs.running` gauge; `taskq.jobs.by_status{status="running"}`; the per-queue running columns on the admin queues overview and `taskq queues depth` (`_QUEUE_OVERVIEW_SQL` / `_DEPTH_SQL_TEMPLATE`); and `move_actor_queue`'s `running_jobs_left`. The list is not exhaustive — any reader that counts running rows sees roots unless it subtracts them. **The strict instrument is `reservations`** — declare one when the bound must hold. |
 | `reservations` | the STRICT slots: a list of [`ConcurrencyReservation`](rate-limiting.md#concurrencyreservation) objects (`taskq.ratelimit.reservation`) — the dispatch-admission gate the vanilla path enforces via the leased `reservation_slots` rows (the machinery is [Rate limiting](rate-limiting.md)). The boot collects the nodes' declared instances into the worker's resolved registry and materializes their slot rows in the ensure-slots pass — the same pass the vanilla actors' reservations ride (deliberately NOT gated on the vanilla actor registry, so a pure-workflow worker slots its own). |
 | `result_ttl` | the node result's in-DB TTL in seconds — the vanilla result-expiry sweep's own knob, seeded on the stored row. |
 | `capacity_owner` | who owns the STORED capacity columns once the row exists (accepted on `@app.actor(...)` and on the route's `RouteArm(...)`; not a `step()` param). `"operator"` (the default) is the seed-only law: the literal seeds the row once, the operator owns it thereafter, and a later literal change LOGS a mismatch, never writes. `"code"` is the opt-out: the boot sync REWRITES `max_concurrent` and `result_ttl` from the literal on every boot, so a changed literal deploys by code instead of doing nothing after first boot (the queue and `max_pending` stay operator-owned under both owners). |
@@ -1942,7 +2021,8 @@ async def investigate(ctx: StepContext, params: Probe) -> Digest:
         case Expired():
             # THE JOIN'S OWN PATIENCE EXPIRED (`timeout_s=` arms the
             # hold's deadline — the DB clock; the face fires ONCE per
-            # abandoned hold per attempt).
+            # abandoned hold per EXECUTION — one replay slot per node
+            # row and attempt, shared by that execution's children).
             return Digest(verdict="expired")
 
 
@@ -1993,8 +2073,9 @@ slot a distinct, retry-stable key) and join each — the fork's
 all-members semantics at the flow level.
 
 **The spawn's atomicity face.** The default
-slot is CLAIMED in one atomic statement (the per-attempt cursor's
-increment and the returned slot are one row-CAS), so K CONCURRENT
+slot is CLAIMED in one atomic statement (the increment of the attempt's
+cursor, which restarts at slot 0 under each new claim (`claim_epoch`) and
+counts up within it, and the returned slot are one row-CAS), so K CONCURRENT
 spawns — `asyncio.gather(*[ctx.spawn_flow(...) for t in tenants])`, the
 natural fan-out spelling — take K DISTINCT slots and mint K DISTINCT
 children, each carrying its own input. A cursor read/write race would
@@ -2003,10 +2084,49 @@ child, and hand every caller tenant-0's verdict wearing K labels —
 silent fabricated results, zero errors, green pins. A SAME-key
 concurrent spawn ADOPTS the same child (the arbiter's run-key CAS) and
 every caller receives THAT child's handle — the shared face.
-One discipline applies: a concurrent fan-out that must join STABLY
-across the resume passes `key=` (the slot's allocation order is the
-scheduler's; the author's identity is the caller's — a resumed body
-re-executes the gather and the adoption follows the KEYS).
+A deferral's re-run (`Snooze`, `RetryAfter(consume_budget=False)`) keeps
+the attempt number but is a new claim, so it re-derives slot 0 and
+adopts the child it already minted **provided no other execution has
+advanced the same key since that child was minted**. The slot indexes
+the key's ARRIVAL order across every writer, not one execution's
+logical spawn ordinal: a stale body that interleaves a spawn (its lease
+lapsed, sharing the attempt number), or a concurrent unkeyed fan-out
+whose CAS order permutes, shifts the order a later claim walks, so its
+k-th spawn can adopt a child another execution minted for a different
+input. A deferral or hold-resume of a serial body re-derives its own
+slots in order; a fan-out that must join STABLY across resumes passes
+`key=` (the slot's allocation order is the scheduler's; the author's
+identity is the caller's — a resumed body re-executes the gather and
+the adoption follows the KEYS).
+In a loop body the default spawn is
+per iteration: the cursor is `spawn_slot_<attempt>.iter<i>` and the run
+key's node segment is `<key>.iter<i>` (the ledger's iteration key), so a
+resume or a deferral that re-runs iteration k adopts k's own children.
+A map item is its own job row, so its cursor is already per-sibling
+(`spawn_slot_<attempt>`) — but every map item of one node shares a
+`step_key`, so the run key's node segment carries the item:
+`<key>.item<m>`. Two items of one map never adopt each other's child.
+An explicit `key=` is the author's identity and is never scoped to an
+iteration: a constant key in a loop body names ONE child, which every
+iteration adopts, so a body that wants a child per iteration puts the
+iteration in its key. `key=` may not be a bare decimal string (`"0"`,
+`"12"`): that spelling is the default key's slot segment, so the spawn
+refuses it with the typed `SpawnKeyReservedError` (a `ValueError`; a
+deterministic authoring failure, so an uncaught one terminal-fails the node
+on attempt 1) rather than let a numeric key alias the node's first unkeyed
+spawn. Upgrading from a release whose loop iterations
+shared the cursor: an iteration that spawned unkeyed under the old
+release and runs again after the upgrade (a deferral, a hold or join
+resume, a reclaim; iteration 0 too) derives the new key and mints its
+unkeyed children once more, and a join resumed that way waits on the new
+child while the first one's result goes unread. During a rolling deploy
+old and new workers derive different keys, so it can happen in either
+direction. Upgrading from a release whose map items shared one run key
+(the release before this one): every map item's unkeyed spawn now
+derives `<key>.item<m>`, so an in-flight map item re-run after the
+upgrade mints its child once more and adopts the item-keyed child from
+then on — with the same rolling-deploy ambiguity, in either direction.
+Keyed spawns (whose keys are not bare decimals) keep their keys.
 
 **The depth bound.** A self-spawning flow (a workflow that spawns
 itself, directly or through a cycle of children) cannot mint a
@@ -2455,8 +2575,11 @@ single-payload form is the one-member overload.
 the body re-executes **FROM THE TOP** on resume — there is NO
 determinism requirement on the body; pre-wait side effects are
 `ctx.substep`-ledgered and replay cheap. The delivered holds are the
-node's ANSWER QUEUE: each attempt's wait sequence consumes them in
-epoch order (the per-attempt cursor) — a RETRY replays the answers (the
+node's ANSWER QUEUE: each execution's wait sequence consumes them in
+epoch order (the per-call cursor, scoped to the executing claim: a
+resume or a retry re-executes from the top and replays the answers in
+order, while a step that waits twice in one execution takes the next
+answer) — a RETRY replays the answers (the
 operator never re-answers); a wait past the queue's end registers a NEW
 hold (a NEW epoch — the multi-hold: the same signal name can hold
 again, the chained gate works because the waits are sequential).
@@ -2658,8 +2781,12 @@ is. The operator door's failure is the same shape one door over —
 `SignalAbandonedError` raised by the body off the `Expired` member
 whose `abandoned_by` reads `"operator"`. A deliberate re-wait — the
 body matched the expiry member and
-waits again within the same attempt — is a NEW body decision: it
-registers a NEW hold with a NEW epoch. The other timer policies
+waits again within the same execution — is a NEW body decision: it
+registers a NEW hold with a NEW epoch. The one exception is the child
+join, which keeps one replay slot per node row and attempt rather than
+one per child: an execution that has already observed two expired
+children replays `Expired` for a re-wait on the first instead of minting
+a new hold. The other timer policies
 (`resume_with_default` / the escalation arm on the TIMER) are recorded
 LATER for v1 (the don't-pay law): the body-level escape — match the
 `Expired` member, return the default / enqueue the escalation
@@ -2782,7 +2909,16 @@ The machinery, and the laws each piece carries:
   with the WAKE as the payload (`fired_by='timer'`, the timer's
   `key`, the `scheduled` and `fired_at` instants). The `'held' →
   'delivered'` CAS is the fence: a twice-fired timer is
-  unrepresentable, and a cancelled flow's timer never wakes.
+  unrepresentable, and a cancelled flow's timer never wakes. The sweep
+  is the wake's only owner: the fleet never claims a held row, so a due
+  timer resumes on the next leader sweep tick (`sweep_interval`, default
+  30 s) plus a dispatch poll. The two arms that resolve a held row have
+  different per-tick bounds: `wait_until`'s timer arm drains its whole due
+  set within one tick (`sweep_due_timers(..., drain=True)`), whereas a
+  `wait_signal(timeout_s=...)` expiry is resolved by the one-batch
+  `wf_signal_sweep` arm (`sweep_expired_signals`, `drain=False`: one
+  `LIMIT 100` pass per tick), so a burst of N expired human holds resumes
+  over `ceil(N/100)` ticks — 30 s per 100 after the deadline.
 - **The durability is the design:** a worker DEATH mid-wait changes
   nothing — the hold row's expiry arms the reclaim, the successor's
   sweep fires the wake, the body resumes from the top (the
@@ -2980,7 +3116,15 @@ cancel-restart is the escape.
 same claim-time resolution — the pin covers the second):
 
 - **A run mid-LOOP**: the iteration's body re-resolves at the resume —
-  the next iteration (and the resumed one) runs the NEW code.
+  the next iteration (and the resumed one) runs the NEW code. If the body
+  SPAWNS, the iteration's (or map item's) unkeyed child run keys are derived
+  by whichever release executes it — the loop body's `<key>.iter<i>` and the
+  map item's `<key>.item<m>` (§3b's per-iteration/per-item key, and the
+  spawn-key upgrade note in [Upgrading](upgrading.md)). An iteration or item
+  that re-runs across the redeploy can mint its unkeyed children once more.
+  Drain the run, or cancel-and-restart it, when a duplicated child side
+  effect is unacceptable — this section's two escape hatches are the same
+  rule.
 - **A run mid-WAIT**: the timer's wake or the human
   delivery's resume re-enters the NEW body — a wake is a resume like
   any other, and the claim-time resolution is the only body source.
@@ -3189,7 +3333,7 @@ Every workflow fact is a row in the same database; the CLI and the explorer are 
 Reconstructing a run's story from the surfaces (no app source, no logs):
 
 1. **The shape:** `taskq flows status <run_id>` — the nodes, the derived status, every stuck row's why + remedy.
-2. **The attempts:** each node's `attempt` vs `max_attempts` is the claim count the crash reclaim gates on, while the body-failure ladder counts the node's `failed` ledger rows ([retries.md §12](retries.md#12-crash-vs-shutdown-what-happens-to-the-attempt-count)); the LEDGER is the per-attempt record. The CLI's node read (and the explorer's node panel) renders the attempt ledger per node; in SQL: `SELECT step_key, attempt, status, error_class, created_at FROM taskq.wf_step_ledger WHERE flow_id = '<run_id>' ORDER BY created_at` — every attempt's outcome, in order, with the class of every death the runner recorded (the crash reclaim never writes the ledger: a lease-reclaimed crash is its `crashed` row in `taskq.job_attempts`).
+2. **The attempts:** each node's `attempt` vs `max_attempts` is the claim count the crash reclaim gates on, while the body-failure ladder counts the node's `failed` ledger rows ([retries.md §12](retries.md#12-crash-vs-shutdown-what-happens-to-the-attempt-count)); the LEDGER is the per-attempt record. The CLI's node read (and the explorer's node panel) renders the attempt ledger per node; in SQL: `SELECT step_key, attempt, status, error_class, created_at FROM taskq.wf_step_ledger WHERE flow_id = '<run_id>' ORDER BY created_at` — every attempt's outcome, in order, with the class of every death the runner recorded (the crash reclaim never writes the ledger: a lease-reclaimed crash is its `crashed` row in `taskq.job_attempts`). The same query returns `ctx.substep` records beside the node attempts. A row whose `step_key` begins with its own `job_id` (`<job id>/<name>`, or `<job id>.iter<n>/<name>` in a loop body) is a substep record of that node job; join `taskq.jobs` on `job_id` for the node's key. (A `/` alone does not mark one: a loop's own key may contain `/`.)
 3. **The vanilla events:** `taskq job events <job_id>` — the state changes (`lock_expired` reclaims carry the dead worker's id).
 4. **The cache hits:** a node row with `metadata.wf_cache_hit` (rendered by `taskq job show <job_id>` as `cache_hit:` and by the explorer's node panel) NEVER executed — the body ran in the receipt's `run_id`, and `wf_step_cache` holds the delivered result (`SELECT content_address, run_id, created_at FROM taskq.wf_step_cache WHERE content_address = '<address>'`). A bad cached result is evicted by deleting the address's row; the next run re-executes and re-fills it:
    `DELETE FROM taskq.wf_step_cache WHERE content_address = '<address>';`

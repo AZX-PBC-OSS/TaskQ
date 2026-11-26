@@ -26,6 +26,17 @@ if TYPE_CHECKING:
     from taskq.workflows._policy import RetrySpec
 
 
+#: The finite retry vocabulary a new workflow declaration may name. The
+#: vanilla ``RetryKind`` also admits ``"indefinite"`` for previously
+#: persisted rows and non-workflow actors; a workflow row carries no
+#: ``schedule_to_close`` for that kind to stop at, so the authoring surface
+#: names the finite set once here rather than re-spelling it at each door.
+type FiniteRetryKind = Literal["transient", "non_retryable", "permanent"]
+#: The stored form: the legacy ``"permanent"`` alias is normalized at the
+#: declaration door, so nothing written to a row carries it.
+type StoredFiniteRetryKind = Literal["transient", "non_retryable"]
+
+
 def duration_seconds(value: timedelta | float | int | None) -> float | None:
     """one normalizer for the second-denominated terms: a
     :class:`datetime.timedelta` or a bare number of seconds — the seconds
@@ -51,11 +62,13 @@ __all__ = [
     "FailureInfo",
     "FailurePolicy",
     "FinalizeResult",
+    "FiniteRetryKind",
     "FiredJoin",
     "ForkSpec",
     "JoinSpec",
     "MapIndexSchemaError",
     "NodeSpec",
+    "StoredFiniteRetryKind",
     "_consumer_binding",
     "_consumer_bindings",
     "_failure_info_from_json",
@@ -380,8 +393,14 @@ class ChildSpec:
         return self.retry.policy.max_attempts if self.retry is not None else None
 
     @property
-    def resolved_retry_kind(self) -> RetryKind | None:
-        return self.retry.policy.kind if self.retry is not None else None
+    def resolved_retry_kind(self) -> StoredFiniteRetryKind | None:
+        # RetrySpec.__post_init__ refuses "indefinite", so a constructed
+        # spec's policy kind always lands in the stored finite vocabulary.
+        return (
+            cast("StoredFiniteRetryKind", self.retry.policy.kind)
+            if self.retry is not None
+            else None
+        )
 
     def __post_init__(self) -> None:
         if self.map_index is not None:
@@ -473,7 +492,7 @@ class ForkSpec:
     join: JoinSpec | None = None
     trace_id: str | None = None
     max_attempts: int = 3
-    retry_kind: RetryKind | Literal["permanent"] = "transient"
+    retry_kind: FiniteRetryKind = "transient"
     #: the fork's JOIN is the source's own cohort (the placement fields say
     #: so), so its row lands at the source's resolution of the precedence law —
     #: the arms' overrides apply to the arm children, never the join. ``None``
@@ -483,6 +502,13 @@ class ForkSpec:
     #: source's resolution (the arms' declarations govern the arm children,
     #: never the join). ``None`` = nothing declared — the column NULL.
     start_to_close: timedelta | None = None
+
+    def __post_init__(self) -> None:
+        from taskq.workflows._policy import declared_retry_kind
+
+        object.__setattr__(
+            self, "retry_kind", declared_retry_kind(self.retry_kind, what="ForkSpec.retry_kind")
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -513,7 +539,7 @@ class NodeSpec:
     consumers: tuple[ConsumerBinding, ...] = ()
     trace_id: str | None = None
     max_attempts: int = 3
-    retry_kind: RetryKind | Literal["permanent"] = "transient"
+    retry_kind: FiniteRetryKind = "transient"
     idempotency_scope: str = ""
     idempotency_key: str | None = None
     #: the ``jobs.priority`` column value the insert stamps — the resolved
@@ -538,7 +564,7 @@ class NodeSpec:
         return self.retry.policy if self.retry is not None else None
 
     def __post_init__(self) -> None:
-        from taskq.workflows._policy import canonical_retry_kind
+        from taskq.workflows._policy import declared_retry_kind
 
         if self.map_index is not None:
             validate_map_index_identity(self.map_index)
@@ -550,13 +576,15 @@ class NodeSpec:
                 raise ValueError("NodeSpec max_attempts contradicts its resolved retry policy")
             if (
                 self.retry_kind != "transient"
-                and canonical_retry_kind(self.retry_kind) != policy.kind
+                and declared_retry_kind(self.retry_kind, what="NodeSpec.retry_kind") != policy.kind
             ):
                 raise ValueError("NodeSpec retry_kind contradicts its resolved retry policy")
             object.__setattr__(self, "max_attempts", policy.max_attempts)
             object.__setattr__(self, "retry_kind", policy.kind)
         else:
-            object.__setattr__(self, "retry_kind", canonical_retry_kind(self.retry_kind))
+            object.__setattr__(
+                self, "retry_kind", declared_retry_kind(self.retry_kind, what="NodeSpec.retry_kind")
+            )
 
 
 @dataclass(frozen=True, slots=True)
@@ -803,7 +831,7 @@ def _consumer_bindings(raw: object) -> tuple[ConsumerBinding, ...]:
     # asyncpg returns jsonb as ``str`` on un-coded connections — parse
     # before indexing (the estate's _json seam, never the stdlib import).
     decoded: Any = _json_loads(raw) if isinstance(raw, str) else raw
-    return tuple(_consumer_binding(c) for c in decoded)  # pyright: ignore[reportUnknownArgumentType]  # Why: the Any-contract walk — decoded's members are Unknown; _consumer_binding's asserts guard the runtime shape.
+    return tuple(_consumer_binding(c) for c in decoded)  # pyright: ignore[reportUnknownArgumentType]  # Why: the Any-contract walk — decoded's members are Unknown; _consumer_binding validates the required keys and the structured sub-docs (KeyError/ValueError on a malformed stamp) rather than asserting the shape away.
 
 
 def _seconds_or_none(raw: object) -> timedelta | None:
@@ -862,16 +890,39 @@ def _retry_from_doc(raw: object) -> RetrySpec | None:
     )
 
 
+def _required_str(raw: dict[str, Any], key: str) -> str:
+    """One REQUIRED binding field: a stamp that lacks the key raises
+    ``KeyError``, and a present-but-wrong-typed value raises ``ValueError``
+    — the persisted shape is validated at this boundary, never degraded."""
+    value = raw[key]
+    if not isinstance(value, str):
+        raise ValueError(f"workflow consumer binding {key!r} must be a string")
+    return value
+
+
 def _consumer_binding(raw: dict[str, Any]) -> ConsumerBinding:
     """one metadata ``consumers`` entry → the typed binding (the walk's
-    own arm): the declared deadline parses back from the binding's
-    SECONDS (the jsonb wire form — :func:`_consumer_binding_doc`'s own
-    serialization); a malformed value degrades to None (the binding is
-    a declaration, never a correctness input worth a sweep death)."""
+    own arm).
+
+    The three REQUIRED keys — ``step_key``, ``actor``, ``queue`` — are read
+    directly (:func:`_required_str`): a stamp missing one raises
+    ``KeyError`` and a wrong-typed one raises ``ValueError``. The
+    structured sub-docs validate through their own readers
+    (``rate_limits``/``reservations`` via :func:`_string_tuple`, ``retry``
+    via :func:`_retry_from_doc`), so a malformed entry raises there too.
+    ONLY the declared deadline degrades: ``start_to_close_s`` is a duration
+    hint parsed back from the jsonb wire form
+    (:func:`_consumer_binding_doc`'s serialization), so a malformed value
+    becomes ``None`` (:func:`_seconds_or_none`) rather than a raise.
+
+    This is a CROSS-RELEASE parse — since #745 a ``map_join``-naming
+    ``consumers`` stamp can only be written by an older release into the
+    same database — so the raise is a loud refusal at a real boundary, not
+    a sweep death the reader is promised cannot happen."""
     return ConsumerBinding(
-        step_key=raw["step_key"],  # pyright: ignore[reportUnknownArgumentType,reportIndexType]  # Why: the Any-contract walk (the ledger wrote the shape).
-        actor=raw["actor"],  # pyright: ignore[reportUnknownArgumentType,reportIndexType]
-        queue=raw["queue"],  # pyright: ignore[reportUnknownArgumentType,reportIndexType]
+        step_key=_required_str(raw, "step_key"),
+        actor=_required_str(raw, "actor"),
+        queue=_required_str(raw, "queue"),
         payload=raw.get("payload"),
         map_index=raw.get("map_index"),
         start_to_close=_seconds_or_none(raw.get("start_to_close_s")),

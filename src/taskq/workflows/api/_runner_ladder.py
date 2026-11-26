@@ -39,7 +39,12 @@ from taskq.workflows.engine import finalize_node
 if TYPE_CHECKING:
     from taskq.workflows._sql import WorkflowSql
 
-__all__ = ["LadderOps", "is_deterministic_authoring_failure", "is_infra_fault"]
+__all__ = [
+    "LadderOps",
+    "deterministic_failure_leaf",
+    "is_deterministic_authoring_failure",
+    "is_infra_fault",
+]
 
 logger: structlog.stdlib.BoundLogger = get_logger(__name__)
 
@@ -99,6 +104,7 @@ def _deterministic_classes() -> tuple[type[BaseException], ...]:
         ChildFlowLostError,
         ChildResultContractError,
         SpawnDepthExceededError,
+        SpawnKeyReservedError,
         SpawnResultModelError,
     )
     from taskq.workflows._emit import (
@@ -109,7 +115,12 @@ def _deterministic_classes() -> tuple[type[BaseException], ...]:
     )
     from taskq.workflows._progress import ProgressRefusedError
     from taskq.workflows._types import MapIndexSchemaError
-    from taskq.workflows.api._runner_errors import VanishedNodeError
+    from taskq.workflows.api._runner_errors import (
+        ClaimEpochMissingError,
+        DuplicateSubstepError,
+        VanishedNodeError,
+        WorkflowResultDetailUnavailableError,
+    )
     from taskq.workflows.definitions import FanInBoundExceededError
 
     return (
@@ -122,10 +133,14 @@ def _deterministic_classes() -> tuple[type[BaseException], ...]:
         FanInBoundExceededError,
         ReservedTimerNamespaceError,
         SpawnDepthExceededError,
+        SpawnKeyReservedError,
         ChildFlowLostError,
         SpawnResultModelError,  # never plain TypeError: every body TypeError would turn terminal.
         ChildResultContractError,  # the join's decode refusal (the declared result= model cannot read the child's row).
+        ClaimEpochMissingError,
         VanishedNodeError,
+        DuplicateSubstepError,
+        WorkflowResultDetailUnavailableError,
     )
 
 
@@ -171,24 +186,25 @@ def find_embedded_exception[T: BaseException](
     return _walk(exc)
 
 
+def deterministic_failure_leaf(exc: BaseException) -> BaseException:
+    """The error object the terminal record must describe (#743 W-1).
+
+    A deterministic refusal can travel inside an ``ExceptionGroup`` or a
+    ``__cause__`` wrapper (the shapes a body's ``asyncio.TaskGroup`` or
+    ``gather`` produce). The record names the deterministic LEAF's class, so
+    its message must be the leaf's own text — otherwise the row says
+    ``DuplicateSubstepError`` and the operator reads ``unhandled errors in a
+    TaskGroup``. Falls back to the raised object when no deterministic leaf is
+    embedded, which leaves every non-grouped message byte for byte."""
+    leaf = find_embedded_exception(exc, _deterministic_classes())
+    return leaf if leaf is not None else exc
+
+
 def _find_deterministic_leaf(exc: BaseException) -> str | None:
     """The FIRST deterministic leaf's own class name (the shared walker's
     deterministic face); None when nothing deterministic is carried."""
     leaf = find_embedded_exception(exc, _deterministic_classes())
     return type(leaf).__name__ if leaf is not None else None
-
-
-def _deterministic_error_class(exc: BaseException) -> str:
-    """The deterministic terminal's own record class: the deterministic
-    refusal's OWN name — a grouped deterministic error records its first
-    deterministic leaf's name (the group's wrapper name is not the
-    remedy's own vocabulary); a plain deterministic error records its own
-    name. For a non-deterministic shape the helper records the exception's
-    own class name via the fallback below — the failure ladder CALLS this
-    helper unconditionally on the terminal path (the caller routes by
-    :func:`is_deterministic_authoring_failure`; the record class is this
-    helper's), so the fallback is load-bearing, never dead."""
-    return _find_deterministic_leaf(exc) or type(exc).__name__
 
 
 def is_deterministic_authoring_failure(exc: BaseException) -> bool:
@@ -331,10 +347,16 @@ class LadderOps(_LadderHost):
         )
         max_attempts, retry_kind = self._row_ladder_terms(row, node, fallback)
         retry_spec = self._target_retry_spec(node, row)
-        # the ladder (the count read + the re-pend) is skipped entirely for a
-        # deterministic authoring failure — the finalizer below runs on the
-        # first attempt.
-        deterministic = is_deterministic_authoring_failure(exc)
+        # ONE walk of the exception tree: the routing decision (deterministic
+        # or laddered) and the record (class + message) both read the same
+        # embedded deterministic leaf, falling back to the raised object when
+        # none is embedded. Walking once here keeps the write, its
+        # projection, and the message from disagreeing — and from
+        # re-traversing a deeply nested group apiece.
+        found = find_embedded_exception(exc, _deterministic_classes())
+        deterministic = found is not None
+        leaf: BaseException = found if found is not None else exc
+        recorded_class = type(leaf).__name__
         # resume-not-retry: the ladder counts the ledger's
         # 'failed' rows — the claim's attempt ordinal increments on every
         # claim (holds' resumes included), so a hold-heavy node keeps its
@@ -355,7 +377,12 @@ class LadderOps(_LadderHost):
                 )
             )
         override = (
-            retry_spec.classify(exc, failed_count + 1)
+            retry_spec.classify(
+                exc,
+                failed_count + 1,
+                flow_id=str(flow_id),
+                step_key=str(row["step_key"]),
+            )
             if retry_spec is not None and not deterministic
             else None
         )
@@ -471,8 +498,8 @@ class LadderOps(_LadderHost):
             # deterministic error records its deterministic LEAF's name
             # (the refusal the remedy names), never the group's own
             # wrapper name.
-            error_class=_deterministic_error_class(exc),
-            error_message=str(exc)[:MESSAGE_TERMINAL_MAX],
+            error_class=recorded_class,
+            error_message=str(leaf)[:MESSAGE_TERMINAL_MAX],
             capture_policy=self.compiled.capture,  # pyright: ignore[reportAttributeAccessIssue]  # Why: the declared capture policy rides the compile (the workflow decorator's declaration); the host protocol's compiled is the runner's Any-typed field.
             map_index=row["map_index"],
             ledger_id=ledger_id,
@@ -493,13 +520,12 @@ class LadderOps(_LadderHost):
                     "outcome": "failed",
                     "step_key": row["step_key"],
                     # THE RECORD'S OWN TRUTH, projected (L-2): the same
-                    # helper the terminal write just used — the
-                    # deterministic LEAF's own class name (a grouped
-                    # deterministic error projects the leaf, never the
-                    # group's wrapper name). The projection is best-effort
-                    # freshness, but it must not disagree with the durable
-                    # record it mirrors.
-                    "error_class": _deterministic_error_class(exc),
+                    # leaf the terminal write just used — the deterministic
+                    # LEAF's own class name (a grouped deterministic error
+                    # projects the leaf, never the group's wrapper name).
+                    # The projection is best-effort freshness, but it must
+                    # not disagree with the durable record it mirrors.
+                    "error_class": recorded_class,
                 },
             )
         return "failed"

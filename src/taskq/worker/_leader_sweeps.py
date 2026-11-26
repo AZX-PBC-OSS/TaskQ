@@ -669,6 +669,17 @@ async def _sweep_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
         # (the resume re-dispatches); delivered/abandoned/cancelled/absent →
         # the stamp cleared + the row re-claims (the body's re-execution lands
         # the next named state). The lazy import keeps the import law.
+        #
+        # The batch knob is event_writer_batch_size (this arm writes no
+        # job_events rows; it borrows the committed-batch bound every
+        # drain-bodied sweep uses), and the spec is drain=True:
+        # sweep_drain_batches re-invocations per tick. The production ceiling
+        # is therefore event_writer_batch_size x sweep_drain_batches —
+        # 100 x 8 = 800 cleared rows per sweep tick at the defaults — and a
+        # wider backlog drains over further ticks. An operator who lowers the
+        # event-writer batch size for its own documented reason lowers this
+        # repair's throughput by the same factor. Pinned at the wiring by
+        # tests/test_audit_sweep_registry_differential.py.
         from taskq.workflows._sweep import sweep_hold_stamps
         from taskq.workflows.engine import render_workflow_sql
 
@@ -1179,16 +1190,18 @@ async def _sweep_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
             # SIGKILL wedge's repair): the hold's state decides — still 'held' →
             # the held representation stands; delivered/abandoned/
             # cancelled/absent → the stamp cleared + the row re-claims.
-            # not a drain: the predicate self-consumes (a cleared row
-            # loses the stamp), a second pass returns zero, and the
-            # statement is batch-bounded by LIMIT.
+            # a drain (issue #748): the fleet's dispatch fence never claims
+            # a stamped row, so this arm is a dead stamp's only repair; the
+            # predicate self-consumes (a cleared row loses the stamp; a live
+            # hold never takes a batch slot), so the drain stops on the
+            # first empty pass.
             name="wf_hold_stamp_reconcile",
             call=wf_hold_stamp_reconcile_call,
             warn_event="sweep-wf-hold-stamp-reconcile-failed",
             warn_kind="sweep_wf_hold_stamp_reconcile_failed",
             gated_on=("workflow_sweeps_capable",),
             extra_except=(asyncpg.exceptions.UndefinedTableError,),
-            drain=False,
+            drain=True,
             dbg_tick=_dbg_tick("wf_hold_stamp_reconcile_tick"),
         ),
         _SweepSpec(
@@ -2822,7 +2835,7 @@ async def _stranded_jobs_loop(ctx: SweepContext, shutdown: asyncio.Event) -> Non
     """Periodically surface pending/scheduled jobs that cannot make
     progress, with the reason each carries.
 
-    Three strand shapes, one gauge (actor -> stranded row count):
+    Four strand shapes, one gauge (actor -> stranded row count):
 
     - **no actor_config row** (dispatch-invisible): dispatch derives its
       candidate set from ``per_actor_capacity``, which is ``FROM
@@ -2842,17 +2855,29 @@ async def _stranded_jobs_loop(ctx: SweepContext, shutdown: asyncio.Event) -> Non
       exactly the strand a queue move leaves behind when the target
       queue's consumers were never started: the rows are pending and due,
       and every label-keyed surface names a queue the fleet does serve.
-    - **workflow_root_missing** (qualified meaning — NOT dispatch
-      -invisible): a workflow node whose run's own ``__flow__`` root row
-      is gone. The row CAN dispatch and be bounded-consumed when its
-      actor config and effective routing queue are otherwise served;
+    - **stamp_unresolved** (dispatch-invisible): the row carries a
+      ``metadata.hold`` stamp — the held representation's marker — whose
+      ``wf_signals`` hold is no longer ``'held'`` (delivered, abandoned,
+      cancelled, or absent). The fleet's dispatch fence refuses every stamped
+      row (``AND NOT metadata ? 'hold'``, the in-process claim CAS's twin),
+      so nothing but the leader's ``wf_hold_stamp_reconcile`` arm can clear
+      the stamp; until it does the row is ``pending``, due and unclaimable.
+      A LIVE hold is excluded (the row legitimately rests in the held
+      representation).
+    - **workflow_root_missing** (claim-fenced): a workflow node whose
+      run's own ``__flow__`` root row is gone. No claim fence admits the
+      row, because its body resolves from the root's workflow stamp;
       what cannot progress is the RUN — every remaining node of a root
       -less flow is stranded work. This is control-plane data corruption
       (restore the exact missing root, or quarantine the orphaned rows
       and recreate the run — see the runbook); actor registration and
       queue moves do not repair it. Root-missing takes PRECEDENCE for a
-      row that also carries a dispatch-invisible condition: one row owns
-      one reason, never a double count.
+      row that also carries a dispatch-invisible condition; among the
+      dispatch-invisible legs the routing conditions keep precedence and
+      the dead stamp is the residual shape (a row that is otherwise
+      ROUTABLE — config row present, a live worker on its routing queue —
+      which the fence alone makes invisible). One row owns one reason,
+      never a double count.
 
     The unserved-queue predicate is fleet-wide by construction: the
     ``workers`` table carries every registered worker's subscription, and
@@ -2894,9 +2919,11 @@ async def _stranded_jobs_loop(ctx: SweepContext, shutdown: asyncio.Event) -> Non
     # for the whole stale-worker sweep window.
     # THE THIRD LEG'S PRECEDENCE is the statement's own: a root-missing
     # row classifies ONLY as workflow_root_missing (one row, one reason),
-    # so this exclusivity comment describes the TWO DISPATCH-INVISIBLE
+    # so this exclusivity comment describes the THREE DISPATCH-INVISIBLE
     # legs; the root-missing leg is the global precedence rule above
-    # them.
+    # them. Among those three, the routing legs keep precedence and the
+    # dead stamp is the residual (otherwise routable) shape: a no-config
+    # or unserved row would not dispatch after the heal either.
     _stranded_sql = """\
     SELECT s.actor,
            count(*) AS cnt,
@@ -2911,7 +2938,13 @@ async def _stranded_jobs_loop(ctx: SweepContext, shutdown: asyncio.Event) -> Non
              (array_agg(DISTINCT s.flow_id ORDER BY s.flow_id)
                 FILTER (WHERE s.workflow_root_missing AND s.flow_id IS NOT NULL))[1:10],
              ARRAY[]::text[]
-           ) AS root_missing_flow_ids
+           ) AS root_missing_flow_ids,
+           count(*) FILTER (WHERE s.stamp_unresolved) AS stamp_unresolved_cnt,
+           coalesce(
+             (array_agg(DISTINCT s.flow_id ORDER BY s.flow_id)
+                FILTER (WHERE s.stamp_unresolved AND s.flow_id IS NOT NULL))[1:10],
+             ARRAY[]::text[]
+           ) AS stamp_unresolved_flow_ids
     FROM (
         SELECT r.actor,
                r.routing_queue,
@@ -2935,6 +2968,22 @@ async def _stranded_jobs_loop(ctx: SweepContext, shutdown: asyncio.Event) -> Non
                      -- own liveness setting.
                      AND w.last_seen_at > statement_timestamp() - make_interval(secs => $1)
                  ) AS unserved_queue,
+               -- A dead stamp is the residual dispatch-invisible shape: the
+               -- row is otherwise ROUTABLE (its actor has a config row and a
+               -- live worker serves its routing queue) yet the fence refuses
+               -- it until the reconcile clears the stamp. The routing legs
+               -- keep precedence: a no-config or unserved row would not
+               -- dispatch even after the heal, so its operator condition is
+               -- the more actionable reason (the reconcile clears the stamp
+               -- independently either way).
+               r.stamp_unresolved_raw
+                 AND NOT r.workflow_root_missing
+                 AND NOT r.no_actor_config_raw
+                 AND EXISTS (
+                   SELECT 1 FROM "{schema}".workers w
+                   WHERE r.routing_queue = ANY(w.queues)
+                     AND w.last_seen_at > statement_timestamp() - make_interval(secs => $1)
+                 ) AS stamp_unresolved,
                r.workflow_root_missing,
                r.flow_id
         FROM (
@@ -2969,6 +3018,23 @@ async def _stranded_jobs_loop(ctx: SweepContext, shutdown: asyncio.Event) -> Non
                         )
                         ELSE false
                    END AS workflow_root_missing,
+                   -- THE STAMP-UNRESOLVED LEG (the fourth strand shape,
+                   -- issue #748): the row is stamped `metadata.hold` but its
+                   -- hold is no longer 'held' — the row is dispatch-invisible
+                   -- by the fence until the hold-stamp reconcile clears it.
+                   -- A live hold is the legitimate held representation and
+                   -- never counts. The predicate is the reconcile's own
+                   -- (`_sql_sweep.HOLD_STAMP_RECONCILE_SQL`).
+                   CASE WHEN j.step_key IS NOT NULL
+                         AND j.step_key <> '__flow__'
+                         AND j.metadata ? 'hold'
+                        THEN NOT EXISTS (
+                            SELECT 1 FROM "{schema}".wf_signals live
+                            WHERE live.id::text = j.metadata->>'hold'
+                              AND live.status = 'held'
+                        )
+                        ELSE false
+                   END AS stamp_unresolved_raw,
                    CASE WHEN j.step_key IS NOT NULL
                          AND j.step_key <> '__flow__'
                          AND j.metadata ? 'flow_id'
@@ -2981,7 +3047,10 @@ async def _stranded_jobs_loop(ctx: SweepContext, shutdown: asyncio.Event) -> Non
             WHERE j.status IN ('pending', 'scheduled')
         ) r
     ) s
-    WHERE s.no_actor_config OR s.unserved_queue OR s.workflow_root_missing
+    WHERE s.no_actor_config
+       OR s.unserved_queue
+       OR s.stamp_unresolved
+       OR s.workflow_root_missing
     GROUP BY s.actor
     """
 
@@ -3040,6 +3109,9 @@ async def _stranded_jobs_loop(ctx: SweepContext, shutdown: asyncio.Event) -> Non
         # actor -> (root-missing rows, the bounded lexicographic flow ids)
         # — the third shape's own facts, read from the same row pass.
         root_missing_shapes: dict[str, tuple[int, list[str]]] = {}
+        # actor -> (dead-stamp rows, the bounded lexicographic flow ids) —
+        # the fourth shape's own facts.
+        stamp_shapes: dict[str, tuple[int, list[str]]] = {}
         # (actor, reason) -> rows: the gauge's own shape, so a series says
         # which condition held.
         by_reason: dict[tuple[str, StrandedReason], int] = {}
@@ -3057,6 +3129,10 @@ async def _stranded_jobs_loop(ctx: SweepContext, shutdown: asyncio.Event) -> Non
             if root_missing_cnt:
                 by_reason[(actor, "workflow_root_missing")] = root_missing_cnt
                 root_missing_shapes[actor] = (root_missing_cnt, list(row["root_missing_flow_ids"]))
+            stamp_cnt = int(row["stamp_unresolved_cnt"])
+            if stamp_cnt:
+                by_reason[(actor, "stamp_unresolved")] = stamp_cnt
+                stamp_shapes[actor] = (stamp_cnt, list(row["stamp_unresolved_flow_ids"]))
 
         # Always publish the gauge, including the empty case: an operator needs
         # to see the condition persist, grow, and clear. A log line at onset
@@ -3112,6 +3188,22 @@ async def _stranded_jobs_loop(ctx: SweepContext, shutdown: asyncio.Event) -> Non
                         actor=actor,
                         pending_count=root_missing_cnt,
                         flow_ids=root_missing_flow_ids,
+                        first_seen=previous is None,
+                    )
+                stamp_cnt, stamp_flow_ids = stamp_shapes.get(actor, (0, []))
+                if stamp_cnt:
+                    # Why its own event: the repair is the leader's
+                    # hold-stamp reconcile arm (`wf_hold_stamp_reconcile`),
+                    # not actor registration or a queue move. The bounded
+                    # flow-id detail names the wedged runs so an operator can
+                    # correlate them with the heal's own
+                    # `wf-hold-stamp-reclaimed` event.
+                    log.warning(
+                        "stranded-jobs-stamp-unresolved",
+                        kind="stranded_jobs_stamp_unresolved",
+                        actor=actor,
+                        pending_count=stamp_cnt,
+                        flow_ids=stamp_flow_ids,
                         first_seen=previous is None,
                     )
 

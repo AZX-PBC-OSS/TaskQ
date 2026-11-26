@@ -247,8 +247,9 @@ async def test_pin2_pruned_parent_of_a_live_run(
     """Retention pruning a parent row of a LIVE run mid-march: the guard
     PREVENTS the prune (the sweep's recount reads parent rows as truth; a
     pruned parent mid-run corrupts the count). the over-HOLD AUDIT (pin
-    3): a TERMINAL run's rows prune on the NORMAL schedule — a guard that
-    holds every workflow row forever reds this pin."""
+    3): a terminal PARENT row prunes on the NORMAL schedule once its run is
+    terminal — a guard that holds every workflow row forever reds this pin.
+    The separate root hold still applies while non-terminal children remain."""
     from datetime import timedelta
 
     from taskq.constants import DEFAULT_PRUNE_RETENTION
@@ -309,8 +310,8 @@ async def test_pin2_pruned_parent_of_a_live_run(
         )
     gone = await wf_conn.fetchval(f'SELECT count(*) FROM "{wf_schema}".jobs WHERE id = $1', parent)
     assert gone == 0, (
-        "the guard OVER-HOLDS: a terminal run's rows must prune on the "
-        "normal schedule (the guard is liveness-scoped, not a retention "
+        "the guard OVER-HOLDS: this terminal parent row must prune on the "
+        "normal schedule (the parent guard is liveness-scoped, not a retention "
         "exemption)"
     )
     _ = DEFAULT_PRUNE_RETENTION

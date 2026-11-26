@@ -535,3 +535,48 @@ def test_docs9_every_backticked_repository_path_in_the_coverage_matrix_exists() 
     assert not missing, "the coverage matrix names paths that do not exist: " + "; ".join(
         f"{path!r} (row: {row})" for path, row in missing
     )
+
+
+def test_docs_join_expiry_replay_is_scoped_to_execution() -> None:
+    """The child-join example must not teach the old attempt-scoped face:
+    a refunded-attempt re-claim is a new execution and replays ``Expired``.
+    The replay slot is one per node row and attempt, not per child, and the
+    guide must say so rather than promise a re-hold that the two-expired-
+    children shape cannot honour."""
+    text = " ".join(_GUIDE.read_text(encoding="utf-8").split()).lower()
+    assert "handle.wait()" in text, "the child-join example is missing"
+    assert "abandoned hold per execution" in text
+    assert "abandoned hold per attempt" not in text
+    assert "one replay slot per node row and attempt" in text
+    assert "two expired children" in text
+
+
+def test_docs9_the_upgrading_guide_names_the_replay_marker_key_families() -> None:
+    """The wait/timer/join replay cursors moved from attempt-keyed metadata
+    (``hold_cursor_*``, ``child_join_face_*``) to claim-scoped ones
+    (``hold_replay_signal_*``, ``hold_replay_timer_*``,
+    ``child_join_replay_*``) with no migration. An operator rolling binaries
+    across this change must be able to find the old keys on a row, read the
+    new ones, and know which family the running worker believes — the
+    practice this guide already follows for ``spawn_cursor_`` →
+    ``spawn_slot_``, including a ``jsonb_object_keys`` detection query."""
+    text = (_REPO / "docs" / "guides" / "upgrading.md").read_text(encoding="utf-8")
+    body = " ".join(text.split())
+
+    for family in (
+        "hold_cursor_",
+        "child_join_face_",
+        "hold_replay_signal_",
+        "hold_replay_timer_",
+        "child_join_replay_",
+    ):
+        assert family in body, (
+            f"docs/guides/upgrading.md never names the {family!r} replay cursor key "
+            "family: an operator cannot find the old cursors on every wait row, nor "
+            "tell which family the running worker believes"
+        )
+    assert "inert and unmigrated" in body
+    assert "rollback caveat" in body.lower()
+    assert "jsonb_object_keys" in body
+    assert "starts_with(k, 'hold_cursor_')" in body
+    assert "starts_with(k, 'child_join_face_')" in body

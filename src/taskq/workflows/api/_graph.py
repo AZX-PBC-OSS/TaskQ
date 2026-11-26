@@ -29,7 +29,6 @@ from typing import TYPE_CHECKING, Any, Concatenate, Final, cast, get_args, get_o
 from pydantic import BaseModel
 
 from taskq.actor_config import validate_capacity_owner
-from taskq.backend._protocol import RetryKind
 from taskq.constants import check_priority_domain
 from taskq.ratelimit.refs import KeyedRateLimitRef, KeyedReservationRef
 from taskq.ratelimit.reservation import ConcurrencyReservation
@@ -38,10 +37,10 @@ from taskq.ratelimit.token_bucket import TokenBucket
 from taskq.workflows._policy import (
     ExecutionPolicy,
     ResolvedExecutionPolicy,
-    canonical_retry_kind,
+    declared_retry_kind,
     resolve_source_execution_policy,
 )
-from taskq.workflows._types import EdgeFailurePolicy, duration_seconds
+from taskq.workflows._types import EdgeFailurePolicy, FiniteRetryKind, duration_seconds
 from taskq.workflows.api._hints import body_hints, ctx_input_reads, inner_fn, own_source
 from taskq.workflows.chain import Chain
 
@@ -655,7 +654,7 @@ class NodeDecl:
     #: default; the timeout arm resolves per the same policy.
     on_failure: str = "fail_closed"
     max_attempts: int = 3
-    retry_kind: RetryKind | None = None
+    retry_kind: FiniteRetryKind | None = None
     skip: SkipPredicate | None = None
     gates: tuple[GateDecl, ...] = ()
     #: the claim path acquires these buckets before the body runs — the vanilla
@@ -708,7 +707,14 @@ class NodeDecl:
     #: projected literal on every boot. The projection carries it into the
     #: cohort's ``ActorConfig``.
     capacity_owner: str = "operator"
-    kind: str = "step"  # "step" | "map_source" | "gather" | "map_join"
+    #: The compile's node discriminator. Exactly five values are assigned:
+    #: ``"step"`` (the default), ``"gather"``, ``"map_join"``,
+    #: ``"chain_source"`` and ``"loop"``. ``"map_source"`` is NOT one of
+    #: them: ``map_item is not None`` is the map-source marker (the
+    #: runner's fork decision reads it). ``is_fork_spawned_join`` below is
+    #: the single predicate for the ``"map_join"`` row the static insert
+    #: skips and the fork builders refuse to name as a consumer.
+    kind: str = "step"
     # a pydantic model the node's ``ctx.progress`` data emissions must satisfy.
     # On a map source the declaration reaches the children (the ``<src>.item``
     # keys resolve it through their source).
@@ -764,6 +770,20 @@ class NodeDecl:
     # wiring face refuses a TTL without the opt-in and a non-positive TTL.
     cache: bool = False
     cache_ttl: float | None = None
+
+    @property
+    def is_fork_spawned_join(self) -> bool:
+        """True when this node's row is written by its SOURCE's fork, not by
+        the static insert: the one spelling of the question the static node
+        pass (both loops) and both fork builders ask.
+
+        The static pass must not pre-insert such a node (its source's fork
+        writes the row) and the fork's consumer list must not name it (its
+        own fork writes the nested one) — two behaviours, one fact. Today
+        exactly ``kind == "map_join"``; a future derived-join kind decides
+        here, once, instead of drifting across four call sites.
+        """
+        return self.kind == "map_join"
 
 
 class Promise[T_co]:
@@ -854,6 +874,20 @@ class BuildGraph:
         return base if n == 0 else f"{base}:{n}"
 
     def add(self, node: NodeDecl) -> None:
+        # The engine's reserved run-root marker is not a user node key: a
+        # ``__flow__`` step row is excluded from the dispatch fence
+        # (``step_key <> '__flow__'``) and from the nodeless-root reap's
+        # node-existence check, so a node sharing it wedges the run and
+        # then fails it under a false "create was not atomic" story.
+        # Refused here, in the one place every wiring verb adds a node
+        # (step, loop, chain_source, ...), so no verb can re-open the door.
+        if node.key == "__flow__":
+            raise WorkflowBuildError(
+                f"node key {node.key!r} is the engine's reserved run-root marker "
+                "(step_key = '__flow__'): a node sharing it is never claimed and "
+                "is invisible to the nodeless-root reap, so the run wedges and "
+                "then fails under a false cause; rename the node"
+            )
         if node.key in self.nodes:
             raise WorkflowBuildError(
                 f"node {node.key!r} is declared twice in one workflow — a "
@@ -934,7 +968,7 @@ def step[R](
     queue: str = "default",
     on_failure: EdgeFailurePolicy = "fail_closed",
     max_attempts: int | None = None,
-    retry_kind: str | None = None,
+    retry_kind: FiniteRetryKind | None = None,
     skip: SkipPredicate | None = None,
     gates: tuple[GateDecl, ...] = (),
     progress_schema: type[BaseModel] | None = None,
@@ -1250,7 +1284,7 @@ def step[R](
             "own payload resolves the key)."
         )
     if retry_kind is not None:
-        retry_kind = canonical_retry_kind(retry_kind, what=f"step {node_key!r}'s retry_kind")
+        retry_kind = declared_retry_kind(retry_kind, what=f"step {node_key!r}'s retry_kind")
     graph.add(
         NodeDecl(
             key=node_key,
@@ -1424,6 +1458,9 @@ def map_source[S, R](
     from taskq.workflows.api._app import WorkflowActor  # the cycle-break (inner_fn's own pattern)
 
     if isinstance(body, WorkflowActor):
+        # The fork owns map-row retry terms, but the wired handle's retry kind
+        # still crosses this declaration door and must be a finite kind.
+        declared_retry_kind(body.retry_kind, what=f"map {source.key!r}'s actor retry_kind")
         _wire_handle_terms_into_node(source_node, body, what=f"map {source.key!r}")
     join_key = f"{source.key}.join"
     graph.add(
@@ -1528,6 +1565,14 @@ def _attach_route[S](
             "RouteArm[object]",
             value if isinstance(value, RouteArm) else RouteArm(body=value),
         )
+        # As above for map bodies: route-row terms come from the fork, while
+        # the handle's own retry kind is still validated at this door.
+        from taskq.workflows.api._app import (  # the cycle-break (inner_fn's own pattern)
+            WorkflowActor,
+        )
+
+        if isinstance(arm.body, WorkflowActor):
+            declared_retry_kind(arm.body.retry_kind, what=f"route arm {tag!r}'s actor retry_kind")
         # The priority domain (step()'s own law — the wiring site
         # refuses before any row exists): the arm's override checked at
         # the same door the arms normalize through (both map_source's

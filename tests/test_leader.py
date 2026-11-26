@@ -1604,7 +1604,7 @@ class _FakeConnForPrune(FakeConn):
         # the ids that fetch returned - the caller discipline that keeps
         # the write set bounded by the LIMIT-ed window (the same contract
         # test_sweepaudit_bounded_writes.py pins structurally).
-        if "WITH locked AS MATERIALIZED" in sql:
+        if "locked AS MATERIALIZED" in sql:
             pending = self._pending_write
             self._pending_write = None
             pending_ids = self._pending_ids
@@ -1827,7 +1827,7 @@ async def test_prune_loop_sub_daily_retention_lane_checks_every_tick(monkeypatch
     )
     # measured. each attempt drained its batch — the archive write consumed the
     # eligible window.
-    assert any("WITH locked AS MATERIALIZED" in sql for sql, _ in leader_conn.fetch_calls), (
+    assert any("locked AS MATERIALIZED" in sql for sql, _ in leader_conn.fetch_calls), (
         "the retention check never ran an archive batch — nothing pruned"
     )
 
@@ -2050,11 +2050,17 @@ class _AlwaysFailsPruneConn(_FakeConnForPrune):
 
 
 def _is_prune_candidate_sql(sql: str) -> bool:
-    """The archive batch's candidate window: a bare SELECT bounded by the
-    finished_at order. The other statements the sweep fetches are CTE
-    forms (the lock-bearing write, the expiry sweep) or machinery probes
-    (current_setting, actor_config), so the shape is the signature."""
-    return "ORDER BY finished_at" in sql and "WITH" not in sql
+    """The archive batch's candidate window: a SELECT bounded by the
+    finished_at order (carrying the ``WITH held AS MATERIALIZED`` CTE on
+    workflow-aware schemas). The other statements the sweep fetches are the
+    lock-bearing write (``locked AS MATERIALIZED``), the expiry sweep
+    (``WITH expired AS MATERIALIZED``), or machinery probes (current_setting,
+    actor_config), so the shape is the signature."""
+    return (
+        "ORDER BY finished_at" in sql
+        and "locked AS MATERIALIZED" not in sql
+        and "WITH expired AS MATERIALIZED" not in sql
+    )
 
 
 def _lock_attempts(conn: FakeConn) -> int:
@@ -2211,7 +2217,7 @@ async def test_prune_loop_demotion_cut_arms_ladder_instead_of_stamping_the_day(
 
         async def fetch(self, sql: str, *args: object) -> list[_FakeRecord]:
             result = await super().fetch(sql, *args)
-            if not self.demoted and "WITH locked AS MATERIALIZED" in sql and result and deps_holder:
+            if not self.demoted and "locked AS MATERIALIZED" in sql and result and deps_holder:
                 # Batch 1 has committed: this is the demotion instant.
                 # The drain's next gate call refuses (the demotion
                 # clause), and the loop's post-drain leading() read must

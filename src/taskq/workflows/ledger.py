@@ -44,6 +44,7 @@ a raising reducer rolls tx2 back and the body RE-RUNS on re-fire.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Final, Literal, Protocol
 
@@ -53,6 +54,7 @@ from taskq._json import loads as _json_loads
 from taskq.backend._protocol import ConnLike, JobId
 from taskq.backend.statemachine import TERMINAL_STATUSES
 from taskq.workflows._capability import validate_required_worker_schema
+from taskq.workflows._policy import declared_retry_kind
 from taskq.workflows._sql import WorkflowSql
 
 if TYPE_CHECKING:
@@ -70,6 +72,7 @@ __all__ = [
     "claim_step_ledger",
     "insert_flow_run",
     "memoized_step_result",
+    "memoized_substep_result",
     "run_idempotency_scope",
     "step_idempotency_key",
     "step_idempotency_scope",
@@ -96,7 +99,16 @@ class FlowEntry(Protocol):
     """The flow definition's registered shape the run-key claim needs (the
     typed door — a bare ``int`` or attribute-less object is a checker
     error, the negative type probes pin it). ``name`` namespaces the
-    arbiter's scope (``workflow-run:<name>``)."""
+    arbiter's scope (``workflow-run:<name>``).
+
+    ``actor`` is where the run's root row is written. Dispatch's root-cap
+    subtraction scopes to the literal ``'wf'`` (``capped_running`` in
+    ``backend/_dispatch_sql.py``), so a root written on any other actor is
+    never subtracted and fills that actor's ``max_concurrent`` — the #747
+    shape for that actor. The engine's own runner writes every root on
+    ``wf`` (``FlowEntryShim``'s default); this protocol accepts any actor
+    because it is an exported ledger API, not because a non-``wf`` root is
+    supported."""
 
     name: str
     actor: str
@@ -266,8 +278,9 @@ async def memoized_step_result(
     map_index: int | None,
 ) -> LedgerClaim | None:
     """The latest TERMINAL ledger row for ``(flow, step[, map_index])`` —
-    the map-child retry's ``ON CONFLICT`` path: the recorded result returns
-    rather than re-executing. ``None`` when no terminal row exists."""
+    the loop driver's iteration memo (``ctx.substep`` reads
+    :func:`memoized_substep_result`): the recorded result returns rather
+    than re-executing. ``None`` when no terminal row exists."""
     rec = await conn.fetchrow(wsql.ledger_memoized, flow_id, step_key, map_index)
     if rec is None:
         return None
@@ -275,6 +288,44 @@ async def memoized_step_result(
         flow_id=flow_id,
         job_id=JobId(rec["job_id"]),
         step_key=step_key,
+        map_index=map_index,
+        attempt=rec["attempt"],
+        status=rec["status"],
+        result=_decode_jsonb(rec["result"]),
+        error_class=rec["error_class"],
+        error_message=rec["error_message"],
+    )
+
+
+async def memoized_substep_result(
+    conn: ConnLike,
+    wsql: WorkflowSql,
+    *,
+    flow_id: JobId,
+    job_id: JobId,
+    step_keys: Sequence[str],
+    map_index: int | None,
+    legacy_iteration_key: str | None = None,
+) -> LedgerClaim | None:
+    """The ``ctx.substep`` memo: the latest TERMINAL row of *job_id* under
+    ``step_keys[0]`` (the scoped key) or a pre-#743 bare name after it.
+    *legacy_iteration_key* (``<loop>.iter<n>``) attributes a bare row to
+    the loop iteration that recorded it. The claim's ``step_key`` is the
+    key of the row that answered. ``None`` when no terminal row exists."""
+    rec = await conn.fetchrow(
+        wsql.ledger_substep_memoized,
+        flow_id,
+        list(step_keys),
+        job_id,
+        map_index,
+        legacy_iteration_key,
+    )
+    if rec is None:
+        return None
+    return LedgerClaim(
+        flow_id=flow_id,
+        job_id=JobId(rec["job_id"]),
+        step_key=rec["step_key"],
         map_index=map_index,
         attempt=rec["attempt"],
         status=rec["status"],
@@ -300,12 +351,17 @@ async def insert_flow_run(
 
     *entry* is the flow definition's registered shape (the API; the
     TYPED door — :class:`FlowEntry`, the protocol the negative probes
-    pin). *extra_metadata* rides the same insert (the child flow's provenance
+    pin). The root is written on ``entry.actor``: dispatch's root-cap
+    subtraction scopes to the literal ``'wf'``, so a caller passing any
+    other actor writes a root that never gets subtracted and fills that
+    actor's cap (see :class:`FlowEntry`). *extra_metadata* rides the same
+    insert (the child flow's provenance
     stamps — the child root's parent pointers land in the create's one
     transaction; ``None`` = the shipped shape byte-identical).
     """
     if required_worker_schema is not None:
         validate_required_worker_schema(required_worker_schema)
+    retry_kind = declared_retry_kind(entry.retry_kind, what="flow retry_kind")
     flow_id = new_uuid()
     # the root's metadata names the workflow whose registered definition
     # carries the run's step bodies — the sweep's fire arm resolves a healed
@@ -324,7 +380,7 @@ async def insert_flow_run(
         entry.queue,
         entry.payload if isinstance(entry.payload, str) else dumps_jsonb_str(entry.payload or {}),
         entry.max_attempts,
-        entry.retry_kind,
+        retry_kind,
         entry.trace_id,
         dumps_jsonb_str(root_metadata),
         run_idempotency_scope(entry.name),

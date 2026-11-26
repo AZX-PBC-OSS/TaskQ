@@ -5,11 +5,14 @@ claim's user-facing shape. Default idempotent (ON) — silent double-runs are
 the failure class this layer exists to prevent; ``idempotent=False`` opts a
 step out (harmless redelivery, or a payload too large to key).
 
-The replay contract: the retried step's key is
-``(workflow, step_key[, map_index])`` → the claim path returns the
-recorded result rather than re-executing. The node's own finalize records
-the ledger terminal (riding tx1 — the ledger-terminal-atomic rule);
-``ctx.substep``'s claim is the attempt's grant of work.
+The replay contract: a record belongs to the calling node execution (its
+job row and, in a loop body, its iteration) under its own name — the
+ledger key is ``<job id>[.iter<n>]/<name>`` (#743) → a retry of that unit
+replays the recorded ``succeeded`` result rather than re-executing. The
+same name in another node, map child or iteration is a different record.
+The node's own finalize records the ledger terminal (riding tx1 — the
+ledger-terminal-atomic rule); ``ctx.substep``'s claim is the attempt's
+grant of work.
 
 the claim and the terminal write are ~1 ms statements, each on its own
 acquisition — the body runs with no pool connection held. The pre-fix
@@ -34,15 +37,18 @@ from pydantic import BaseModel
 
 from taskq._json import dumps_jsonb_str
 from taskq.backend._protocol import JobId
+from taskq.obs import get_logger
 from taskq.workflows._sql import WorkflowSql
 from taskq.workflows.api._runner_errors import WorkflowRunError
 from taskq.workflows.ledger import (
     LedgerClaim,
     claim_step_ledger,
-    memoized_step_result,
+    memoized_substep_result,
 )
 
 __all__ = ["WorkflowSteps"]
+
+logger = get_logger(__name__)
 
 StepFn = Callable[..., Awaitable[Any]]
 
@@ -65,6 +71,8 @@ class WorkflowSteps:
         map_index: int | None = None,
         attempt: int = 1,
         claim_epoch: int = 0,
+        legacy_step_key: str | None = None,
+        legacy_iteration_key: str | None = None,
     ) -> None:
         self._pool = pool
         self._wsql = wsql
@@ -73,6 +81,8 @@ class WorkflowSteps:
         self._map_index = map_index
         self._attempt = attempt
         self._claim_epoch = claim_epoch
+        self._legacy_step_key = legacy_step_key
+        self._legacy_iteration_key = legacy_iteration_key
 
     async def step(
         self,
@@ -82,23 +92,35 @@ class WorkflowSteps:
         idempotent: bool = True,
         **kwargs: Any,
     ) -> Any:
-        """Run *fn* once per (flow, step key); replay returns the recorded
-        result. ``idempotent=False`` opts out (the body re-runs on
-        redelivery — its redelivery is declared harmless)."""
+        """Run *fn* once per *name*, the owning unit's scoped ledger key; a
+        ``succeeded`` record replays (a re-call after a ``failed`` one in the
+        same attempt re-runs *fn*). ``idempotent=False`` opts out (the body
+        re-runs on redelivery — its redelivery is declared harmless)."""
         if not idempotent:
             return await fn(*args, **kwargs)
 
         # the memoized read + the claim are ~1 ms statements; the connection
         # releases the moment they land — the body runs unwired.
         async with self._pool.acquire() as conn:
-            memo = await memoized_step_result(
+            memo = await memoized_substep_result(
                 conn,
                 self._wsql,
                 flow_id=self._flow_id,
-                step_key=name,
+                job_id=self._job_id,
+                step_keys=[name]
+                + ([] if self._legacy_step_key is None else [self._legacy_step_key]),
                 map_index=self._map_index,
+                legacy_iteration_key=self._legacy_iteration_key,
             )
             if memo is not None and memo.status == "succeeded":
+                if memo.step_key != name:
+                    # only a pre-#743 executor writes a bare-name substep row
+                    logger.warning(
+                        "workflow-substep-legacy-replay",
+                        flow_id=str(self._flow_id),
+                        job_id=str(self._job_id),
+                        step_key=memo.step_key,
+                    )
                 return memo.result
 
             claim = await claim_step_ledger(
@@ -149,11 +171,18 @@ class WorkflowSteps:
         error_message: str | None,
     ) -> None:
         """The step ledger's terminal write on ITS own acquisition (the
-        the LedgerWatch F4 fix, leg 2: the terminal never rides a connection held from
+        LedgerWatch F4 fix, leg 2: the terminal never rides a connection held from
         the claim). The write keys the claim's OWN row id AND its own claim
         instant — the strongest identity there is
         (``claim_step_ledger`` returns a nonnull id and a nonnull
-        ``updated_at``; no four-expression fallback exists)."""
+        ``updated_at``; no four-expression fallback exists).
+
+        ``ledger_terminal_by_id`` is ``UPDATE ... RETURNING id``: the write
+        returns the row it touched, so a ``None`` here means the guard
+        matched nothing — another writer re-stamped the claim (a fence or a
+        newer claim) while this execution was still inside ``fn``. The
+        phantom reap's fence is not one of them: it keeps a substep row's
+        claim instant, and this write lands over it (#743)."""
         if claim.ledger_id is None or claim.claimed_at is None:
             # A memo/read projection (no actual claim behind it) has no
             # terminal of its own to record — manufacturing an identity
@@ -164,7 +193,7 @@ class WorkflowSteps:
                 "read projection and records no terminal"
             )
         async with self._pool.acquire() as conn:
-            await conn.execute(
+            written = await conn.fetchval(
                 self._wsql.ledger_terminal_by_id,
                 claim.ledger_id,
                 status,
@@ -173,4 +202,22 @@ class WorkflowSteps:
                 error_message,
                 None,
                 claim.claimed_at,
+            )
+        if written is None:
+            # The guarded write matched no row (#743 W-3): another writer
+            # re-stamped the claim while this execution was still inside
+            # ``fn`` (a final fence or a newer claim; the phantom reap's
+            # provisional fence does not refuse it). Silence here records a
+            # completed effect as abandoned with no trace; the record's own
+            # value is already lost, so at least name it — with the flow,
+            # the job, the row and the outcome the caller asked to record.
+            logger.warning(
+                "workflow-substep-terminal-refused",
+                flow_id=str(self._flow_id),
+                job_id=str(self._job_id),
+                step_key=name,
+                ledger_id=str(claim.ledger_id),
+                status=status,
+                error_class=error_class,
+                reason="fenced",
             )

@@ -1709,10 +1709,12 @@ async def _list_stranded_pending_jobs(
     The same computation the leader's stranded-jobs sweep runs every
     minute, issued here on demand: ``doctor`` is the surface an operator
     reaches for mid-incident, and it cannot wait on a leader tick. THIS
-    READ MIRRORS ONLY THE DETECTOR'S TWO DISPATCH-INVISIBLE LEGS (a row
-    whose actor has no actor_config row; a row whose effective queue no
-    live worker serves) — not the detector's third, run-scoped
-    workflow_root_missing leg, which only the leader's sweep computes.
+    READ MIRRORS ONLY THE DETECTOR'S TWO DISPATCH-INVISIBLE ROUTING LEGS
+    (a row whose actor has no actor_config row; a row whose effective
+    queue no live worker serves) — not the detector's third
+    dispatch-invisible leg, stamp_unresolved (a dead hold stamp the
+    leader's reconcile repairs), and not its run-scoped
+    workflow_root_missing leg; both only the leader's sweep computes.
     The routing-queue discriminator (a re-pended row routes by its
     actor's stored assignment, not its label) is dispatch's own contract,
     mirrored from the sweep so both surfaces answer the same two-leg

@@ -512,6 +512,73 @@ async def test_admin_node_panel_resolves_identity_against_the_live_schema(
     assert broken.value.status_code == 503
 
 
+# ── the identity bound counts a truncated join's pack (#744) ────────────
+
+
+async def _pre_post_ints(ctx: Any) -> list[int]:
+    del ctx
+    return list(range(1000))
+
+
+async def _pre_post_ident(ctx: Any, x: int) -> int:
+    del ctx
+    return x
+
+
+async def test_pre_post_map_on_a_truncated_gather_refuses_the_pack_by_identity(
+    pre_only_schema: tuple[asyncpg.Connection, str],
+    pre_only_pool: asyncpg.Pool,
+) -> None:
+    """#744 on the pre-POST (all-smallint) window: a map on a gather of
+    34 x 1000 small ints forks from the gather's 34,000-item pack, not
+    the prefix its capped row spells. The width probe resolves the
+    smallint domain and the fork refuses the pack with
+    ``MapIndexExhaustedError`` before ``validate_fork``'s 1000 bound, so
+    the gather terminal-fails by name on attempt 1 with nothing forked.
+    The pre-fix fork counted the row's 16,801-item prefix against the
+    1000 bound instead."""
+    import taskq.workflows as wf
+    from taskq.workflows import (
+        Promise,
+        WorkflowApp,
+        WorkflowRunError,
+        build,
+        gather,
+        map_source,
+        step,
+    )
+
+    conn, schema = pre_only_schema
+    app = WorkflowApp()
+    name = f"pre-post-gather-{new_base62(10)}"
+
+    @app.workflow(name)
+    def _flow() -> Promise[object]:
+        ints = gather([step(_pre_post_ints, key=f"ints_{k}") for k in range(34)])
+        return build(map_source(ints, _pre_post_ident))
+
+    with pytest.raises(
+        WorkflowRunError,
+        match=r"node 'gather' terminal-failed: \[MapIndexExhaustedError\] "
+        r"the map source 'gather' returned 34000 items",
+    ):
+        await wf.run(app.get(name), pre_only_pool, schema)
+    row = await conn.fetchrow(
+        f'SELECT status::text AS status, error_class, attempt FROM "{schema}".jobs '
+        "WHERE step_key = 'gather'"
+    )
+    forked = await conn.fetchval(
+        f"SELECT count(*) FROM \"{schema}\".jobs WHERE step_key = 'gather.item'"
+    )
+    assert row is not None
+    assert (row["status"], row["error_class"], row["attempt"], forked) == (
+        "failed",
+        "MapIndexExhaustedError",
+        1,
+        0,
+    ), (dict(row), forked)
+
+
 # ── the finalize face routes deterministic refusals to the ladder ────────
 
 

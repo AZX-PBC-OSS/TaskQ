@@ -384,9 +384,9 @@ async def test_hand_delivery_cannot_resolve_a_timer_hold(
 # operator's decision a dead letter (the family's face on an
 # unwritten boundary). the contract — E13's per-site discipline generalized:
 # the answer queue's cursor is keyed to the wait site (its own signal
-# name, beneath the attempt), so every site counts its own
-# consumptions; the loop kind keeps the iteration counter (the advance
-# statement's own write) untouched.
+# name, under the attempt and scoped to the executing claim), so every site
+# counts its own consumptions; the loop kind keeps the iteration counter
+# (the advance statement's own write) untouched.
 
 
 async def test_timer_then_signal_one_plain_step_delivers_the_verdict(

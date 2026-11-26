@@ -43,7 +43,7 @@ from taskq._json import loads as _json_loads
 from taskq.backend._protocol import JobId
 from taskq.constants import WORKFLOW_NOT_DRAINING_CLASS
 from taskq.obs import get_logger
-from taskq.workflows._policy import canonical_retry_kind, row_retry_curve
+from taskq.workflows._policy import declared_retry_kind, row_retry_curve
 from taskq.workflows._progress import PROGRESS_RING_BOUND
 from taskq.workflows._reducers import forget_flow_reducers, resolve_flow_reducer
 from taskq.workflows._sql import (
@@ -106,6 +106,15 @@ NODELESS_ROOT_REAP_GRACE_S: Final[float] = 300.0
 #: shrink it without threading a knob, the same contract
 #: ``_PRUNE_RETRY_BACKOFF_INITIAL_SECS`` carries.
 _NULL_STAMP_REWARN_SECS: Final[float] = 3600.0
+
+#: The rootless undelivered-intent warning's re-warn cadence (seconds): a
+#: missing run root is a persistent corruption, so re-warning every drain
+#: pass would flood the log; the leader's hourly cadence is the precedent
+#: (``_NULL_STAMP_REWARN_SECS``).
+_OUTBOX_ROOT_MISSING_REWARN_SECS: Final[float] = 3600.0
+
+#: The cadence state: the monotonic time of the last rootless-intent warn.
+_outbox_root_missing_last_warned: float | None = None
 
 #: The sweep arms' default batch: one call locks, re-derives, and
 #: writes at most this many rows per statement.
@@ -330,6 +339,35 @@ def _outbox_priority(row: asyncpg.Record, binding: ConsumerBinding) -> int:
     return binding.priority if binding.priority is not None else int(row["priority"])
 
 
+def _warn_outbox_root_missing(rows: list[asyncpg.Record], *, fresh: bool = False) -> None:
+    """Report undelivered intents whose run root is gone.
+
+    Such an intent can never materialize its consumer: the drain's insert
+    inner-joins the root and its flip refuses to acknowledge the delivery.
+    One warning names a bounded sample (intent ids plus the missing flow
+    ids) and the caller leaves the rows undelivered. The condition persists
+    until an operator restores the roots, so the observation re-warns on
+    the leader cadence; *fresh* bypasses the cadence for a root that
+    vanished inside the drain's own transaction (a one-off event).
+    """
+    if not rows:
+        return
+    global _outbox_root_missing_last_warned
+    now = monotonic()
+    last = _outbox_root_missing_last_warned
+    if not fresh and last is not None and (now - last) < _OUTBOX_ROOT_MISSING_REWARN_SECS:
+        return
+    _outbox_root_missing_last_warned = now
+    logger.warning(
+        "sweep-wf-outbox-root-missing",
+        kind="sweep_wf_outbox_root_missing",
+        count=len(rows),
+        intents=[
+            {"intent_id": str(row["id"]), "flow_id": str(row["flow_id"])} for row in rows[:10]
+        ],
+    )
+
+
 async def _drain_outbox_once(
     pool: asyncpg.Pool,
     wsql: WorkflowSql,
@@ -352,8 +390,22 @@ async def _drain_outbox_once(
     fix — the fetch's SQL resolves the stamp with the fleet door's own
     arithmetic, degrade-on-malformed, COALESCE to the column default): the
     loop escalation's consumer materializes at the RUN's priority.
+
+    An undelivered intent whose root is gone cannot deliver, so it is
+    reported (``sweep-wf-outbox-root-missing``) and left undelivered rather
+    than acknowledged; the fetch excludes it so it cannot starve healthy
+    intents at the head of the batch. The flip re-checks the root, so a
+    root that vanishes inside this transaction also stays undelivered and is
+    reported. The return value counts the deliveries the flip actually
+    acknowledged.
     """
+    default_retry_kind = declared_retry_kind(default_retry_kind, what="outbox default_retry_kind")
     async with pool.acquire() as conn, conn.transaction():
+        # The rootless class first: it must be reported even when the
+        # deliverable set is empty (a pass holding only rootless intents is
+        # exactly the loss this observation exists for).
+        rootless = await conn.fetch(wsql.outbox_fetch_rootless, batch_size)
+        _warn_outbox_root_missing(rootless)
         rows = await conn.fetch(wsql.outbox_fetch_undelivered, batch_size)
         if not rows:
             return 0
@@ -397,9 +449,7 @@ async def _drain_outbox_once(
                 for binding in bindings
             ],
             [
-                binding.retry.policy.kind
-                if binding.retry is not None
-                else canonical_retry_kind(default_retry_kind)
+                binding.retry.policy.kind if binding.retry is not None else default_retry_kind
                 for binding in bindings
             ],
             [r["join_job_id"] for r in rows],
@@ -474,8 +524,15 @@ async def _drain_outbox_once(
                 for column in range(4)
             ],
         )
-        await conn.execute(wsql.outbox_drain_flip, [r["id"] for r in rows])
-    return len(rows)
+        flipped = await conn.fetch(wsql.outbox_drain_flip, [r["id"] for r in rows])
+        if len(flipped) != len(rows):
+            # A root vanished after the fetch's root join and before the
+            # flip's re-check. The intents stay undelivered; report the
+            # fresh occurrence now rather than acknowledging a delivery the
+            # insert could not make.
+            flipped_ids = {row["id"] for row in flipped}
+            _warn_outbox_root_missing([r for r in rows if r["id"] not in flipped_ids], fresh=True)
+    return len(flipped)
 
 
 async def drain_outbox(
@@ -622,20 +679,47 @@ async def sweep_hold_stamps(
     the answer replay, the typed timeout face, or a fresh hold). Nothing
     wedges; every path lands in a named state.
 
-    Bounded once (LIMIT $1) and self-consuming (a cleared row loses the
-    stamp — the predicate empties behind the arm), so one pass never
-    unbounds and a deeper backlog drains over passes. Returns the CLEARED
-    count (a held-standing row is no work — it is the contract holding)."""
+    Bounded once (LIMIT $1 on the rows cleared) and self-consuming (a cleared
+    row loses the stamp — the predicate empties behind the arm; a live hold
+    never takes a batch slot), so one pass never unbounds and a deeper backlog
+    drains over passes. The read is one pass over the stamped ``jobs`` rows
+    plus one pass over ``wf_signals`` (the anti-join's hash side, filtered
+    ``status = 'held'``), so its cost tracks the signal table's population,
+    not just the open holds. Returns the CLEARED count (a held-standing row is
+    no work — it is the contract holding).
+
+    ***Rate — the production ceiling.*** One pass clears at most
+    ``batch_size`` rows, and the leader's ``wf_hold_stamp_reconcile`` spec is
+    ``drain=True``: the sweep loop re-invokes this arm up to
+    ``sweep_drain_batches`` times per tick, and it passes
+    ``batch_size = settings.event_writer_batch_size``. At the defaults that is
+    **100 x 8 = 800 rows cleared per 30 s tick**; a wider backlog drains over
+    further ticks. The batch knob is the event-writer family's (this arm
+    writes no ``job_events`` rows but borrows the same committed-batch bound),
+    so an operator who lowers ``TASKQ_EVENT_WRITER_BATCH_SIZE`` for its own
+    documented reason also lowers this repair's throughput by the same factor.
+    Every pin that calls this function directly uses its own default (200);
+    the leader's 100 is pinned at the wiring in
+    ``tests/test_audit_sweep_registry_differential.py``."""
     async with pool.acquire() as conn:
         rows = await conn.fetch(wsql.hold_stamp_reconcile, batch_size)
     cleared_count = len(rows)
     if cleared_count:
         # a wedge the arm healed is a named event, not a silent fix — the
         # operator can correlate it with the process death that stamped it.
+        # The identifiers ride capped (the `_stranded_jobs_loop` idiom): the
+        # clear strips `metadata.hold`, so the row cannot be found afterwards
+        # by the stamp either.
+        job_ids = [str(row["id"]) for row in rows][:50]
+        flow_ids = list(
+            dict.fromkeys(str(row["flow_id"]) for row in rows if row["flow_id"] is not None)
+        )[:50]
         logger.warning(
             "wf-hold-stamp-reclaimed",
             kind="wf_hold_stamp_reconcile",
             cleared=cleared_count,
+            job_ids=job_ids,
+            flow_ids=flow_ids,
         )
     return cleared_count
 

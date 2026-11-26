@@ -1343,7 +1343,7 @@ async def test_loop_conditional_wait_is_the_named_shape_error(
 
 async def test_loop_wait_shape_error_is_the_typed_seam() -> None:
     """E13's unit face: the rule fires on the cursor-past-queue state
-    only for loop-kind nodes — a plain step's per-attempt cursor is
+    only for loop-kind nodes — a plain step's claim-scoped cursor is
     consumption-ordered (conditional waits are legal there) and never
     sees this rule. The typed seam named: the body failure the loop's
     failure-class rules route (the same face SignalTimeoutError rides

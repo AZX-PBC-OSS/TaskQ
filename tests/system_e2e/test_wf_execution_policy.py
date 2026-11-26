@@ -119,7 +119,8 @@ async def test_two_process_chain_policy_capacity_and_late_priority(
         windows = await conn.fetch(
             f"""SELECT created_at AS started_at, updated_at AS finished_at
                 FROM "{schema}".wf_step_ledger
-                WHERE flow_id = $1::uuid AND step_key = 'policy-reserved-window'
+                WHERE flow_id = $1::uuid
+                  AND step_key = job_id::text || '/policy-reserved-window'
                 ORDER BY created_at""",
             reserved_flow,
         )

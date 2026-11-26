@@ -40,7 +40,8 @@ RETURNING id, flow_id, job_id, step_key, map_index, attempt, status,
 """
 
 
-# The memoized-result read (map-child retries, ctx.step replay): the latest
+# The memoized-result read (the loop driver's iteration memo; ctx.substep
+# reads LEDGER_SUBSTEP_MEMOIZED_SQL below): the latest
 # TERMINAL ledger row for (flow, step[, map_index]) — the ON CONFLICT path
 # returns the recorded result rather than re-executing. attempt is not in
 # this key: a retried map child claims a new attempt row, but the replay
@@ -59,6 +60,34 @@ WHERE flow_id = $1
   AND ((map_index = $3::bigint) OR ($3::bigint IS NULL AND map_index IS NULL))
   AND status IN ('succeeded', 'failed')
 ORDER BY attempt DESC, claim_epoch DESC, created_at DESC, id DESC
+LIMIT 1
+"""
+
+
+# The ctx.substep memo read (#743): the latest TERMINAL row of THIS job under
+# its scoped key ``<job id>[.iter<n>]/<name>`` ($2[1]) or, for a run in flight
+# across the upgrade, the pre-#743 bare name ($2[2], when present). The
+# job_id leg keeps the bare leg from adopting another node's row (it is
+# redundant for the scoped key, which embeds the job). $5 is the loop
+# iteration's claim key ``<loop>.iter<n>`` inside a loop body (NULL
+# elsewhere): the iteration's first claim row is inserted before its body
+# runs, so a bare row is this iteration's only when it is no older than that.
+# The latest CLAIM answers: claim_epoch first, because the job's epoch only
+# rises (+1 per claim, never reset) while an emit park resets the physical
+# attempt to 0, so attempt-first let a pre-park failure outrank every later
+# success. step_key says which leg answered.
+LEDGER_SUBSTEP_MEMOIZED_SQL = """\
+SELECT attempt, status, result, error_class, error_message, job_id, step_key
+FROM {schema}.wf_step_ledger
+WHERE flow_id = $1
+  AND step_key = ANY($2::text[])
+  AND job_id = $3
+  AND ((map_index = $4::bigint) OR ($4::bigint IS NULL AND map_index IS NULL))
+  AND status IN ('succeeded', 'failed')
+  AND (step_key = $2[1] OR $5::text IS NULL OR created_at >= (
+        SELECT min(i.created_at) FROM {schema}.wf_step_ledger AS i
+        WHERE i.flow_id = $1 AND i.job_id = $3 AND i.step_key = $5))
+ORDER BY claim_epoch DESC, attempt DESC, created_at DESC, id DESC
 LIMIT 1
 """
 
@@ -87,7 +116,13 @@ SET status = $2,
     capture = $6::jsonb,
     updated_at = clock_timestamp()
 WHERE id = $1
-  AND status IN ('running', 'awaited', 'crashed')
+  AND (status IN ('running', 'awaited', 'crashed')
+       -- the phantom reap's provisional fence on a ctx.substep row (#743):
+       -- the reap keeps that row's claim instant (PHANTOM_REAP_SQL), so the
+       -- call whose fn outlived its node still records its outcome. Node
+       -- and loop rows never take this arm; every other fence re-stamps
+       -- updated_at, and the guard below refuses it.
+       OR (status = 'fenced' AND starts_with(step_key, job_id::text)))
   -- The re-mint guard: the caller presents its OWN claim's RETURNING
   -- instant (``claim_step_ledger``'s updated_at — the claim's instance
   -- identity) and writes ONLY the row that claim actually wrote, at the

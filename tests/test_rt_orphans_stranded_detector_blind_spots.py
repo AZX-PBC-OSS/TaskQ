@@ -6,8 +6,10 @@ THIS FILE ATTACKS THE HISTORICAL BASE PREDICATE — the actor-only detector
 src/taskq/worker/_leader_sweeps.py at the pre-correction revision) — not
 today's entire predicate. The shipped detector now also carries the
 run-scoped `workflow_root_missing` leg (a workflow node whose run has lost
-its own `__flow__` root row — a row that MAY dispatch, unlike the
-dispatch-invisible class these probes exercise). Two
+its own `__flow__` root row — a row every claim fence refuses because no
+body can resolve without the root's `workflow` stamp, so it is never
+claimed and the detector is its witness; this is a different class from
+the dispatch-invisible rows these probes exercise). Two
 permanently-undispatchable — dispatch-invisible — strand shapes were
 invisible to the actor-only base:
 
@@ -777,7 +779,12 @@ async def _seed_third_leg_estate(conn: asyncpg.Connection, schema: str) -> dict[
     * an ordinary no_actor_config row and an ordinary unserved_queue row
       (the two existing legs, un-degraded);
     * a workflow row whose root IS present (the negative direction: a
-      served workflow row never enters the new leg)."""
+      served workflow row never enters the new leg).
+
+    The detector's fourth dispatch-invisible leg, stamp_unresolved (a dead
+    ``metadata.hold`` stamp the reconcile repairs), is another estate's:
+    every row here is otherwise routable or root-conditioned, so none
+    classifies under it — this fixture stays exact."""
     await conn.execute(
         f'INSERT INTO "{schema}".actor_config (actor, queue) VALUES ($1, $2)',
         _ACTOR_PRESENT,

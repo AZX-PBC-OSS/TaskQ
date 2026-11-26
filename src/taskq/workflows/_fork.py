@@ -14,12 +14,13 @@ hand-built ids (pin 18's collision dragon).
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+import structlog
 
 from taskq._ids import new_uuid
 from taskq.backend._protocol import ConnLike, JobId
 from taskq.constants import SMALLINT_MAX
-from taskq.workflows._policy import canonical_retry_kind, row_retry_curve
+from taskq.obs import get_logger
+from taskq.workflows._policy import declared_retry_kind, row_retry_curve
 from taskq.workflows._sql import WorkflowSql
 from taskq.workflows._types import (
     MAP_INDEX_CEILING,
@@ -32,8 +33,7 @@ from taskq.workflows._types import (
 )
 from taskq.workflows.definitions import FanInBoundExceededError, validate_fork
 
-if TYPE_CHECKING:
-    pass
+logger: structlog.stdlib.BoundLogger = get_logger(__name__)
 
 __all__ = ["FORK_CHUNK", "insert_fork"]
 
@@ -100,7 +100,11 @@ async def insert_fork(
             [c.queue for c in chunk],
             [_jsonb(c.payload) for c in chunk],
             [c.resolved_max_attempts or fork.max_attempts for c in chunk],
-            [c.resolved_retry_kind or canonical_retry_kind(fork.retry_kind) for c in chunk],
+            [
+                c.resolved_retry_kind
+                or declared_retry_kind(fork.retry_kind, what="fork children's retry_kind")
+                for c in chunk
+            ],
             [parent_id] * len(chunk),
             [c.map_index for c in chunk],
             [c.step_key for c in chunk],
@@ -160,20 +164,28 @@ async def insert_fork(
 
     join_id: JobId | None = None
     if fork.join is not None:
-        # the API's create_flow pre-inserted every node — the join included
-        # (deps 1: its source edge). When the row exists, the fork adopts it:
-        # add the items' weight to the counter + stamp the consumers — never a
-        # second insert (the plain insert's idempotency collision killed the
-        # second demo run's fork). The engine's raw shapes (no static row) keep
-        # the insert path.
+        # The DSL never pre-inserts a join (create_flow skips map joins), and
+        # since #745 no binding names one. The probe can still find a row
+        # minted by an outbox drain from a binding stamped before #745 (an
+        # in-flight run), or one an engine-level caller inserted itself
+        # through insert_node. The fork ADOPTS a PENDING one: add the items'
+        # weight to the counter + stamp the consumers, never a second insert.
+        # The status leg is load-bearing: adopting a row that already ran
+        # leaves the consumers' reserved deps unreleased (the run wedges or
+        # reads an empty join), so any other state is left untouched — the
+        # fork takes the insert path and its own row runs with the true
+        # children. The read is ordered so a pre-fix residue (several rows
+        # for the key) resolves deterministically: the lowest PENDING row
+        # wins, and a non-pending row is read only to report it.
         join_row = await conn.fetchrow(
-            f"SELECT id, deps_pending FROM {wsql.schema}.jobs WHERE step_key = $1 "  # noqa: S608  # Why: the schema is the bundle's validated identifier; every value is $-bound.
-            "AND (metadata->>'flow_id')::uuid = $2",
+            f"SELECT id, status, deps_pending FROM {wsql.schema}.jobs WHERE step_key = $1 "  # noqa: S608  # Why: the schema is the bundle's validated identifier; every value is $-bound.
+            "AND (metadata->>'flow_id')::uuid = $2 "
+            "ORDER BY (status = 'pending') DESC, id LIMIT 1",
             fork.join.step_key,
             flow_id,
         )
-        if join_row is not None:
-            join_id = JobId(join_row["id"])
+        if join_row is not None and join_row["status"] == "pending":
+            candidate = JobId(join_row["id"])
             # The counter is a COUNT of unterminal parents (a smallint, never
             # the widened record identity), and the pre-created join already
             # carries its own source edge's weight: the adoption adds the
@@ -202,11 +214,17 @@ async def insert_fork(
                 reservations=fork.join.reservations,
             )
             join_doc.pop("flow_id", None)
-            await conn.execute(
+            # The status leg repeats the probe's guard INSIDE the write: a
+            # worker can claim the pending row between the SELECT and this
+            # UPDATE, and adopting it after the claim would leave the
+            # consumers' reserved deps unreleased exactly as adopting a
+            # finished row would. Zero rows RETURNING = lost that race.
+            adopted = await conn.fetchval(
                 f"UPDATE {wsql.schema}.jobs "  # noqa: S608  # Why: the schema is the bundle's validated identifier; every value is a bound parameter.
                 "SET deps_pending = deps_pending + $1, "
                 "metadata = jsonb_set(metadata || $2::jsonb, '{consumers}', $3::jsonb, true) "
-                "WHERE id = $4",
+                "WHERE id = $4 AND status = 'pending' "
+                "RETURNING id",
                 len(children),
                 _jsonb(join_doc),
                 _jsonb(
@@ -215,9 +233,45 @@ async def insert_fork(
                     ).get("consumers")
                     or []
                 ),
-                join_id,
+                candidate,
             )
-        else:
+            if adopted is not None:
+                join_id = JobId(adopted)
+                logger.debug(
+                    "wf-fork-join-adopted",
+                    flow_id=str(flow_id),
+                    step_key=fork.join.step_key,
+                    existing_job_id=str(join_id),
+                )
+            else:
+                concurrent_status = await conn.fetchval(
+                    f"SELECT status FROM {wsql.schema}.jobs WHERE id = $1",  # noqa: S608  # Why: the schema is the bundle's validated identifier; the id is a bound parameter.
+                    candidate,
+                )
+                logger.warning(
+                    "wf-fork-join-adoption-skipped",
+                    flow_id=str(flow_id),
+                    step_key=fork.join.step_key,
+                    existing_job_id=str(candidate),
+                    existing_status=(
+                        str(concurrent_status) if concurrent_status is not None else "missing"
+                    ),
+                )
+        elif join_row is not None:
+            # The row exists and has already run (or is running): adopting
+            # it would leave every consumer's reserved dep unreleased —
+            # the wedge the old status-less probe caused. The residue is
+            # otherwise invisible to the upgrade detectors (a
+            # never-adopted row has deps_pending = 0), so this is the one
+            # place it is reported from the system's own records.
+            logger.warning(
+                "wf-fork-join-adoption-skipped",
+                flow_id=str(flow_id),
+                step_key=fork.join.step_key,
+                existing_job_id=str(join_row["id"]),
+                existing_status=str(join_row["status"]),
+            )
+        if join_id is None:
             join_id = JobId(new_uuid())
             await conn.execute(
                 wsql.fork_join_node,
@@ -226,7 +280,7 @@ async def insert_fork(
                 fork.join.queue,
                 _jsonb(fork.join.payload),
                 fork.max_attempts,
-                canonical_retry_kind(fork.retry_kind),
+                declared_retry_kind(fork.retry_kind, what="fork join retry_kind"),
                 parent_id,
                 fork.join.step_key,
                 len(children),

@@ -44,18 +44,25 @@ refusal (`ChildWorkflowUnknownError`), never a KeyError dragon.
 
 The spawn's run key (the two-claims law at the flow level — G2's arbiter
 is the rememberer): the child's run key is
-`childflow:{parent_flow_id}:{node_key}:{slot}` under the child's own
-scope `workflow-run:<child name>`. The slot is the spawn's per-site
-identity, stable across retries:
+`childflow:{parent_flow_id}:{node_key}{.item<m>}{.iter<i>}:{slot}` under the
+child's own scope `workflow-run:<child name>`. The slot is the spawn's
+per-site identity, stable across retries:
 
-* a loop-kind node: slot = the row's `iteration` (the advance write — the
-  same counter the wait site's E13 law reads; one spawn per iteration —
-  the shape law documented at the site);
-* a plain node: slot = the per-attempt spawn cursor
-  (`metadata.spawn_cursor_{attempt}` — the hold-cursor's exact pattern:
-  a fresh attempt restarts at 0, so the retry re-derives the same slots
-  and the arbiter adopts the same children — never duplicates);
-* an explicit `key=` argument overrides the slot (the author's identity).
+* a plain node: slot = the executing claim's spawn cursor
+  (`metadata.spawn_slot_{attempt}` holding `{epoch, n}` — the cursor
+  restarts at 0 under any OTHER claim epoch, so a retry or a deferral's
+  re-run re-derives the same slots and the arbiter adopts the same
+  children — never duplicates; the `{epoch, n}` shape is what keeps a
+  stale writer from resetting a live claim's counter);
+* a loop body: a loop's iterations run on the loop node's OWN row under one
+  claim, so the cursor and the run key carry the iteration
+  (`metadata.spawn_slot_{attempt}.iter<i>`, node segment `<key>.iter<i>`); a
+  re-run of iteration k restarts at k's slot 0 and adopts k's children;
+* a map item: each item is its OWN job row (its cursor is per-sibling), and
+  the run key carries the sibling's `map_index` (`<key>.item<m>`) because
+  every item of one map shares a `step_key`;
+* an explicit `key=` argument overrides the slot (the author's identity). A
+  bare-decimal key is refused: it is byte-identical to the slot segment.
 
 The arbiter's verdicts flow through: `created` → the handle of a fresh
 child; `existing-running` / `existing-terminal` → adoption (the same
@@ -120,9 +127,13 @@ The wake — the child's terminal event is the hold's resolver:
 * **the JOIN'S own timeout**: `timeout_s=` arms the hold's deadline (the
   DB clock, the clock-precedence law — the wait's value wins, on the rows).
   The expiry sweep abandons the hold; the resumed site returns `Expired`
-  once per attempt (the face-marker pattern, `child_join_face_{attempt}`
+  once per execution (the face-marker pattern, `child_join_replay_{attempt}`
   — the hold→expire→re-hold→∞ dragon's kill site, the hitl broadcast's amendment
-  verbatim). `timeout_s=None` waits as long as the child lives — safe by
+  verbatim). The replay slot is one per node row and attempt, not per
+  child: an execution that observes two expired children leaves the second
+  child's `hold_epoch` in the slot, so a deliberate re-wait on the first
+  replays `Expired` again instead of minting a new hold. `timeout_s=None`
+  waits as long as the child lives — safe by
   the cascade (Q4): a cancelled parent cancels its children, so no join
   outlives its flow.
 
@@ -267,15 +278,19 @@ async def cancel_workflow_run(...):  # + the receipt walk: each child cancels re
 ## amendment (the build's honest deviation, recorded per the house law)
 
 The ticket's slot law said a loop-kind node's spawn slot reads the
-row's `iteration`. The reads decided better: the loop driver runs each
-iteration on its own job row (`<loop>.iter<i>` — the ledger's
-per-iteration identity), so one rule covers every shape — the
-per-attempt spawn cursor on the executing node's row
-(``metadata.spawn_cursor_{attempt}``). Distinct iteration rows carry
-distinct cursors; a retry of an iteration re-derives the same slots;
-the arbiter adopts. No loop special case shipped — the rule is
-simpler than the ticket's, and the ticket's law (retry-stable slots,
-adoption never duplication) holds exactly.
+row's `iteration`. The build's first read of that law was wrong, and the
+correction is the shipped one: a loop's iterations do NOT run on their own
+job rows — the loop driver runs every iteration on the loop node's OWN row
+under one claim. One row therefore carries one cursor, and the per-attempt
+cursor on the executing row (``metadata.spawn_slot_{attempt}``, holding
+``{epoch, n}``) is scoped to the iteration (``.iter<i>``) and to the map
+item's own row (``<key>.item<m>`` in the run key). A resume or a deferral
+that re-runs iteration k re-derives k's slots; the arbiter adopts. The
+ticket's law (retry-stable slots, adoption never duplication) holds, but it
+needed the loop special case the earlier amendment claimed was unnecessary:
+without the iteration segment every iteration shared one cursor and one run
+key, so iteration k adopted iteration 0's children — exactly the
+shared-cursor defect the segment cures.
 
 Second deviation, face-plumbing: the wake arm lives in
 ``api/_hitl.py`` beside ``sweep_expired_signals`` (the statement-reuse

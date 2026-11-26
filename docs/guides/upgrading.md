@@ -472,6 +472,43 @@ never diverge.
 
 ## Breaking API changes
 
+### New workflow declarations refuse `retry_kind="indefinite"`
+
+> **Unreleased.** Breaking for anyone declaring an indefinite workflow
+> actor or step: on previous releases `@app.actor(retry_kind="indefinite")`,
+> `step(..., retry_kind="indefinite")`, `chain_fork(..., retry_kind=…)` and
+> `RetrySpec(exceptions={…: "indefinite"})` accepted the word; now each
+> raises `WorkflowPolicyError` (`E21-execution-policy`) at decoration,
+> compile, construction or call time. Switch to `"transient"` with a finite
+> `max_attempts` budget, or to `"non_retryable"` (legacy spelling
+> `"permanent"`).
+
+The same refusal closes the internal row-authoring doors:
+`ForkSpec`/`NodeSpec(retry_kind=…)` and `WorkflowDef(retry_kind=…)` refuse
+`"indefinite"` at construction, and the coroutines
+`emit_batch(..., retry_kind=…)`, `drain_outbox(..., default_retry_kind=…)`
+and `insert_flow_run(..., entry.retry_kind=…)` refuse it at call time,
+before any pool acquisition or write. None of those six is exported from
+`taskq.workflows`.
+
+A workflow row never sets `schedule_to_close`, so an `indefinite` workflow
+row has no crash ceiling under the reclaim sweep: it is re-pended forever
+once a worker dies mid-attempt. `RetrySpec` already refused the kind; the
+remaining declaration and row-authoring doors did not, so a declared
+indefinite step either looped or raised only later, mid-run, where a `map_source`
+or `route` consumer is built. **Already-persisted legacy workflow rows and
+vanilla non-workflow `indefinite` actors keep their vocabulary** in the
+reclaim SQL, the deferral gate and the ladder's row reads.
+
+A legacy `indefinite` workflow row can only exist on a deployment that
+tracked unreleased `main`: no tagged release contains the workflow engine.
+Such a row has no crash ceiling — the reclaim sweep re-pends it on every
+dead worker, and it carries no `schedule_to_close` to end it — while its
+body-failure ladder still stops at the `max_attempts`-th failure. No
+engine-side action changes the kind: `taskq flows retry` re-arms the row's
+status and never writes `retry_kind`, so cancelling the run is the only
+remedy.
+
 ### `map_source` no longer takes `key=`
 
 > **Unreleased.** Breaking for anyone passing `key=` to
@@ -482,6 +519,110 @@ never diverge.
 > parameter is GONE: delete the argument (it was refused anyway; nothing
 > else changes). To name the map's node, name the SOURCE
 > (`step(source_body, key=…)`) — the join's key follows.
+
+### `ctx.substep` names are scoped to the calling node
+
+> **Unreleased.** Breaking for workflows that reuse a `ctx.substep` name
+> in more than one node, map, or loop iteration, for SQL that reads
+> substep rows from `wf_step_ledger` by their bare name, and for any
+> deploy that runs old and new workflow executors at the same time.
+
+**The behaviour change.** A `ctx.substep` record now belongs to the node
+execution that made it: the calling node's job row and, inside a loop
+body, the loop iteration. Before, the record was keyed by the bare name
+across the whole run. A second node calling `ctx.substep("x")` replayed
+the first node's result and skipped its own side effect; a substep named
+after a node key returned that node's stored envelope; two concurrent
+nodes shared one row; and a loop's later iterations replayed iteration
+0's value, so the loop never advanced. Now each owner runs its own `fn`.
+Cross-node sharing was never documented. If code relied on it, move the
+shared effect into one node. Two concurrent calls with one name inside
+one body (for example, both in one `asyncio.gather`) used to run both
+`fn`s silently. Now the second raises `DuplicateSubstepError` (a
+`WorkflowRunError`) before it claims anything, and the guard leaves the
+first one running. Uncaught, the error fails the
+node on its first attempt without spending the retry budget; in a loop
+body the loop exhausts as a body failure whose message names it.
+Fix the collision rather than retrying the node: the running call is not
+cancelled, so an operator retry can run its effect a second time while
+the first call is still inside `fn`.
+`idempotent=False` calls write no row and are exempt.
+
+**The row shape.** A substep row's `step_key` is now `<job id>/<name>`,
+or `<job id>.iter<n>/<name>` in a loop body. SQL that selected substep
+rows with `step_key = '<name>'` must select
+`step_key = job_id::text || '/<name>'` instead, or
+`step_key = job_id::text || '.iter<n>/<name>'` for loop iteration `<n>`.
+To match the name in every post-upgrade shape, loops included, select
+`starts_with(step_key, job_id::text) AND substr(step_key, strpos(step_key, '/') + 1) = '<name>'`.
+Node rows keep the node key. Rows written before the upgrade keep the
+bare name, so a query that must span the drain window selects the
+complete parenthesized predicate
+`((starts_with(step_key, job_id::text) AND substr(step_key, strpos(step_key, '/') + 1) = '<name>') OR step_key = '<name>')`;
+the post-upgrade predicate alone can never match a bare row because it
+tests the row against its own `job_id`.
+
+**Runs in flight across the upgrade.** A substep the old code recorded
+under the bare name is still replayed by its own node job (the read is
+owner-checked, so another node's bare row is never adopted). Inside a
+loop, a bare row is replayed only by the iteration that recorded it, and
+later iterations run their own `fn`. Each such replay logs a
+`workflow-substep-legacy-replay` warning with the run, the job and the
+bare key. Only pre-upgrade code writes bare rows, so the warnings stop
+once no pre-upgrade run is in flight. One for a run started after the
+upgrade means an old executor ran part of that run. Four pre-upgrade
+shapes cannot be recovered as written:
+
+- A substep named after its own node. The old code wrote it onto the
+  node's own claim row, and such a node was already wedged. After the
+  upgrade its reclaim re-runs the substep once.
+- One row that two concurrent nodes shared. The node that owns the row
+  replays the value it holds, and the other node's retry re-runs its
+  side effect once.
+- A bare row that one node wrote under another node's key, when that
+  other node had not run yet. The other node's claim still lands on that
+  row, as before the upgrade, so the run keeps the old behaviour for that
+  one row.
+- A substep in a loop body named like one of that loop's iteration keys:
+  `<loop>.iter<n>`, with `<n>` written the way the driver writes it
+  (ASCII digits, no leading zero). Its bare row is spelled like the
+  loop's own iteration rows, so it is never read as a substep record,
+  and the iteration re-runs the substep once.
+
+**The executor cutover (required).** This change has no migration, so
+nothing forces the cutover. Do not run old and new workflow executors on
+the same workflow queues at the same time: drain and stop the old
+executors, then start the new ones. That holds in the pre-POST window of
+the `01.00.42_02` `map_index` widening too, which otherwise allows a mixed
+old/new wave. In a mixed window an old executor
+that retries, reclaims or resumes a node misses the scoped record and
+re-runs the side effect, and it can still adopt another node's bare row.
+Both failures are silent: no error and no log line. (The
+`workflow-substep-legacy-replay` warning fires only when a new executor
+later replays a bare row; it does not see either failure.)
+A new executor can re-run a side effect in that window too. If an old
+executor's call is still inside `fn` when a new executor's later attempt
+runs the same substep and fails, the read prefers that later attempt's
+scoped `failed` row to the bare `succeeded` row the old call writes when
+it returns. The next attempt then runs `fn` again, repeating an effect
+the old call already completed.
+The drain is the only fence. This change does not raise the workflow
+execution-schema level, so the capability gate does not keep old
+executors out. That gate fails a claim with `WF001` when the worker is
+below the run's `required_worker_schema`, but any such stamp also makes
+the in-process `FlowRunner` refuse the run, and `ctx.substep` use is not
+declared per workflow. Using the gate here would mean stamping every run
+and refusing every direct `taskq.workflows.run()` or
+`FlowRunner.drive()` call.
+
+**Rollback is not safe for live runs.** A pre-upgrade binary runs
+workflow rows, and every live node it retries, reclaims or resumes
+re-runs, once, each substep the new code recorded. Draining first does
+not help runs parked on a hold or a timer. Either keep the workflow
+queues quarantined (no old binary subscribed to them, as in
+[the quarantine step](#rolling-taskq-py-back-with-live-workflows-the-quarantine-step))
+until the fleet rolls forward again, or accept one re-run per recorded
+substep.
 
 ### Queue and actor names are bounded at 255 characters
 
@@ -656,6 +797,32 @@ buckets alongside old ones (a temporary over-admission window). Drain
 affected queues before deploying payload model changes that affect key
 derivation.
 
+### Truncated workflow joins read their full collect (and fail closed when it is gone)
+
+> **Unreleased.** Two authoring values change, and one new failure face
+> appears on runs whose retained detail rows age out.
+
+A join (`map_join` or `gather`) that collects more than the 64 KiB cap stores a
+bounded summary on its row and keeps the full list on the parent rows. The
+readers now rebuild that list instead of handing back the summary:
+
+- `ChildOk.result` is the FULL collected list. It used to be the 64 KiB prefix
+  re-validated into the declared model — a parent body that counted,
+  deduplicated, or derived an idempotency key from `len(items.root)` now sees
+  every item.
+- A `skip=` predicate's `state["results"][<join>]` is the FULL collected list
+  (a truncated `gather` is flattened exactly as it was packed). A predicate
+  authored as "skip when fewer than N items are visible" flipped from
+  always-skip to never-skip; re-check those comparisons.
+
+When the full list can no longer be rebuilt — the parent detail rows were
+purged, or their result TTL was swept (`result_ttl`) — the read raises
+`WorkflowResultDetailUnavailableError` on the **first** attempt instead of
+degrading to the prefix or to `None`. The class is deterministic: the ladder
+spends no retries on it, the consuming node terminal-fails with the class on its
+row, and the remedy is to re-run the flow. See
+[Workflows](workflows.md#the-retention-coupling).
+
 ### Workflow rows carry a fairness cohort
 
 > **Unreleased.** The dispatch BEHAVIOR change is confined to
@@ -753,6 +920,31 @@ name against its own (pre-keyed) registry — the row PARKS budget-free
 (the fail-closed arm, the warning naming the bucket) until the
 upgraded workers claim it. The row is never admitted unprotected and
 never lost; the run resumes when the upgrade wave reaches its queue.
+
+### A map on a truncated join or `gather` forks every collected item
+
+> **Unreleased.** Breaking for workflows whose run succeeded on the
+> truncated prefix.
+
+A `map_source` wired directly on a map join or `gather` whose collected
+result passed the 64 KiB envelope cap used to fork only the prefix the
+join row still spelled, and the run ended `succeeded` on partial data.
+It now forks one child per collected item. Past 1000 items the source
+node terminal-fails with `FanInBoundExceededError` unless the map
+declares `child_driven=True`; on a widened (POST) schema — or at exactly
+32,768 items on any schema — it terminal-fails even with `child_driven`,
+on the join counter's `FanInBoundExceededError`.
+While the identity carriers are still `smallint`, a map past 32,768
+items fails first with `error_class='MapIndexExhaustedError'`,
+`child_driven` or not. Partition the source to stay under the bounds.
+A join that finalized before the upgrade keeps the children it already
+forked. Until the upgrade wave reaches every worker, a join CLAIMED by a
+still-running pre-upgrade worker keeps the old behaviour: it forks only
+the truncated prefix and the run still ends `succeeded` with no error.
+To audit runs from before (or during) the upgrade, look for the
+`"__truncated__"` marker on a join row's result envelope — and the
+`wf_collect_truncated` receipt in its metadata — which identify a join
+whose envelope was capped.
 
 ### Dispatch-path malformed payloads fail immediately
 
@@ -1250,6 +1442,115 @@ raises, so nothing points you at the call site; audit for them explicitly.
   the full text (the admin UI reads it there); only the log line truncates,
   and it reports the dropped remainder count. The bound follows
   `TASKQ_EXCEPTION_MESSAGE_MAX_CHARS` when raised.
+
+* **The dispatch fence refuses every row stamped `metadata.hold`, and that
+  refusal costs a heap visit per standing held row per dispatch round.** A
+  stamped row is the held representation (the in-process claim CAS already
+  refused it; the fleet now agrees), so a dead stamp can no longer be
+  re-claimed. The predicate is not indexable (`jobs`' only GIN index serves
+  `@>`, not `?`), so on a HITL-heavy queue with deep standing untimed holds
+  both dispatch statements' row work grows linearly with the held rows ahead
+  of the first routable one, on every round, for as long as those holds
+  stand — measured in `perf-evidence-dispatch.md` (repo root)
+  and pinned by `tests/test_dispatch_fence_hold_backlog_depth.py`. The old
+  depth-flat contract still holds for vanilla and routable rows.
+  **The trade-off:** a queue whose pending population is mostly parked on
+  human holds now pays a proportional read at the dispatch poll cadence.
+  Keep standing untimed holds bounded where you can (timed waits expire; the
+  reconcile clears dead stamps), and size a HITL-heavy fleet from the
+  measured held-backlog numbers, not the vanilla depth curve. An indexable
+  marker (a partial index on the pending population, or the stamp mirrored
+  into a column) is the future migration that restores the old bound.
+
+* **An unkeyed `ctx.spawn_flow` in a loop body gets a per-iteration run key,
+  and a map item's unkeyed spawn gets a per-item run key.** The default run
+  key's node segment is now `<key>.iter<i>` in a loop body, so a re-run of
+  iteration k adopts k's own children; on a map item it is `<key>.item<m>`
+  (map items share one `step_key`, so without the index every sibling adopted
+  item 0's child). A loop run or a map in flight across the upgrade that
+  spawned unkeyed under the old release mints that iteration's / item's
+  unkeyed children once more when it runs again, and during a rolling deploy
+  it can happen in either direction (old and new workers derive different
+  keys). Keyed spawns and spawns outside a loop and outside a map item keep
+  their keys.
+
+  **Your action:** either drain in-flight runs before rolling (let them reach
+  terminal on the old release), or cancel-and-restart the ones you cannot
+  drain — §6 of [Workflows](workflows.md) is the in-flight versioning
+  contract and the cancel-then-restart path. Accepting the default means a
+  duplicated child execution for each loop iteration or map item that
+  re-runs across the deploy (its side effects run twice; the parent adopts
+  the new child and leaves the old one's result unread). **Detection:** the
+  old release's cursor family is the marker of a row it spawned on —
+
+  ```sql
+  -- rows the previous release left mid-spawn (the old cursor key family)
+  SELECT id, step_key, status, metadata->>'flow_id' AS flow_id
+  FROM jobs
+  WHERE step_key <> '__flow__'
+    AND status IN ('pending', 'scheduled', 'running')
+    AND EXISTS (
+      SELECT 1 FROM jsonb_object_keys(metadata) AS k
+      WHERE starts_with(k, 'spawn_cursor_')
+    );
+  ```
+
+  A count of zero means no in-flight row carries the old derivation.
+  See the spawn's atomicity face in [Workflows](workflows.md) §3b.
+
+* **A bare-decimal `ctx.spawn_flow(key=...)` is refused.** `key="0"`,
+  `key=str(i)` and any all-digit key reproduced the default run key's slot
+  segment byte for byte, so a numeric key silently aliased the node's first
+  unkeyed spawn (a plain node with two spawn sites handed one caller the
+  other's child). The spawn now raises `SpawnKeyReservedError` (a
+  `ValueError` subclass, so callers that guarded the older shape keep
+  working) naming the fix; every non-decimal key keeps its byte-identical run
+  key, so only a caller that was already colliding observes the change. The
+  refusal is DETERMINISTIC — an uncaught one terminal-fails the node on
+  attempt 1 without burning the retry budget. Rename the key
+  (`f"item-{i}"`) or drop `key=` to use the slot.
+
+* **The wait, timer and child-join replay cursors move from attempt-keyed
+  metadata to claim-scoped ones.** A wait site used to stamp
+  `hold_cursor_{attempt}_{seq}` (signal waits),
+  `hold_cursor_{attempt}_{signal_name}` (timers) or
+  `child_join_face_{attempt}` (child joins) in `jobs.metadata`. It now writes
+  `hold_replay_signal_*`, `hold_replay_timer_*` or `child_join_replay_*`: the
+  same cursor, but carrying the executing claim's epoch so a `Snooze` /
+  `RetryAfter(consume_budget=False)` refund cannot replay a cursor written by
+  another execution. The legacy keys stay on every row, inert and
+  unmigrated — nothing reads them, and deleting them is not required (row
+  retention is the only reclaimer). A worker on the previous release reads no
+  key under the new names, so it derives its cursor as 0 and replays the
+  answer queue from its start: the rollback read direction is inert, not an
+  error.
+
+  Until the upgrade wave reaches every worker, a wait node CLAIMED by a
+  still-running pre-upgrade worker keeps the old behaviour (the executing
+  binary chooses the key family; the claim does not carry it). **Your
+  action:** either drain in-flight HITL runs before rolling, or accept one
+  duplicate hold on a re-claimed wait node in that window. **Rollback
+  caveat:** rolling back re-activates the pre-fix defect on the exact rows
+  this release fixes — a legacy `hold_cursor_*` stamp left mid-refund is read
+  again by the older worker and can mint a second hold, because nothing
+  clears it. **Detection:** the old cursor families mark a row the previous
+  release stamped —
+
+  ```sql
+  -- wait/timer/join rows still carrying the older release's cursor keys
+  SELECT id, step_key, status, metadata->>'flow_id' AS flow_id
+  FROM jobs
+  WHERE step_key <> '__flow__'
+    AND status IN ('pending', 'scheduled', 'running')
+    AND EXISTS (
+      SELECT 1 FROM jsonb_object_keys(metadata) AS k
+      WHERE starts_with(k, 'hold_cursor_')
+         OR starts_with(k, 'child_join_face_')
+    );
+  ```
+
+  A count of zero means no in-flight wait row carries the old keys. See the
+  wait, timer and child-join faces in [Workflows](workflows.md).
 
 ### Terminal outcome writes raise on drift instead of falling through silently
 
@@ -1979,6 +2280,155 @@ names exactly whose `TASKQ_QUEUES` coverage to check. `taskq_queue_depth`
 is still emitted, so dashboards and any rules you wrote against it keep
 working, but if you overrode the bundled alert's threshold, re-express
 the override in seconds of oldest-pending age.
+
+### A map on another fan-out's join: the nested join has one row
+
+> **Unreleased.** Silent; runs whose outer fork ran on an earlier release
+> can still show the old behaviour.
+
+A `map_source` placed on another map's or route's join used to get two
+`<join>.join` rows: the nested fork's own, and a second one the outbox
+drain inserted under `idempotency_key = 'wf:<step_key>'`. Depending on
+which landed first, the second row stayed `pending` on a finished run
+(`taskq flows list` showed `pending root=succeeded`), ran the join work a
+second time, or ran before the nested fork existed. In that last case the
+run either wedged `running` forever, or the step after the nested map ran
+on an empty join and the run succeeded with a wrong result. The outer
+fork no longer lists the nested join as a consumer, so the nested fork
+writes the only row.
+
+The fix covers runs whose outer fork runs on the new release. A run whose
+outer fork ran on an earlier release, including on an old worker during a
+rolling deploy, keeps the old binding and can still show any of the
+behaviours above. Nothing repairs those rows automatically. Three read-only
+queries find them. The first finds second rows left `pending` on a
+finished or pruned run:
+
+```sql
+SELECT n.id, n.metadata->>'flow_id' AS run_id, n.step_key, r.status AS root_status
+FROM jobs n
+LEFT JOIN jobs r
+  ON r.id = (n.metadata->>'flow_id')::uuid AND r.step_key = '__flow__'
+WHERE n.metadata ? 'flow_id'
+  AND n.step_key LIKE '%.join.join'
+  AND n.idempotency_key = 'wf:' || n.step_key
+  AND n.status = 'pending'
+  AND (r.id IS NULL OR r.status NOT IN ('pending', 'scheduled', 'running'));
+```
+
+`taskq job cancel <id>` is the record-only repair, and its cost has to be
+stated plainly: the row goes to `cancelled`, the root keeps its status and
+the run's result does not change, but every surface that derives the run's
+status from its rows — `taskq flows list`, the headline of `taskq flows
+status`, the admin run page — then reports the successful run as
+`cancelled`, permanently. The maintenance leg only re-derives a root that
+is still `running`, so nothing ever reconciles a terminal root from its
+rows again, and the estate's status-truth check (a `succeeded` root must
+derive `complete`) keeps flagging the run.
+
+Remove the row instead. A second row is a pure orphan: no edge row names
+it as child or parent, no step-ledger row records a claim for it, and no
+consumer belongs to it. The statement below deletes one only when every
+one of those facts holds, the row is still `pending` under the drain's own
+key, and the run it belongs to is finished or pruned — never a live run's
+fresh drain row. A real join row has its source's edge and a claim
+history, so it can never match:
+
+```sql
+DELETE FROM jobs n
+WHERE n.metadata ? 'flow_id'
+  AND n.step_key LIKE '%.join.join'
+  AND n.idempotency_key = 'wf:' || n.step_key
+  AND n.status = 'pending'
+  AND NOT EXISTS (
+    SELECT 1 FROM jobs r
+    WHERE r.id = (n.metadata->>'flow_id')::uuid
+      AND r.step_key = '__flow__'
+      AND r.status IN ('pending', 'scheduled', 'running')
+  )
+  AND NOT EXISTS (
+    SELECT 1 FROM wf_edge e
+    WHERE e.child_id = n.id OR e.parent_id = n.id
+  )
+  AND NOT EXISTS (
+    SELECT 1 FROM wf_step_ledger l
+    WHERE l.job_id = n.id
+  );
+```
+
+The run's rows then derive `complete` under its `succeeded` root, so the
+root's status, the run's result and every rows-derived surface agree.
+Re-run the first query to confirm it no longer selects the run.
+
+The second finds second rows that ran before the nested fork and were then
+adopted by it:
+
+```sql
+SELECT n.id, n.metadata->>'flow_id' AS run_id, n.step_key, n.deps_pending,
+       r.status AS root_status
+FROM jobs n
+LEFT JOIN jobs r
+  ON r.id = (n.metadata->>'flow_id')::uuid AND r.step_key = '__flow__'
+WHERE n.metadata ? 'flow_id'
+  AND n.step_key LIKE '%.join.join'
+  AND n.idempotency_key = 'wf:' || n.step_key
+  AND n.status = 'succeeded'
+  AND n.deps_pending > 0;
+```
+
+The row is `succeeded` with `deps_pending > 0` because the nested fork
+adopted it after it had already run, so its children's count never drains.
+If `root_status` is `running`, the run is wedged: stop it with
+`taskq flows cancel <run_id>`. If it is `succeeded`, the step after the
+nested map ran on an empty join, so treat that run's result as suspect and
+re-run it. If it is `failed` or `cancelled` (a run you stopped with
+`taskq flows cancel` stays on the list), the run ended without a result;
+re-run it if you still need one.
+
+A second row that ran while the nested fork's children were still running
+is harmless when the nested map is the last fan-out: the run ends with two
+`succeeded` rows and the right result, and nothing needs repair. It is not
+harmless when another map sits on the nested map's join (three levels or
+more). The second row forks that map again with no items, so the step after
+it can run on an empty join, and the real nested join's own fork then fails
+on a duplicate `wf_edge` row. The third query finds these runs:
+
+```sql
+SELECT n.id, n.metadata->>'flow_id' AS run_id, n.step_key, n.status,
+       r.status AS root_status
+FROM jobs n
+LEFT JOIN jobs r
+  ON r.id = (n.metadata->>'flow_id')::uuid AND r.step_key = '__flow__'
+WHERE n.metadata ? 'flow_id'
+  AND n.step_key LIKE '%.join.join'
+  AND n.idempotency_key = 'wf:' || n.step_key
+  AND n.status NOT IN ('pending', 'cancelled')
+  AND EXISTS (
+    SELECT 1 FROM jobs f
+    WHERE f.metadata->>'flow_id' = n.metadata->>'flow_id'
+      AND f.step_key = n.step_key
+      AND f.id <> n.id
+  )
+  AND EXISTS (
+    SELECT 1 FROM jobs m
+    WHERE m.metadata->>'flow_id' = n.metadata->>'flow_id'
+      AND m.step_key = n.step_key || '.join'
+  );
+```
+
+If `root_status` is `running`, stop the run with
+`taskq flows cancel <run_id>` (it stays on the list). Whatever its status,
+treat the run's result as suspect and re-run it.
+
+A fourth shape is not a repair case, so none of the queries selects it. If
+the drain's second row had already run (or was still running) when the
+nested fork reached it, the fork now refuses to adopt it and writes its own
+row: the run completes with the right result, and the leftover row sits
+`succeeded` with `deps_pending = 0` — debris, not a wrong answer, and
+invisible to the three queries above because a never-adopted row keeps
+`deps_pending = 0`. The refusal is recorded as a
+`wf-fork-join-adoption-skipped` log event naming the run, the step key and
+the leftover row.
 
 ---
 
@@ -3196,7 +3646,9 @@ the step that can still fix it:
    safe against every running worker.
 4. **Roll the workers.** The mixed fleet is safe in this window: old
    workers read the new row shape unchanged; new workers read the old
-   rows unchanged.
+   rows unchanged. One exception: workflow executors across the
+   `ctx.substep` scope change must not overlap; see
+   [its cutover rule](#ctxsubstep-names-are-scoped-to-the-calling-node).
 5. **The post phase, once, by hand**: `taskq migrate up --phase post` —
    after the LAST worker is up. Never a bare `taskq migrate up` ahead of
    the roll: the post phase lands immediately and old workers lose the

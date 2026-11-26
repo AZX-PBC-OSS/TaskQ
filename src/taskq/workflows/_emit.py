@@ -86,7 +86,7 @@ from taskq.backend._protocol import JobId
 from taskq.constants import wake_channel, wf_emit_capacity_channel
 from taskq.obs import get_logger, get_meter
 from taskq.workflows._fork import FORK_CHUNK
-from taskq.workflows._policy import canonical_retry_kind, row_retry_curve
+from taskq.workflows._policy import declared_retry_kind, row_retry_curve
 from taskq.workflows._sql_finalize import WF_EMIT_ROTATION_BATCH
 from taskq.workflows._types import (
     MAP_INDEX_CEILING,
@@ -711,6 +711,7 @@ async def _emit_tx(
     # import law — the runtime name is needed only at the except).
     import asyncpg
 
+    retry_kind = declared_retry_kind(retry_kind, what="emit retry_kind")
     for start in range(0, len(children), FORK_CHUNK):
         chunk = children[start : start + FORK_CHUNK]
         ids = child_ids[start : start + FORK_CHUNK]
@@ -722,7 +723,7 @@ async def _emit_tx(
                 [c.queue for c in chunk],
                 [_jsonb(c.payload) for c in chunk],
                 [c.max_attempts or max_attempts for c in chunk],
-                [c.retry_kind or canonical_retry_kind(retry_kind) for c in chunk],
+                [c.retry_kind or retry_kind for c in chunk],
                 [source_id] * len(chunk),
                 [c.map_index for c in chunk],
                 [c.step_key for c in chunk],
@@ -922,6 +923,7 @@ async def emit_batch(
     against a missing, mixed or botched carrier shape (a high candidate's
     authoring-door resolve refuses a missing or mixed shape as
     :class:`MapIndexSchemaError` first)."""
+    retry_kind = declared_retry_kind(retry_kind, what="emit retry_kind")
     for child in children:
         if child.map_index is None:  # pyright: ignore[reportUnnecessaryComparison]  # Why: the runtime guard behind the typed door — EmitChild.map_index's int type is the declaration; a hand-built child carrying None must be refused here (the refuted-claim discipline), never trusted to the checker.
             raise ValueError(

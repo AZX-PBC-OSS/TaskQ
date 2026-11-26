@@ -102,6 +102,7 @@ separate phases).
 | deadline sweep (heartbeat arm) | a slow-but-live worker near the deadline | the phantom-cancel window: a failed tick retries promptly so the recovery beat lands inside the 2x floor | `test_heartbeat.py::test_one_fast_transient_failure_is_one_miss_retried_promptly` |
 | archive / retention sweeps | retention bounds vs live readers | bounded batches, event TTL carve-out for reclaim events | `test_attack_rt_retention_integration.py`, `test_sweepaudit_bounded_writes.py` |
 | sweep liveness under long batches | a sweep batch outlasts the staleness budget | `_drain_bounded` renews the detector stamp mid-sweep | `test_drain_liveness.py`, `test_rt_worker_sweep_telemetry.py` |
+| the fork/drain consumer-binding seam (the fork's join `consumers` → the fire's outbox → `drain_outbox`), callers: `_map_fork`, `_route_fork` | the outbox drain lands before or after a nested map's fork on the outer join (#745) | a join row has one writer, its own source's fork: no binding names a `map_join` node, so the drain never mints a join row | `test_wf_map_on_join_pins.py` |
 
 ## 6. State machines
 
@@ -166,12 +167,48 @@ above.
 | lease and sweep deadlines | worker clock skew | the comparisons are server-side (`clock_timestamp()`); the same clock that stamped the lease judges it | `test_heartbeat.py` (the gated statement's server-side threshold), `test_rt_sweeps_*` |
 | harness seed aging | timing-sensitive choreography | seeds anchor to the PG clock instead of wall-clock sleeps | the sweep pins' seeding discipline |
 
+## 11. Dispatch admission
+
+| seam / caller | interleaving | invariant | pin |
+|---|---|---|---|
+| `capped_running.in_flight` (`backend/_dispatch_sql.py`), read by `per_actor_capacity`, `repend_capacity` and the `eligible` re-limit | a root written on a capped non-`wf` actor through the exported `insert_flow_run` (its `entry.actor` is caller-chosen): the subtraction's literal `'wf'` never sees it, so that actor's pending step is not admitted while a row that is not work holds the unit. Diagnostic shape: an actor at `saturation = 1` whose running rows include `__flow__` roots is an actor whose cap is held by rows that are not work. | a **running** flow root never holds a unit of `wf`'s cap; running steps and vanilla running rows do. The subtraction is the literal `'wf'`, so it relies on every root being written on `wf` (`FlowEntryShim.actor`). That scope is documented on `FlowEntry`/`insert_flow_run` but not enforced at the exported write. | `tests/test_wf_root_actor_cap_pins.py` (including the terminal-root and placement pins) and `tests/test_wf_root_cap_subtraction_gate.py` |
+
+## 12. Workflow join collects
+
+| seam / caller | interleaving | invariant | pin |
+|---|---|---|---|
+| the join's bounded collect (`_bounded_collect` in `workflows/api/_runner.py`), callers: the consumer decode (`decode_result_with_detail`, from `_parent_results` and `result()`), the map fork (`_execute_claimed_tail` threads the join's pack to `_finalize_success`, then `_map_fork`) | the collect is over 64 KiB, so the join row holds a truncated envelope | the row stays bounded; the fork reads the join's pack, never the row's prefix; the fan-in bound, the join counter's smallint domain and the resolved `map_index` bound (32,767 on a pre-POST `smallint` schema) count the pack's total and terminal-fail the source node by name through the ladder | `test_wf_finalize_pins.py::test_pin_fanin_envelope_within_the_estate_result_cap`, `::test_pin_fanin_truncated_envelope_unwraps_at_the_consumer_decode`, `::test_pin_map_on_truncated_join_forks_every_collected_item`, `::test_pin_map_on_truncated_gather_forks_every_flattened_item`, `::test_pin_map_on_gather_of_truncated_joins_forks_every_item`, `::test_pin_map_on_truncated_gather_counts_the_true_total_against_the_fan_in_bound`, `::test_pin_child_driven_map_on_truncated_gather_forks_every_item_past_the_bound`, `::test_pin_child_driven_map_on_gather_past_the_join_counter_fails_by_name`, `test_wf_identity_717_repair.py::test_pre_post_map_on_a_truncated_gather_refuses_the_pack_by_identity`; controls for the refusal route on a step source (no join collect): `test_wf_finalize_pins.py::test_pin_child_driven_map_source_past_the_join_counter_fails_by_name`, `::test_pin_cache_hit_map_fork_past_the_fan_in_bound_fails_by_name` (a step's cached list replayed into a map wiring) |
+| the recursive detail readers (`decode_result_with_detail` in `workflows/api/_runner_codec.py`), callers: `_parent_results`, `result()`, `_flow_state` (the dispatch-time `skip=` predicate's view), and `ChildHandle._ok_result` (`workflows/_childflow.py`) | the row a reader decodes is a truncated envelope, nested truncated joins (`gather` over truncated `map_join`/`gather`), or missing/expired detail rows | every reader recursively reconstructs the full collected value across arbitrarily nested truncated joins or fails closed with `WorkflowResultDetailUnavailableError` on expired, swept, re-pended, or non-reconciling rows | `test_wf_truncated_readers_pins.py` |
+
+## 13. Workflow step ledger identity
+
+The seam: `StepContext.substep` → `WorkflowSteps.step` → `wf_step_ledger`
+(the substep memo read and the claim arbiter). Callers: step bodies, map
+children, chain and join bodies, loop iterations, on both drivers (the
+in-process `_run_node` and the fleet door `run_fleet_claimed_step`). The
+invariant for every row (#743): a substep record is owned by exactly one
+execution unit (the calling job and, in a loop body, its iteration), and
+a `ctx.substep` call claims and replays only records of its own unit
+under its own name. The key `<job id>[.iter<n>]/<name>` is injective in
+(unit, name) and disjoint from every node claim key, and within one
+execution there are never two live claims on one key.
+
+| seam / caller | interleaving | invariant | pin |
+|---|---|---|---|
+| two nodes, two map children, two maps or two loop iterations | the same substep name in each | each owner runs its own `fn` and keeps its own record | `test_wf_substep_scope_pins.py::test_two_nodes_sharing_a_substep_name_each_run_their_own`, `::test_two_maps_sharing_a_substep_name_keep_their_own_values`, `::test_loop_iterations_sharing_a_substep_name_run_per_iteration` |
+| two concurrent nodes | the second claims while the first's claim is `running` | two rows, each holding its own value | `::test_concurrent_nodes_sharing_a_substep_name_get_separate_records` |
+| one body | the same name issued concurrently | the duplicate refuses before any SQL with `DuplicateSubstepError`; the node fails on attempt 1 (a loop exhausts as a body failure naming the class); the first record lands; a sequential re-call replays; `idempotent=False` is exempt | `::test_concurrent_same_name_substeps_in_one_body_refuse_the_second`, `::test_concurrent_same_name_substeps_fail_the_node_on_its_first_attempt`, `::test_a_duplicate_substep_in_a_loop_body_exhausts_the_loop_naming_the_class` |
+| a substep named after a node key or a loop iteration key | the name equals an upstream node, the node itself, or `<loop>.iter<n>` | the substep never reads or re-stamps a node or iteration claim row; the node's retries and ladder count are its own | `::test_a_substep_named_after_an_upstream_node_runs_its_own_fn`, `::test_a_substep_named_after_its_own_node_keeps_the_node_record`, `::test_a_self_named_substep_replays_across_node_retries`, `::test_a_substep_named_after_a_loop_iteration_key_runs_its_own_fn`, `::test_a_substep_named_after_its_own_iteration_key_never_adopts_a_lapsed_claim`, `::test_a_failing_self_named_substep_never_counts_against_the_node_ladder`, `::test_separator_bearing_node_keys_and_names_never_collide` |
+| a node retry, a hold resume, a loop hold resume, a direct attempt then a fleet attempt | the body re-runs after a recorded substep | the recorded `succeeded` result replays; `fn` ran once | `::test_a_self_named_substep_replays_across_node_retries`, `::test_a_substep_replays_across_a_hold_resume`, `::test_a_loop_iteration_replays_its_substep_across_a_hold_resume`, `::test_a_substep_recorded_on_the_direct_driver_replays_on_the_fleet_door` |
+| runs in flight across the upgrade | a pre-#743 bare-name row of this node, of another node, or of a loop iteration | an own row replays and logs `workflow-substep-legacy-replay`; another node's row is never adopted; a loop's bare row replays only in the iteration that recorded it | `::test_a_legacy_bare_row_owned_by_this_node_replays_without_rerunning`, `::test_a_legacy_bare_row_owned_by_another_node_is_never_adopted`, `::test_a_loop_held_mid_iteration_across_the_upgrade_replays_only_that_iteration` |
+
 ## What remains open
 
 Four rows read "no pin": the `resolve_claim`/`mark_claimed` bare-id intent
 mutation (section 1.1), the cancel ladder's detach-delivery shape
-(section 4), the reconcile's claim-time attempt refund (section 6.1), and
-the tx-path SystemExit task boundary (section 6.1). Each row states the
-invariant and the pin's shape; a PR touching those seams owes the pin.
+(section 4), the reconcile's claim-time attempt refund (section 6.1),
+and the tx-path SystemExit task boundary (section 6.1).
+Each row states the invariant and the pin's shape; a PR touching those
+seams owes the pin.
 The matrix's pinned verdicts are grep-and-read verdicts over the named
 test files, not re-runs of every cited suite.

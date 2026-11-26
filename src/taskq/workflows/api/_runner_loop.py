@@ -24,7 +24,7 @@ from taskq.backend._protocol import JobId
 from taskq.constants import ERROR_CLASS_MAX_ATTEMPTS_EXCEEDED
 from taskq.exceptions import RetryAfter, Snooze
 from taskq.obs import get_logger
-from taskq.workflows._progress import ProgressEmitter
+from taskq.workflows._progress import MESSAGE_TERMINAL_MAX, ProgressEmitter
 from taskq.workflows._types import FinalizeResult
 from taskq.workflows.api._attempt import AttemptClaim, repend_attempt
 from taskq.workflows.api._ctx import build_step_context
@@ -32,11 +32,15 @@ from taskq.workflows.api._ctx_wait import NodeHeldError
 from taskq.workflows.api._deps import deps_param_declared
 from taskq.workflows.api._runner_codec import encode_result, jsonable
 from taskq.workflows.api._runner_errors import WorkflowRunError
-from taskq.workflows.api._runner_ladder import is_infra_fault
+from taskq.workflows.api._runner_ladder import (
+    deterministic_failure_leaf,
+    is_infra_fault,
+)
 from taskq.workflows.ledger import LedgerClaim
 
 if TYPE_CHECKING:
     from taskq.workflows._sql import WorkflowSql
+    from taskq.workflows._types import ForkSpec
 
 __all__ = ["LoopOps"]
 
@@ -83,8 +87,11 @@ class _LoopHost(Protocol):
         emitter: ProgressEmitter | None = None,
         *,
         claim_epoch: int = 0,
+        prebuilt_route_fork: ForkSpec | None = None,
+        run_priority: int | None = None,
         ledger_id: JobId | None = None,
         ledger_claimed_at: datetime | None = None,
+        collected: list[object] | None = None,
     ) -> FinalizeResult: ...
 
 
@@ -554,6 +561,7 @@ class LoopOps(_LoopHost):
                     claimed_at=datetime.now(UTC),
                     budget_remaining_ms=remaining,
                     claim_epoch=claim_epoch,
+                    loop_iteration=iteration,
                 )
                 # the carry's typed contract, at the one point a carry reaches
                 # a body: re-hydrated through the declared type's validator —
@@ -629,11 +637,16 @@ class LoopOps(_LoopHost):
                     # raising ConnectionError — the stranded-flow shape is
                     # unconstructible from body code. (SignalTimeoutError — the
                     # timed-out hold — is a body exception exactly like this.)
+                    # A deterministic refusal wrapped in an ExceptionGroup is
+                    # recorded from its own leaf, so the message names the
+                    # class and the colliding name the remedy needs (#743 W-1).
+                    recorded = deterministic_failure_leaf(exc)
                     await self._exhaust_loop(
                         flow_id,
                         row,
                         LOOP_ERROR_BODY,
-                        f"the loop body failed: {type(exc).__name__}: {str(exc)[:200]}",
+                        f"the loop body failed: {type(recorded).__name__}: "
+                        f"{str(recorded)[:MESSAGE_TERMINAL_MAX]}",
                         worker_id=self._worker_id,
                         attempt=attempt,
                         claim_epoch=claim_epoch,
