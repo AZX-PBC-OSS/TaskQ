@@ -33,6 +33,8 @@ balancing counter reconciles over the population.
 from __future__ import annotations
 
 import asyncio
+import json
+import socket
 import time
 from collections.abc import Coroutine
 from typing import TYPE_CHECKING, Any
@@ -55,6 +57,7 @@ from tests.system_e2e._invariants import (
     assert_balanced,
     assert_effects_balance,
     delete_tagged_resilient,
+    settle_terminal,
 )
 from tests.system_e2e.actors import SysPayload, sys_slow
 
@@ -115,6 +118,63 @@ async def _wait_running(
                 return {str(r["id"]) for r in rows}
         await asyncio.sleep(0.05)
     raise AssertionError(f"fewer than {want} jobs claimed within {cap_secs}s")
+
+
+def _read_ready_body(socket_path: str) -> dict[str, Any] | None:
+    """One ``GET /ready`` over the worker's health socket, or ``None``.
+
+    A socket that refuses, dies mid-read, or answers something that is not
+    the readiness body is a failed poll, not a scenario failure: the
+    caller's own deadline owns the failure shape.
+    """
+    try:
+        with socket.socket(socket.AF_UNIX) as sock:
+            sock.settimeout(_LEDGER_READ_TIMEOUT_S)
+            sock.connect(socket_path)
+            sock.sendall(b"GET /ready HTTP/1.0\r\n\r\n")
+            chunks: list[bytes] = []
+            while True:
+                chunk = sock.recv(65536)
+                if not chunk:
+                    break
+                chunks.append(chunk)
+    except OSError:
+        return None
+    _headers, _sep, body = b"".join(chunks).partition(b"\r\n\r\n")
+    try:
+        parsed = json.loads(body)
+    except ValueError:
+        return None
+    return parsed if isinstance(parsed, dict) else None
+
+
+async def _wait_registered(worker: WorkerProc, want: int, cap_secs: float = 30.0) -> None:
+    """Block until the worker's own ``/ready`` reports ``want`` registered jobs.
+
+    ``_wait_running`` proves only that the rows are ``running``, which the
+    claim stamp writes before the row reaches a consumer's take-to-register
+    handoff. A row still parked in ``local_queue`` is running too, and the
+    cancel ladder walks the registry - its ORIGIN and entry-level arms
+    iterate registered entries - so a SIGTERM landing on a queued row
+    leaves it with no writer (the drain's cancel fence keeps a phase-1 row
+    off ``drain_local_queue_to_pending`` by design). Readiness's
+    ``active_jobs`` is ``ActiveJobRegistry.count()``, so waiting on it puts
+    both jobs past the queue and inside the ladder's reach.
+    """
+    deadline = time.monotonic() + cap_secs
+    seen: object = None
+    while time.monotonic() < deadline:
+        body = await asyncio.to_thread(_read_ready_body, worker.sock_path)
+        if body is not None:
+            seen = body.get("active_jobs")
+            if isinstance(seen, int) and seen >= want:
+                return
+        await asyncio.sleep(0.05)
+    raise AssertionError(
+        f"the worker never registered {want} job(s) within {cap_secs}s "
+        f"(last /ready active_jobs={seen!r}): the rows were still in the local queue, "
+        "where neither the cancel ladder nor the drain's re-pend can reach them"
+    )
 
 
 @pytest.mark.timeout(240)
@@ -272,6 +332,10 @@ async def test_operator_cancel_racing_the_sigterm_owns_the_exit(
             for _ in range(2)
         ]
         in_flight = await _wait_running(conn, schema, _TAG, want=2, cap_secs=30.0)
+        # Running is not yet registered: wait until the worker's own registry
+        # holds both jobs, so the SIGTERM cannot land in the take-to-register
+        # window (see _wait_registered).
+        await _wait_registered(worker_a, want=2, cap_secs=30.0)
 
         # The operator's cancel lands on the running rows; the SIGTERM
         # lands while the ladder's poll may not have observed them yet.
@@ -300,7 +364,16 @@ async def test_operator_cancel_racing_the_sigterm_owns_the_exit(
         worker_a = None
         assert rc == 0, f"generation A exited rc={rc} - the drain was not graceful"
 
-        counts = await assert_balanced(conn, schema, _TAG)
+        # settle_terminal's cap is the "no permanently-stuck state" bound, and
+        # the fleet is already gone: `assert_balanced`'s own settle budget
+        # (240s against a two-minute fleet stretch) would poll dead workers
+        # until the scenario's pytest-timeout cut the run off inside it,
+        # taking the stuck-row diagnostic and the ledger teardown with it.
+        counts = await settle_terminal(conn, schema, _TAG, cap_secs=15.0)
+        # The invariants still run over the settled population; `settle=False`
+        # only says the terminal wait already happened above (its own return
+        # is the counts, which it discards in that mode).
+        await assert_balanced(conn, schema, _TAG, settle=False)
         assert counts.get("cancelled", 0) == len(handles), (
             f"the cancel ladder owns the exit: every racing row terminalises "
             f"cancelled, got {counts}"

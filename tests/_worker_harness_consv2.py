@@ -37,7 +37,7 @@ from taskq.actor import actor
 from taskq.backend.postgres import PostgresBackend
 from taskq.context import JobContext
 from taskq.settings import WorkerSettings
-from taskq.worker.run import _main
+from taskq.worker.run import _main, run_worker_to_exit
 
 _QUEUE = "consv2_q"
 
@@ -103,5 +103,4 @@ if __name__ == "__main__":
         "consv2_fenced": consv2_fenced,
         "consv2_progress": consv2_progress,
     }
-    with asyncio.Runner() as runner:
-        sys.exit(runner.run(_main(settings, actor_registry=registry)))
+    sys.exit(run_worker_to_exit(_main(settings, actor_registry=registry)))

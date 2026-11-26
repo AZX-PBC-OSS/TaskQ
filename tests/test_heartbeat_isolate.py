@@ -994,6 +994,94 @@ async def test_isolate_self_preserves_an_already_cancelled_entry() -> None:
     assert shutdown.is_set()
 
 
+async def test_isolate_self_does_not_double_cancel_an_unwinding_consumer() -> None:
+    """An entry another canceller already cancelled is mid-terminal-write.
+
+    ``isolate_self`` delivers first delivery only. A second ``task.cancel()``
+    on a task already unwinding interrupts the terminal write it is
+    awaiting, so the consumer disowns the job and deregisters the entry and
+    the row strands ``running`` behind a worker that exits clean - the
+    cancel-racing-SIGTERM strand. Observable contract: the unwinding
+    consumer's write completes, and the isolate does not wait out its join
+    bound on it.
+    """
+    from types import SimpleNamespace
+
+    import structlog.testing
+
+    from taskq.backend._protocol import CancelPhase
+    from taskq.context import CancelOrigin
+
+    job_id = new_uuid()
+    write_started = asyncio.Event()
+    write_finished = asyncio.Event()
+
+    async def _unwinding_consumer() -> None:
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            write_started.set()
+            # The terminal write: shielded in production, so a second
+            # cancel lands on the handler's own await and destroys it.
+            await asyncio.sleep(0.15)
+            write_finished.set()
+            raise
+
+    entry_task = asyncio.create_task(_unwinding_consumer())
+    await asyncio.sleep(0)  # the consumer reaches its park
+    entry = SimpleNamespace(
+        job_id=job_id,
+        task=entry_task,
+        ctx=SimpleNamespace(
+            cancel_event=asyncio.Event(),
+            _set_cancel_origin=lambda origin: None,
+        ),
+        cancel_phase=CancelPhase.FORCED,
+        cancel_observed_at=None,
+        cancel_origin=CancelOrigin.OPERATOR,
+    )
+    deps = _make_deps()
+    deps.active_jobs._by_id[job_id] = entry  # type: ignore[reportAttributeAccessUsage, index-assign]  # Why: unit test injects a minimal entry; same convention as test_isolate_self_preserves_an_already_cancelled_entry.
+
+    # The cancel ladder's own delivery, before isolate runs.
+    entry_task.cancel()
+    await asyncio.wait_for(write_started.wait(), timeout=5.0)
+
+    conn = FakeConn()
+
+    async def fake_connect(
+        dsn: str,
+        *,
+        timeout: float,
+        command_timeout: float | None = None,
+        connection_class: type[object]
+        | None = None,  # Why: the isolate connect threads the fork guard's connection class; the fake accepts and ignores it.
+    ) -> FakeConn:
+        return conn
+
+    import asyncpg as apg
+
+    orig_connect = apg.connect
+    apg.connect = fake_connect  # type: ignore[method-assign]  # Why: patching asyncpg.connect for unit test; restored in finally.
+    try:
+        with structlog.testing.capture_logs() as logs:
+            shutdown = asyncio.Event()
+            await asyncio.wait_for(isolate_self(deps, new_uuid(), shutdown), timeout=10.0)
+    finally:
+        apg.connect = orig_connect  # type: ignore[method-assign]
+        await asyncio.gather(entry_task, return_exceptions=True)
+
+    assert write_finished.is_set(), (
+        "isolate_self double-cancelled a consumer already unwinding its terminal "
+        "write: the write never finished, which in production disowns the job and "
+        "strands the row 'running'"
+    )
+    assert not any(e["event"] == "isolate-self-actor-join-timeout" for e in logs), (
+        "the task finished its write, so the isolate join must not have bounded it"
+    )
+    assert shutdown.is_set()
+
+
 async def test_isolate_self_warns_and_proceeds_when_an_actor_ignores_cancellation() -> None:
     """An actor body that swallows its cancellation outlives the join
     bound: isolate must log the stragglers (job ids included) and proceed

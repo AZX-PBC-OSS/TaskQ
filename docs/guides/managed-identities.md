@@ -821,7 +821,12 @@ async def main() -> int:
     pool = await asyncpg.create_pool(dsn)  # this loop
     registry = build_actors(pool)  # actors close over it
     try:
-        return await worker_main_async(settings, actor_registry=registry)
+        return await worker_main_async(
+            settings,
+            actor_registry=registry,
+            # Only the bounded pool close below remains before process exit.
+            ignore_sigterm_on_exit=True,
+        )
     finally:
         await pool.close()  # yours to close
 

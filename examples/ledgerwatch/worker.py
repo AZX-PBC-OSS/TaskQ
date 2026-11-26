@@ -62,4 +62,7 @@ if __name__ == "__main__":
             await conn.close()
 
     asyncio.run(_boot())
-    sys.exit(worker_main(settings, actor_registry=ACTORS))
+    # ignore_sigterm_on_exit: this process's next act is its own death, so a
+    # redundant stop-signal landing after the drain must not replace its exit
+    # status with -15.
+    sys.exit(worker_main(settings, actor_registry=ACTORS, ignore_sigterm_on_exit=True))

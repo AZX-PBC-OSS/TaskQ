@@ -1,12 +1,16 @@
-"""Tests for taskq._shield.shield_with_retrieval.
+"""Tests for taskq._shield's two cancellation shapes.
 
-The helper must be byte-for-byte asyncio.shield on the non-cancelled path
-(result returned, inner exception re-raised to the caller) and must, when
-a cancellation detaches the inner task, retrieve that detached outcome -
-logging an inner failure instead of leaving asyncio to report
+``shield_with_retrieval`` must be byte-for-byte asyncio.shield on the
+non-cancelled path (result returned, inner exception re-raised to the caller)
+and must, when a cancellation detaches the inner task, retrieve that detached
+outcome - logging an inner failure instead of leaving asyncio to report
 "Task exception was never retrieved" (the lost-infra-signal bug measured
 during the reconnect-storm campaign: 2 unretrieved exceptions per
 double-cancel).
+
+``shield_until_complete`` is the opposite ownership: the operation finishes
+before the caller's cancellation is re-raised, so a write that is its row's
+only writer still lands before the teardown that closes its pool.
 """
 
 import asyncio
@@ -20,7 +24,7 @@ import structlog
 from pydantic import BaseModel
 
 from taskq._ids import new_uuid
-from taskq._shield import shield_with_retrieval
+from taskq._shield import shield_until_complete, shield_with_retrieval
 from taskq.backend._protocol import JobId
 from taskq.client._enqueuer import SubJobEnqueuer
 from taskq.context import JobContext
@@ -120,6 +124,153 @@ class TestNonCancelledPath:
             await asyncio.sleep(0)
 
         assert not any(e["event"] == "shield-detached-task-failed" for e in logs)
+
+
+class TestShieldUntilComplete:
+    """``shield_until_complete`` keeps the caller's ownership of the work.
+
+    ``shield_with_retrieval`` detaches; this one must not. A pre-registration
+    release is the only writer its row will ever get, and the teardown that
+    closes its pool is ordered after the caller that awaits it.
+    """
+
+    async def test_cancellation_waits_for_the_inner_operation(self) -> None:
+        """A cancel is held until the work finishes, then re-raised untouched."""
+        started = asyncio.Event()
+        release = asyncio.Event()
+        finished = False
+
+        async def inner() -> int:
+            nonlocal finished
+            started.set()
+            await release.wait()
+            finished = True
+            return 1
+
+        async def site() -> int:
+            return await shield_until_complete(inner())
+
+        task = asyncio.create_task(site())
+        await started.wait()
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError, asyncio.TimeoutError):
+            await asyncio.wait_for(asyncio.shield(task), timeout=0.1)
+        assert not task.done(), "the cancellation detached the operation instead of owning it"
+        assert not finished
+
+        release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(task, timeout=2.0)
+        assert finished
+        assert task.cancelled()
+
+    async def test_inner_failure_after_cancellation_is_logged_not_raised(self) -> None:
+        """The absorbed failure is retrieved and logged; the caller stays cancelled."""
+        started = asyncio.Event()
+        release = asyncio.Event()
+
+        async def inner() -> None:
+            started.set()
+            await release.wait()
+            raise RuntimeError("pg went down mid-release")
+
+        async def site() -> None:
+            await shield_until_complete(inner())
+
+        with structlog.testing.capture_logs() as logs:
+            task = asyncio.create_task(site())
+            await started.wait()
+            task.cancel()
+            release.set()
+            with pytest.raises(asyncio.CancelledError):
+                await asyncio.wait_for(task, timeout=2.0)
+            for _ in range(5):
+                await asyncio.sleep(0)
+
+        assert task.cancelled()
+        detached = [e for e in logs if e["event"] == "shield-detached-task-failed"]
+        assert len(detached) == 1
+        assert detached[0]["error_type"] == "RuntimeError"
+        assert "pg went down mid-release" in str(detached[0]["error"])
+
+    async def test_repeated_cancellation_still_waits_for_the_inner_operation(self) -> None:
+        """A second cancel cannot cut through the ownership hold."""
+        started = asyncio.Event()
+        release = asyncio.Event()
+        finished = False
+
+        async def inner() -> None:
+            nonlocal finished
+            started.set()
+            await release.wait()
+            finished = True
+
+        task = asyncio.create_task(shield_until_complete(inner()))
+        await started.wait()
+        task.cancel("first stop")
+        await asyncio.sleep(0)
+        task.cancel("second stop")
+        await asyncio.sleep(0)
+        assert not task.done(), "repeated cancellation detached the held operation"
+        assert not finished
+
+        release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(task, timeout=2.0)
+        assert finished
+        assert task.cancelled()
+
+    async def test_taskgroup_join_waits_for_the_held_operation(self) -> None:
+        """The join that precedes the pool close cannot finish without it.
+
+        ``_main`` runs the consumer loops as ``TaskGroup`` children and closes
+        the role pools only after the group exits. A child that finishes its
+        work after being cancelled is what makes that ordering cover the
+        release; a detached release would let the group exit first.
+        """
+        release = asyncio.Event()
+        started = asyncio.Event()
+
+        async def child() -> None:
+            async def operation() -> None:
+                started.set()
+                await release.wait()
+
+            await shield_until_complete(operation())
+
+        async def crashing_sibling() -> None:
+            await started.wait()
+            raise RuntimeError("sibling crash aborts the group")
+
+        async def host() -> None:
+            with pytest.raises(ExceptionGroup):
+                async with asyncio.TaskGroup() as group:
+                    group.create_task(child())
+                    group.create_task(crashing_sibling())
+
+        host_task = asyncio.create_task(host())
+        with pytest.raises(asyncio.TimeoutError):
+            await asyncio.wait_for(asyncio.shield(host_task), timeout=0.25)
+        assert not host_task.done(), (
+            "the group exited without waiting for the operation it cancelled"
+        )
+
+        release.set()
+        await asyncio.wait_for(host_task, timeout=2.0)
+
+    async def test_result_is_returned_without_cancellation(self) -> None:
+        async def inner() -> int:
+            await asyncio.sleep(0)
+            return 42
+
+        assert await shield_until_complete(inner()) == 42
+
+    async def test_inner_exception_reraises_without_cancellation(self) -> None:
+        async def inner() -> None:
+            raise ValueError("boom")
+
+        with pytest.raises(ValueError, match="boom"):
+            await shield_until_complete(inner())
 
 
 class TestCancellationPath:

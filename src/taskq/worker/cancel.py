@@ -62,6 +62,7 @@ from taskq.constants import (
 )
 from taskq.context import CancelOrigin, JobContext
 from taskq.obs import get_logger, get_meter, log_cancel_phase_change, record_cancel_actored
+from taskq.worker._cancel_delivery import deliver_first_cancel
 from taskq.worker.shutdown import ShutdownPhase
 
 if TYPE_CHECKING:
@@ -257,36 +258,58 @@ class _CancelController:
             db_phase = db_phases.get(active.job_id, CancelPhase.NONE)
 
             # ── Phase 1: cooperative observation ─────────────────────
-            if (
-                db_phase >= CancelPhase.COOPERATIVE
-                and active.cancel_phase < CancelPhase.COOPERATIVE
+            # The origin override is not the phase transition: a row already
+            # carrying a cancel request makes the operator the arbiter even
+            # when the local entry is already cooperative, which is exactly
+            # the shutdown-first ordering - SIGTERM's CANCELLING stamps
+            # COOPERATIVE + SHUTDOWN, then the operator's request lands on
+            # the row. Gating the override on the phase (the shape this arm
+            # had) meant the controller never took the entry over during the
+            # whole CANCELLING grace: its terminal routing stayed on the
+            # shutdown's mark_interrupted arm, and the consumer's eventual
+            # write competed with the operator's verdict.
+            if db_phase >= CancelPhase.COOPERATIVE and (
+                active.cancel_phase < CancelPhase.COOPERATIVE
+                or active.cancel_origin is not CancelOrigin.OPERATOR
             ):
                 active.ctx.cancel_event.set()
                 active.ctx._abort_requested.set()  # pyright: ignore[reportPrivateUsage]  # Why: cancel controller intentionally accesses the private _abort_requested Event to signal sync actors.
-                active.cancel_observed_at = loop.time()
-                active.cancel_phase = CancelPhase.COOPERATIVE
-                # The poll only returns rows carrying cancel_requested_at,
-                # so this observation is proof the operator asked, it
-                # overrides a shutdown stamp from a deploy that signalled
-                # the job first (the row is the final arbiter of origin).
-                active.cancel_origin = CancelOrigin.OPERATOR
-                active.ctx._set_cancel_origin(CancelOrigin.OPERATOR)  # pyright: ignore[reportPrivateUsage]  # Why: the controller is the designated writer of the context's origin stamp (set alongside cancel_event.set(), per the field's contract).
-                # The executing side's cancel count (taskq.jobs.cancels_actored_total):
-                # this is the durable surface a scrape can see — the
-                # issuer's own taskq.cancellation.requested dies with its
-                # process, this one moves on the worker whose poll is
-                # acting on the request. First observation only: the
-                # ladder re-walks the row every tick, one cancel is one
-                # increment.
-                record_cancel_actored(active.ctx.actor)
-                log_cancel_phase_change(
-                    _log,
-                    from_phase=int(CancelPhase.NONE),
-                    to_phase=int(CancelPhase.COOPERATIVE),
-                    job_id=str(active.job_id),
-                    worker_id=worker_id,
-                )
-                _record_phase_transition(CancelPhase.NONE, CancelPhase.COOPERATIVE)
+                # An already-running shutdown grace clock keeps its stamp: the
+                # shutdown's own phases measure from the signal they received,
+                # and re-stamping here would restart that clock on every tick
+                # the operator's request is re-observed.
+                if active.cancel_observed_at is None:
+                    active.cancel_observed_at = loop.time()
+                if active.cancel_phase < CancelPhase.COOPERATIVE:
+                    active.cancel_phase = CancelPhase.COOPERATIVE
+                    log_cancel_phase_change(
+                        _log,
+                        from_phase=int(CancelPhase.NONE),
+                        to_phase=int(CancelPhase.COOPERATIVE),
+                        job_id=str(active.job_id),
+                        worker_id=worker_id,
+                    )
+                    _record_phase_transition(CancelPhase.NONE, CancelPhase.COOPERATIVE)
+                if active.cancel_origin is not CancelOrigin.OPERATOR:
+                    # The poll only returns rows carrying cancel_requested_at,
+                    # so this observation is proof the operator asked, it
+                    # overrides a shutdown stamp from a deploy that signalled
+                    # the job first (the row is the final arbiter of origin).
+                    # The executing side's cancel count
+                    # (taskq.jobs.cancels_actored_total) rides the same
+                    # transition: it is the durable surface a scrape can see,
+                    # and this is the first tick to see the operator's
+                    # request, so one cancel is one increment.
+                    record_cancel_actored(active.ctx.actor)
+                    active.cancel_origin = CancelOrigin.OPERATOR
+                    active.ctx._set_cancel_origin(CancelOrigin.OPERATOR)  # pyright: ignore[reportPrivateUsage]  # Why: the controller is the designated writer of the context's origin stamp (set alongside cancel_event.set(), per the field's contract).
+                    _log.info(
+                        "cancel-origin-observed-operator-cancel",
+                        kind="cancel_origin",
+                        job_id=str(active.job_id),
+                        worker_id=worker_id,
+                        cancel_phase=int(active.cancel_phase),
+                    )
 
             # ── PG-observation fast-advance ────────────────────────────
             if db_phase == CancelPhase.FORCED and active.cancel_phase < CancelPhase.FORCED:
@@ -326,8 +349,10 @@ class _CancelController:
             # local cooperative phase, so mark_abandoned's `cancel_phase = 2`
             # guard could never match and the job would never again be
             # cancellable.  Re-issuing is safe: the escalation UPDATE is itself
-            # guarded by `cancel_phase = 1`, and task.cancel() on an
-            # already-cancelling task is a no-op.
+            # guarded by `cancel_phase = 1`. The cancellation is not re-delivered
+            # in that arm - a task already cancelled (this arm's own earlier
+            # tick) is unwinding through its terminal write, and a second
+            # cancel interrupts it (see deliver_first_cancel).
             phase_2_due = active.cancel_phase == CancelPhase.COOPERATIVE or (
                 active.cancel_phase >= CancelPhase.FORCED and db_phase == CancelPhase.COOPERATIVE
             )
@@ -341,6 +366,16 @@ class _CancelController:
                 rowcount = parse_rowcount(tag)
                 if rowcount != 1:
                     continue
+
+                # PG held cancel_phase = 1 for the escalation, and only an
+                # operator's request writes that phase: the origin is the
+                # operator's whatever the entry was stamped with before. The
+                # phase-1 arm normally got here first; this covers the row
+                # that appeared between the poll and the escalation.
+                if active.cancel_origin is not CancelOrigin.OPERATOR:
+                    active.cancel_origin = CancelOrigin.OPERATOR
+                    active.ctx._set_cancel_origin(CancelOrigin.OPERATOR)  # pyright: ignore[reportPrivateUsage]  # Why: the controller is the designated writer of the context's origin stamp (set alongside the phase change, per the field's contract).
+                    record_cancel_actored(active.ctx.actor)
 
                 detail = dumps_str(
                     {
@@ -385,7 +420,7 @@ class _CancelController:
                     self._pending_abandons.append((active.job_id, active))
                 else:
                     active.cancel_phase = CancelPhase.FORCED
-                    active.task.cancel()
+                    deliver_first_cancel(active.task)
                 log_cancel_phase_change(
                     _log,
                     from_phase=int(CancelPhase.COOPERATIVE),
@@ -765,8 +800,7 @@ async def _deliver_abandon(
     """
     entry = queued_entry if queued_entry is not None else deps.active_jobs.get(job_id)
     if entry is not None:
-        if not entry.task.done() and entry.task.cancelling() == 0:
-            entry.task.cancel()
+        deliver_first_cancel(entry.task)
         await deps.active_jobs.deregister(job_id, entry)
     log_cancel_phase_change(
         _log,

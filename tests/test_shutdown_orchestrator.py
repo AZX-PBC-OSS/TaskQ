@@ -85,9 +85,17 @@ def _make_fake_active_job(
     if job_id is None:
         job_id = new_uuid()
     jid = JobId(job_id)
+    # A truthful live attempt: uncancelled and not yet done. Every
+    # worker-side canceller delivers first delivery only
+    # (``deliver_first_cancel``), so an unconfigured MagicMock - whose
+    # ``done()`` is a truthy mock - would read as an attempt that already
+    # finished and silently swallow the delivery these pins assert.
+    fake_task = MagicMock()
+    fake_task.done.return_value = False
+    fake_task.cancelling.return_value = 0
     return _ActiveJob(
         job_id=jid,
-        task=MagicMock(),
+        task=fake_task,
         ctx=JobContext(
             job_id=job_id,
             actor="test_actor",

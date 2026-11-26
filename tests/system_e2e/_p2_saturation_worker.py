@@ -33,7 +33,7 @@ from pydantic import BaseModel
 from taskq import JobContext, actor
 from taskq._ids import new_uuid
 from taskq.settings import WorkerSettings
-from taskq.worker.run import _main
+from taskq.worker.run import _main, run_worker_to_exit
 from taskq.workflows import (
     DONE,
     Chain,
@@ -883,10 +883,6 @@ async def _run() -> int:
 if __name__ == "__main__":
     faulthandler.register(signal.SIGUSR2, all_threads=True)
     try:
-        with asyncio.Runner() as runner:
-            code = runner.run(_run())
-        with contextlib.suppress(ValueError):  # Why: retain the normal post-drain verdict.
-            signal.signal(signal.SIGTERM, signal.SIG_IGN)
-        sys.exit(code)
+        sys.exit(run_worker_to_exit(_run()))
     except KeyboardInterrupt:
         sys.exit(0)

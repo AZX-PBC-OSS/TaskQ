@@ -345,6 +345,7 @@ if __name__ == "__main__":
             WorkerSettings.load(),
             actor_registry={r.name: r for r in registry},
             di_registry=di,
+            ignore_sigterm_on_exit=True,
         )
     )
 ```

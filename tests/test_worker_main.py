@@ -35,6 +35,7 @@ from taskq.worker.run import (
     deregister_worker,
     register_worker,
     worker_main,
+    worker_main_async,
 )
 from tests._stub_job_row import make_job as _make_job
 from tests.conftest import _FakePool
@@ -60,6 +61,12 @@ def settings() -> WorkerSettings:
 
 
 # ── Helpers ─────────────────────────────────────────────────────────────
+
+
+def _sigterm_mask() -> set[int | signal.Signals] | None:
+    """Read the host mask where POSIX exposes it (Windows has no mask API)."""
+    sigmask = getattr(signal, "pthread_sigmask", None)
+    return sigmask(signal.SIG_BLOCK, set()) if sigmask is not None else None
 
 
 def _stub_deps(settings: WorkerSettings) -> WorkerDeps:
@@ -1297,6 +1304,7 @@ def test_worker_main_leaves_the_host_signal_disposition_alone(
     process's own death, and this pin holds the library honest.
     """
     disposition_before = signal.getsignal(signal.SIGTERM)
+    blocked_before = _sigterm_mask()
 
     async def _fake_main(*args: object, **kwargs: object) -> int:
         return 0
@@ -1305,3 +1313,118 @@ def test_worker_main_leaves_the_host_signal_disposition_alone(
         assert worker_main(settings, cron_registry=[]) == 0
 
     assert signal.getsignal(signal.SIGTERM) is disposition_before
+    if blocked_before is not None:
+        assert _sigterm_mask() == blocked_before, (
+            "a library caller must come back with its signal mask untouched too: a "
+            "blocked SIGTERM is inherited across fork/exec exactly as an ignored "
+            "disposition is, leaving a spawned child unable to receive its stop signal"
+        )
+
+
+@pytest.mark.skipif(
+    not hasattr(signal, "pthread_sigmask"),
+    reason="requires POSIX signal masks and asyncio's Unix event loop",
+)
+def test_worker_main_ignore_sigterm_on_exit_leaves_sigterm_ignored_and_unblocked(
+    settings: WorkerSettings,
+) -> None:
+    """``ignore_sigterm_on_exit=True`` ends with SIGTERM ignored, not blocked.
+
+    The flag's contract for a dedicated worker process: a stop signal landing
+    anywhere between the worker returning and ``sys.exit`` - the loop's close,
+    the interpreter's exit path, its thread joins - must not replace the
+    drain's verdict with ``-15``. Blocking alone would defer that signal into
+    the exit and still kill the process, the mask must be restored, and it must
+    be restored *after* the ``SIG_IGN`` install or a pending blocked SIGTERM is
+    delivered on unblock.
+    """
+
+    async def _fake_main(*args: object, **kwargs: object) -> int:
+        # The worker's real loop installs a SIGTERM handler; the close is what
+        # rewrites the disposition, and this pin is about the ordering around
+        # that rewrite.
+        asyncio.get_running_loop().add_signal_handler(signal.SIGTERM, lambda: None)
+        return 0
+
+    with patch("taskq.worker._bootstrap._main", side_effect=_fake_main):
+        assert worker_main(settings, cron_registry=[], ignore_sigterm_on_exit=True) == 0
+
+    assert signal.getsignal(signal.SIGTERM) is signal.SIG_IGN, (
+        "a redundant stop signal after the drain must not kill the process: the "
+        "entrypoint's remaining work is its own exit, and the drain's verdict is "
+        "the exit status"
+    )
+    blocked_after = _sigterm_mask()
+    if blocked_after is not None:
+        assert signal.SIGTERM not in blocked_after, (
+            "the guard must unblock SIGTERM before returning: a leaked block is "
+            "inherited across fork/exec and the child never sees its stop signal"
+        )
+
+
+@pytest.mark.skipif(
+    not hasattr(signal, "pthread_sigmask"),
+    reason="requires POSIX signal masks and asyncio's Unix event loop",
+)
+async def test_worker_main_async_ignore_sigterm_on_exit_hands_back_an_ignored_sigterm(
+    settings: WorkerSettings,
+) -> None:
+    """``worker_main_async(..., ignore_sigterm_on_exit=True)`` guards its handover.
+
+    The loop belongs to the caller, so the guard runs where the coroutine
+    returns: this loop's own SIGTERM handler is removed (a later ``loop.close()``
+    finds nothing to reset to ``SIG_DFL``), the disposition is set to
+    ``SIG_IGN``, and the mask is restored. What the caller does next - closing a
+    pool, dumping a profile, exiting - then runs with SIGTERM ignored.
+    """
+    loop = asyncio.get_running_loop()
+
+    async def _fake_main(*args: object, **kwargs: object) -> int:
+        loop.add_signal_handler(signal.SIGTERM, lambda: None)
+        return 0
+
+    with patch("taskq.worker._bootstrap._main", side_effect=_fake_main):
+        assert await worker_main_async(settings, cron_registry=[], ignore_sigterm_on_exit=True) == 0
+
+    assert signal.getsignal(signal.SIGTERM) is signal.SIG_IGN
+    blocked_after = _sigterm_mask()
+    if blocked_after is not None:
+        assert signal.SIGTERM not in blocked_after
+    assert loop.remove_signal_handler(signal.SIGTERM) is False, (
+        "the loop must no longer hold a SIGTERM handler after the handover: "
+        "loop.close() rewrites the disposition of every handler it still holds, "
+        "which would put SIG_DFL back over the guard's SIG_IGN"
+    )
+
+
+async def test_worker_main_async_ignore_sigterm_tolerates_unsupported_loop_handlers(
+    settings: WorkerSettings,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The no-signal-handler loop fallback must still install SIG_IGN.
+
+    Windows' event loops implement ``add_signal_handler`` /
+    ``remove_signal_handler`` by raising ``NotImplementedError``. The worker's
+    normal installer already treats that as an unsupported optional feature;
+    the exit guard must not turn the same platform limitation into a failed
+    worker exit before its documented SIG_IGN fallback runs.
+    """
+
+    async def _fake_main(*args: object, **kwargs: object) -> int:
+        return 0
+
+    class _NoSignalHandlerLoop:
+        def remove_signal_handler(self, sig: signal.Signals) -> bool:
+            raise NotImplementedError
+
+    monkeypatch.setattr("taskq.worker._bootstrap._main", _fake_main)
+    monkeypatch.setattr(
+        "taskq.worker._bootstrap.asyncio.get_running_loop",
+        lambda: _NoSignalHandlerLoop(),
+    )
+    # Model the platform without pthread_sigmask as well as the loop without
+    # signal handlers. The production fallback explicitly supports both.
+    monkeypatch.setattr("taskq.worker._bootstrap.signal.pthread_sigmask", None, raising=False)
+
+    assert await worker_main_async(settings, cron_registry=[], ignore_sigterm_on_exit=True) == 0
+    assert signal.getsignal(signal.SIGTERM) is signal.SIG_IGN

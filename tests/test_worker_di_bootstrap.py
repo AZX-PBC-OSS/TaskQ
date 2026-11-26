@@ -1314,6 +1314,50 @@ async def test_di_consumer_loop_raises_missing_provider_no_clock() -> None:
 # ── Unknown actor releases the claimed job instead of stranding it ──
 
 
+def _running_unstarted_job(*, actor: str, cancel_phase: CancelPhase = CancelPhase.NONE) -> JobRow:
+    """A claimed, still-running row with no body run yet."""
+    return JobRow(
+        id=new_job_id(),
+        actor=actor,
+        queue="default",
+        identity_key=None,
+        fairness_key=None,
+        payload={},
+        payload_schema_ver=0,
+        status="running",
+        priority=0,
+        attempt=1,
+        max_attempts=3,
+        retry_kind="transient",
+        schedule_to_close=None,
+        start_to_close=None,
+        heartbeat_timeout=None,
+        created_at=datetime(2025, 1, 1, tzinfo=UTC),
+        scheduled_at=datetime(2025, 1, 1, tzinfo=UTC),
+        started_at=None,
+        finished_at=None,
+        last_heartbeat_at=None,
+        locked_by_worker=None,
+        lock_expires_at=None,
+        cancel_requested_at=None,
+        cancel_phase=cancel_phase,
+        error_class=None,
+        error_message=None,
+        error_traceback=None,
+        progress_state={},
+        progress_seq=0,
+        result=None,
+        result_size_bytes=None,
+        result_expires_at=None,
+        idempotency_key=None,
+        idempotency_scope="",
+        trace_id=None,
+        span_id=None,
+        metadata={},
+        tags=(),
+    )
+
+
 async def test_di_consumer_loop_releases_job_for_unknown_actor() -> None:
     """A dispatched job whose actor is absent from actor_registry is
     released via mark_snoozed (short delay) rather than left 'running'
@@ -1348,46 +1392,7 @@ async def test_di_consumer_loop_releases_job_for_unknown_actor() -> None:
 
     backend.mark_snoozed = _spy_mark_snoozed  # type: ignore[attr-defined] # Why: stub backend is a plain object; spy attribute injection is the established pattern in this file.
 
-    job = JobRow(
-        id=new_job_id(),
-        actor="actor-not-in-registry",
-        queue="default",
-        identity_key=None,
-        fairness_key=None,
-        payload={},
-        payload_schema_ver=0,
-        status="running",
-        priority=0,
-        attempt=1,
-        max_attempts=3,
-        retry_kind="transient",
-        schedule_to_close=None,
-        start_to_close=None,
-        heartbeat_timeout=None,
-        created_at=datetime(2025, 1, 1, tzinfo=UTC),
-        scheduled_at=datetime(2025, 1, 1, tzinfo=UTC),
-        started_at=None,
-        finished_at=None,
-        last_heartbeat_at=None,
-        locked_by_worker=None,
-        lock_expires_at=None,
-        cancel_requested_at=None,
-        cancel_phase=CancelPhase.NONE,
-        error_class=None,
-        error_message=None,
-        error_traceback=None,
-        progress_state={},
-        progress_seq=0,
-        result=None,
-        result_size_bytes=None,
-        result_expires_at=None,
-        idempotency_key=None,
-        idempotency_scope="",
-        trace_id=None,
-        span_id=None,
-        metadata={},
-        tags=(),
-    )
+    job = _running_unstarted_job(actor="actor-not-in-registry")
 
     local_queue: asyncio.Queue[JobRow] = asyncio.Queue()
     await local_queue.put(job)
@@ -1427,6 +1432,225 @@ async def test_di_consumer_loop_releases_job_for_unknown_actor() -> None:
     await loop_scope.shutdown()
     await thread_scope.shutdown()
     await process_scope.shutdown()
+
+
+async def test_di_consumer_loop_terminalises_an_operator_cancelled_unstarted_row() -> None:
+    """A pre-dispatch release that no-ops terminalises the operator's row.
+
+    ``mark_snoozed`` fences on ``cancel_phase = 0``, so a row an operator
+    cancelled while it sat in this worker's local queue matches no arm and
+    answers ``noop``. No registry entry exists on this path, so the cancel
+    ladder cannot reach the row either: returning on the noop stranded it
+    ``running`` under this worker's lock, and the ladder's unheld walk later
+    abandoned it as ``failed`` / ``CancellationAbandoned`` (or the worker shut
+    down first and left it with no writer at all). The release falls through to
+    the same fenced ``mark_cancelled`` the consumer's other cancellation arms
+    use, so the row takes the operator's own verdict immediately.
+    """
+    from taskq.worker.run import di_consumer_loop
+
+    fake_clock = FakeClock(start=datetime(2025, 1, 1, tzinfo=UTC))
+    registry = ProviderRegistry()
+    settings = _settings()
+    registry.register_value(WorkerSettings, Scope.PROCESS, settings)
+    registry.register_value(Clock, Scope.PROCESS, fake_clock)
+    registry.validate()
+
+    process_scope, thread_scope, loop_scope = make_scopes(registry)
+    await bootstrap_scopes(registry, process_scope, thread_scope, loop_scope, _settings())
+
+    backend = _backend_methods_stub()
+    cancelled = asyncio.Event()
+    cancel_calls: list[dict[str, object]] = []
+
+    async def _noop_mark_snoozed(*_args: object, **_kwargs: object) -> str:
+        return "noop"
+
+    async def _spy_mark_cancelled(
+        job_id: object,
+        worker_id: object,
+        *,
+        attempt: int | None = None,
+        claim_epoch: int | None = None,
+    ) -> bool:
+        cancel_calls.append(
+            {"job_id": job_id, "worker_id": worker_id, "attempt": attempt, "epoch": claim_epoch}
+        )
+        cancelled.set()
+        return True
+
+    backend.mark_snoozed = _noop_mark_snoozed  # type: ignore[attr-defined]  # Why: stub backend is a plain autospec object; spy attribute injection is the established pattern in this file.
+    backend.mark_cancelled = _spy_mark_cancelled  # type: ignore[attr-defined]  # Why: as above.
+
+    job = _running_unstarted_job(
+        actor="actor-not-in-registry", cancel_phase=CancelPhase.COOPERATIVE
+    )
+
+    local_queue: asyncio.Queue[JobRow] = asyncio.Queue()
+    await local_queue.put(job)
+
+    deps = _stub_deps(settings)
+    shutdown_event = asyncio.Event()
+
+    loop_task = asyncio.create_task(
+        di_consumer_loop(
+            deps,
+            local_queue,
+            shutdown_event,
+            backend=backend,
+            worker_id=new_uuid(),
+            registry=registry,
+            process_scope=process_scope,
+            thread_scope=thread_scope,
+            loop_scope=loop_scope,
+            actor_registry={},
+            enqueuer=SubJobEnqueuer(
+                loop_scope_resolved=None,
+                worker_pool=None,
+                backend=backend,
+            ),
+        )
+    )
+    await asyncio.wait_for(cancelled.wait(), timeout=2.0)
+    shutdown_event.set()
+    await asyncio.wait_for(loop_task, timeout=2.0)
+
+    assert len(cancel_calls) == 1
+    assert cancel_calls[0]["job_id"] == job.id
+    assert cancel_calls[0]["attempt"] == job.attempt
+    assert cancel_calls[0]["epoch"] == job.claim_epoch, (
+        "the cancel write must carry the claim's epoch: an unfenced write could "
+        "terminalise a row a peer re-claimed"
+    )
+    assert job.id not in deps.disowned_jobs, (
+        "the row terminalised, so nothing is left for the lock-lease reclaim "
+        "and the job must not be disowned"
+    )
+
+    await loop_scope.shutdown()
+    await thread_scope.shutdown()
+    await process_scope.shutdown()
+
+
+async def _assert_still_owned(task: asyncio.Task[Any], *, what: str) -> None:
+    """A cancelled release must still own *what* until its write lands.
+
+    The row has no registry entry, so the release's caller is its only writer
+    and the pool it writes through is closed by a teardown ordered after that
+    caller. A detached operation outlives its caller instead.
+    """
+    with contextlib.suppress(asyncio.CancelledError, asyncio.TimeoutError):
+        await asyncio.wait_for(asyncio.shield(task), timeout=0.25)
+    assert not task.done(), (
+        f"the release dropped ownership of the {what} at cancellation: the write "
+        "is now detached from the pool the teardown closes after this task"
+    )
+
+
+async def test_release_unstarted_claim_owns_cancel_write_through_teardown() -> None:
+    """The DI release's cancel write must outlive consumer-loop teardown.
+
+    The release has no registry entry, so shutdown can cancel the loop while
+    this write is the row's only remaining writer. A bare await cancels that
+    writer, and a detached shield leaves it running after the loop is gone,
+    against a pool about to close; the loop must own the write through its own
+    cancellation.
+    """
+    from taskq.worker.run import _release_unstarted_claim
+
+    backend = _backend_methods_stub()
+    cancel_entered = asyncio.Event()
+    cancel_release = asyncio.Event()
+    cancel_finished = asyncio.Event()
+
+    async def _noop_mark_snoozed(*_args: object, **_kwargs: object) -> str:
+        return "noop"
+
+    async def _blocking_mark_cancelled(*_args: object, **_kwargs: object) -> bool:
+        cancel_entered.set()
+        await cancel_release.wait()
+        cancel_finished.set()
+        return True
+
+    backend.mark_snoozed = _noop_mark_snoozed  # type: ignore[attr-defined]  # Why: stub backend is a plain autospec object; spy attribute injection is the established pattern in this file.
+    backend.mark_cancelled = _blocking_mark_cancelled  # type: ignore[attr-defined]  # Why: as above.
+    deps = _stub_deps(_settings())
+    job = _running_unstarted_job(
+        actor="actor-not-in-registry", cancel_phase=CancelPhase.COOPERATIVE
+    )
+    release_task = asyncio.create_task(
+        _release_unstarted_claim(
+            backend,
+            job,
+            new_uuid(),
+            deps,
+            event_prefix="dispatch-actor-not-found",
+            snooze_for=timedelta(seconds=10),
+            metadata_update={"released_reason": "actor-not-found"},
+        )
+    )
+    await asyncio.wait_for(cancel_entered.wait(), timeout=2.0)
+    release_task.cancel()
+    await _assert_still_owned(release_task, what="fenced cancel write")
+
+    cancel_release.set()
+    try:
+        await asyncio.wait_for(cancel_finished.wait(), timeout=1.0)
+        with contextlib.suppress(asyncio.CancelledError):
+            await asyncio.wait_for(release_task, timeout=2.0)
+        assert release_task.cancelled(), "the held cancellation must still be re-raised"
+    finally:
+        cancel_release.set()
+        await asyncio.gather(release_task, return_exceptions=True)
+
+
+async def test_release_unstarted_claim_owns_release_before_cancel_fallback() -> None:
+    """Teardown during mark_snoozed must not skip the cancel fall-through."""
+    from taskq.worker.run import _release_unstarted_claim
+
+    backend = _backend_methods_stub()
+    snooze_entered = asyncio.Event()
+    snooze_release = asyncio.Event()
+    cancel_finished = asyncio.Event()
+
+    async def _blocking_mark_snoozed(*_args: object, **_kwargs: object) -> str:
+        snooze_entered.set()
+        await snooze_release.wait()
+        return "noop"
+
+    async def _mark_cancelled(*_args: object, **_kwargs: object) -> bool:
+        cancel_finished.set()
+        return True
+
+    backend.mark_snoozed = _blocking_mark_snoozed  # type: ignore[attr-defined]  # Why: stub backend is a plain autospec object; spy attribute injection is the established pattern in this file.
+    backend.mark_cancelled = _mark_cancelled  # type: ignore[attr-defined]  # Why: as above.
+    deps = _stub_deps(_settings())
+    job = _running_unstarted_job(
+        actor="actor-not-in-registry", cancel_phase=CancelPhase.COOPERATIVE
+    )
+    release_task = asyncio.create_task(
+        _release_unstarted_claim(
+            backend,
+            job,
+            new_uuid(),
+            deps,
+            event_prefix="dispatch-actor-not-found",
+            snooze_for=timedelta(seconds=10),
+            metadata_update={"released_reason": "actor-not-found"},
+        )
+    )
+    await asyncio.wait_for(snooze_entered.wait(), timeout=2.0)
+    release_task.cancel()
+    await _assert_still_owned(release_task, what="release write and its cancel fall-through")
+
+    snooze_release.set()
+    try:
+        await asyncio.wait_for(cancel_finished.wait(), timeout=1.0)
+        with contextlib.suppress(asyncio.CancelledError):
+            await asyncio.wait_for(release_task, timeout=2.0)
+    finally:
+        snooze_release.set()
+        await asyncio.gather(release_task, return_exceptions=True)
 
 
 # ── Watchdog wiring through the real _main bootstrap path ────────
