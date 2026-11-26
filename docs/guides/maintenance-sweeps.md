@@ -529,9 +529,13 @@ preserved — the guards never touch reclaim-owned rows):
   its root until an operator terminalises that debris. That debris is
   **not** reported as its own stranded reason: the detector's
   `workflow_root_missing` leg requires the root to be ABSENT, and the
-  aggregate `taskq.wf_progress_nodes_total` series carries the row only
-  inside its `state="pending"` count, where it is indistinguishable from
-  healthy pending work. The runbook's rootless-only quarantine recipe
+  aggregate `taskq.wf_progress_nodes_total` series does not name it
+  either: a blocked row (join-wait, held, or a `blocking_reason` stamp)
+  lands in that workflow's `state="blocked"` count — alert-visible as
+  `TaskQWorkflowBlockedStuck` after 30 m, but not distinguishable from a
+  live blocked node — while an unblocked `pending`/`scheduled` row lands
+  in `state="pending"`, indistinguishable from healthy pending work. The
+  runbook's rootless-only quarantine recipe
   selects nothing for it either, because that recipe gates on the root
   being absent and the hold keeps it present. Identify a held run from the
   per-run rollup instead: a terminal `__flow__` root whose rollup still

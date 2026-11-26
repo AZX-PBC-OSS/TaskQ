@@ -488,7 +488,7 @@ from those seeded runs.
 ## The workflow-debug SQL recipes
 
 Per-run reads, bounded by the run's own node count; every read is
-index-driven (`jobs_wf_flow_nodes_idx`, 01.00.25_02 — the index
+index-driven (`jobs_wf_flow_nodes_idx`, 01.00.26_02 — the index
 expression carries the same uuid cast the reads carry, and the partial
 covers the workflow rows only (`metadata ? 'flow_id'`, which every read
 names exactly). The representation, stated once: the flow_id linkage is

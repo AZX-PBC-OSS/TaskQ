@@ -218,7 +218,7 @@ def derive_workflow_status(nodes: tuple[NodeView, ...]) -> WorkflowStatus:
 # state the rule).
 
 _NEVER_GRANTED_SQL = """\
-SELECT step_key, status
+SELECT id, step_key, status
 FROM {schema}.jobs
 WHERE (metadata->>'flow_id')::uuid = $1::uuid
   AND metadata ? 'flow_id'
@@ -248,7 +248,15 @@ async def reconstruct_workflow_status(
     # way it absorbs the failure — the SQL maintenance leg's
     # absorbed_exists predicate is status-blind on the parent for
     # exactly this reason).
-    absorbed_keys = {r["step_key"] for r in node_rows if r["absorbed"] and r["status"] in _TERMINAL}
+    # Only the failure class can be absorbed. The SQL predicate is
+    # status-blind on the node, so a cancelled skip on a collect/maybe edge
+    # also satisfies it; admitting that row here would erase the cancelled
+    # verdict on both its node view and its never-granted duplicate.
+    absorbed_ids = {
+        r["id"]
+        for r in node_rows
+        if r["absorbed"] and (r["status"] == "failed" or r["status"] in _TERMINAL_CRASH_CLASS)
+    }
 
     nodes: list[NodeView] = []
     for r in node_rows:
@@ -264,7 +272,7 @@ async def reconstruct_workflow_status(
                 status=r["status"],
                 deps_pending=r["deps_pending"],
                 blocking_reason=r["blocking_reason"],
-                absorbed=r["step_key"] in absorbed_keys,
+                absorbed=r["id"] in absorbed_ids,
             )
         )
     # The never-granted terminals (a cancelled pending node, a
@@ -274,5 +282,8 @@ async def reconstruct_workflow_status(
     # record (the reclaim's crashed branch: the budget exhausted) — and
     # the derivation folds it into the failed-class terminal.
     for r in never_granted:
-        nodes.append(NodeView(status=r["status"]))
+        # The node read already carries this row's absorption record. Preserve
+        # it on the terminal-class duplicate: dropping it would turn an
+        # absorbed crashed/abandoned node back into an unabsorbed failure.
+        nodes.append(NodeView(status=r["status"], absorbed=r["id"] in absorbed_ids))
     return derive_workflow_status(tuple(nodes))

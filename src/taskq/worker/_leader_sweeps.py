@@ -74,7 +74,6 @@ from taskq.worker._leader_shared import (
     _QUERY_QUEUE_DUE_DEPTH_SQL_TEMPLATE,
     _QUERY_RESERVATION_SLOTS_SQL_TEMPLATE,
     _QUERY_SCHEDULED_HORIZON_SQL_TEMPLATE,
-    _QUERY_WF_PROGRESS_SQL_TEMPLATE,
     SweepContext,
     _build_retention_per_status,
     _dbg,
@@ -2356,13 +2355,15 @@ async def _queue_depth_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
                     # onto `_other_` (summed) — never per-node labels (the
                     # cardinality doctrine). The registry read is the arms'
                     # lazy-import pattern (the import law: nothing outside
-                    # taskq.workflows imports it at module scope).
+                    # taskq.workflows imports it at module scope). The fleet
+                    # sampler SQL lives beside `absorbed_exists` in
+                    # `_sql_status` so the gauge's absorption record can never
+                    # drift from the derivation's.
                     try:
+                        from taskq.workflows._sql_status import WORKFLOW_PROGRESS_SQL
                         from taskq.workflows.definitions import get_registry
 
-                        wf_rows = await conn.fetch(
-                            _QUERY_WF_PROGRESS_SQL_TEMPLATE.format(schema=schema)
-                        )
+                        wf_rows = await conn.fetch(WORKFLOW_PROGRESS_SQL.format(schema=schema))
                         registered = frozenset(get_registry()._workflows)  # pyright: ignore[reportPrivateUsage]  # Why: the sampler reads the same registry the definitions' import populated; the registry exposes membership via `in` — the names walk is the declared-workflow dimension's source.
                         collapsed: dict[tuple[str, str], int] = {}
                         for row in wf_rows:

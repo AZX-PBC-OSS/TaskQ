@@ -2,7 +2,10 @@
 current jobs rows are the current-node record — no status cache to
 corrupt; wf_step_ledger is claim/attempt history and replay data, never
 a current-status source), the per-node
-variant (the admin page's read, by run id — bounded), and the per-map
+variant (the admin page's read, by run id — bounded), the fleet
+wf-progress sampler (the maintenance leader's gauge read, deriving the
+node-state classes IN the query — the gauge's contract is the
+derivation's), and the per-map
 done/total (the counter's complement, computed IN the query — not a
 second instrument, one fewer series to keep consistent).
 
@@ -84,7 +87,9 @@ GROUP BY status
 # (two reads where one suffices).
 # The absorption record is absorbed_exists's policy-vs-
 # fence predicate — the edge's declaration alone absorbs nothing (the
-# envelope never lies).
+# envelope never lies). Project it only for the failure class: the predicate
+# is status-blind on the node, and a cancelled skip on a collect/maybe edge
+# is cancelled, never an absorbed failure.
 WORKFLOW_NODES_SQL = (
     """\
 SELECT j.id, j.step_key, j.map_index, j.status, j.deps_pending, j.parent_id,
@@ -121,9 +126,12 @@ SELECT j.id, j.step_key, j.map_index, j.status, j.deps_pending, j.parent_id,
        j.metadata->>'failed_parent' AS failed_parent,
        j.lock_expires_at, j.last_heartbeat_at,
        j.code_version,
-       """
+       CASE WHEN j.status IN ('failed', 'crashed', 'abandoned')
+            THEN """
     + absorbed_exists("j")
-    + """ AS absorbed,
+    + """
+            ELSE FALSE
+       END AS absorbed,
        j.metadata->>'error' AS error_jsonb,
        j.error_class, j.error_message
 FROM {schema}.jobs j
@@ -131,6 +139,70 @@ WHERE (j.metadata->>'flow_id')::uuid = $1::uuid
   AND j.metadata ? 'flow_id'
   AND j.step_key <> '__flow__'
 ORDER BY j.id
+"""
+)
+
+
+# The fleet wf-progress sampler: per (declared workflow, DERIVED node
+# state) node counts — one grouped read for ``taskq.wf_progress_nodes_total``
+# and its ``TaskQWorkflowBlockedStuck`` alert. The gauge's documented
+# contract (docs/guides/observability.md) is the derivation's node-state
+# classes, NOT the raw ``job_status`` enum: the enum has no 'blocked' and
+# no 'complete' member (01.00.00_01), so a raw projection left
+# ``state="blocked"`` emit-able by nothing and the alert permanently dead.
+# The classification below is ``NodeView.is_blocked_row`` /
+# ``derive_workflow_status`` (``_status.py``) applied per ROW — this gauge
+# counts individual nodes, so the derivation's run-level
+# ``cancel_in_flight`` reads the node's own ``cancel_phase`` rather than
+# the root's ``cancel_requested_at``.
+#
+# Index-driven exactly as before: the node rows ride
+# ``jobs_wf_flow_nodes_idx`` (01.00.26_02 — the uuid-cast expression, the
+# workflow-rows-only partial, which this WHERE names exactly), each root a
+# primary-key probe. Held detection is the in-row ``metadata ? 'hold'``
+# JSONB check — the dispatch fence itself (``_dispatch_sql``), so no
+# ``wf_signals`` join. ``absorbed_exists`` is probed ONLY inside the
+# failed-class branch, so healthy rows never touch ``wf_edge_parent_idx``.
+# The correlated EXISTS sits in a projecting subquery and the grouping
+# wraps it (a correlated subquery cannot be grouped over directly).
+# The ``_other_`` collapse stays in the sampler (it knows the registered
+# names); the read groups by the run's own stamped name, registered or not.
+# The fallback is ``n.status::text``, not ``'pending'``: every current enum
+# member is classified explicitly, so a future one surfaces loudly instead
+# of silently folding into the queue bucket.
+WORKFLOW_PROGRESS_SQL = (
+    """\
+SELECT workflow, state, count(*) AS count
+FROM (
+    SELECT COALESCE(r.metadata->>'workflow', '_other_') AS workflow,
+           CASE
+               WHEN n.status = 'running' THEN 'running'
+               WHEN n.status IN ('pending', 'scheduled') AND n.cancel_phase > 0
+                   THEN 'running'
+               WHEN n.status IN ('failed', 'crashed', 'abandoned')
+                    AND """
+    + absorbed_exists("n")
+    + """
+                   THEN 'complete'
+               WHEN n.status IN ('failed', 'crashed', 'abandoned') THEN 'failed'
+               WHEN n.status = 'succeeded' THEN 'complete'
+               WHEN n.status = 'cancelled' THEN 'cancelled'
+               WHEN n.status = 'pending' AND (
+                       n.deps_pending > 0
+                       OR n.metadata ? 'hold'
+                       OR (n.metadata->>'blocking_reason' IS NOT NULL
+                           AND n.metadata->>'blocking_reason'
+                               NOT IN ('join', 'body_unavailable'))
+                   ) THEN 'blocked'
+               WHEN n.status IN ('pending', 'scheduled') THEN 'pending'
+               ELSE n.status::text
+           END AS state
+    FROM "{schema}".jobs n
+    JOIN "{schema}".jobs r ON r.id = (n.metadata->>'flow_id')::uuid
+    WHERE n.metadata ? 'flow_id'
+      AND n.step_key IS NOT NULL AND n.step_key <> '__flow__'
+) samples
+GROUP BY workflow, state
 """
 )
 
