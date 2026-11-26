@@ -759,18 +759,25 @@ async def test_sync_body_in_time_pin_survives_thread_scheduling_jitter(
     widened ``_SYNC_STALL_LIMIT`` the stamps stay in time and the rescue
     still surfaces the thread's own outcome.
     """
+    from taskq.worker import dispatch as dispatch_mod
+    from tests._ns_patch import patch_ns
+
     real_to_thread = asyncio.to_thread
+    jitter_calls = 0
 
     async def _jittered_to_thread(
         func: Callable[..., object], /, *args: object, **kwargs: object
     ) -> object:
+        nonlocal jitter_calls
+        jitter_calls += 1
+
         def _delayed() -> object:
             time.sleep(0.16)
             return func(*args, **kwargs)
 
         return await real_to_thread(_delayed)
 
-    monkeypatch.setattr(asyncio, "to_thread", _jittered_to_thread)
+    patch_ns(monkeypatch, dispatch_mod, "asyncio", to_thread=_jittered_to_thread)
     if scenario == "returns":
         await test_sync_body_that_finished_inside_the_deadline_is_not_a_timeout(
             transactional, monkeypatch
@@ -783,6 +790,10 @@ async def test_sync_body_in_time_pin_survives_thread_scheduling_jitter(
         await test_sync_body_own_timeout_inside_the_deadline_is_the_actors_outcome(
             transactional, monkeypatch
         )
+    assert jitter_calls == 1, (
+        f"jittered to_thread wrapper ran {jitter_calls} time(s); "
+        "dispatch_mod.asyncio.to_thread was not intercepted"
+    )
 
 
 @pytest.mark.parametrize("transactional", [True, False], ids=["transactional", "autonomous"])
