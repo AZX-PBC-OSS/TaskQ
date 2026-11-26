@@ -61,6 +61,15 @@ RETURNING id, flow_id, job_id, step_key, map_index, attempt, status,
 # LEDGER_CLAIM_SQL and LEDGER_FENCE_BY_ID_SQL's re-mint guard are built on:
 # a conflicting claim never inherits a live claimant's instant, so a stale
 # claimant's terminal write is refused rather than landed.
+#
+# The trade-off, stated rather than implied: the retired failure is NOT
+# persisted as history. The row is re-opened IN PLACE, so the failed call's
+# error_class/error_message survive only in the structured
+# ``workflow-substep-failure-retired`` warning the re-open path logs
+# (WorkflowSteps.step) — one row per arbitration tuple keeps recording its
+# LATEST outcome, never a second row per call. Durable per-call failure
+# history is a schema decision (a table plus its retention arm), deliberately
+# left to the ledger's schema owner.
 LEDGER_SUBSTEP_CLAIM_SQL = """\
 INSERT INTO {schema}.wf_step_ledger
     (id, flow_id, job_id, step_key, map_index, attempt, claim_epoch, status)
@@ -117,9 +126,12 @@ LIMIT 1
 # The latest CLAIM answers: claim_epoch first, because the job's epoch only
 # rises (+1 per claim, never reset) while an emit park resets the physical
 # attempt to 0, so attempt-first let a pre-park failure outrank every later
-# success. step_key says which leg answered.
+# success. step_key says which leg answered; id is the row's own identity,
+# so a caller can tell whether the row it read is the exact row a later
+# claim re-opens (the retired-failure signal's own condition) without a
+# second query.
 LEDGER_SUBSTEP_MEMOIZED_SQL = """\
-SELECT attempt, status, result, error_class, error_message, job_id, step_key
+SELECT id, attempt, status, result, error_class, error_message, job_id, step_key
 FROM {schema}.wf_step_ledger
 WHERE flow_id = $1
   AND step_key = ANY($2::text[])
@@ -140,15 +152,15 @@ LIMIT 1
 #
 # ONE keying — the write touches exactly the claimed row:
 #   LEDGER_TERMINAL_BY_ID_SQL keys the claim's OWN RETURNING id AND its own
-#   claim instant: the caller that holds the claim (claim_step_ledger →
-#   LedgerClaim.ledger_id/claimed_at) pins the write to that row and that
-#   stamp and nothing else. There is no four-expression fallback and no
-#   instant-less bypass in current production claims: the epoch arbiter
-#   (flow, step, COALESCE(map,-1), attempt, claim_epoch) can carry several
-#   rows per (flow, step, attempt) — an update keyed only on those four
-#   expressions would rewrite the parked attempt's 'awaited' history beside
-#   the current row (the demonstrated UPDATE 2), and a status-only by-id
-#   write could re-stamp a row a later re-mint owns.
+#   claim instant: the caller that holds the claim (claim_step_ledger /
+#   claim_substep_ledger → LedgerClaim.ledger_id/claimed_at) pins the write
+#   to that row and that stamp and nothing else. There is no four-expression
+#   fallback and no instant-less bypass in current production claims: the
+#   epoch arbiter (flow, step, COALESCE(map,-1), attempt, claim_epoch) can
+#   carry several rows per (flow, step, attempt) — an update keyed only on
+#   those four expressions would rewrite the parked attempt's 'awaited'
+#   history beside the current row (the demonstrated UPDATE 2), and a
+#   status-only by-id write could re-stamp a row a later re-mint owns.
 LEDGER_TERMINAL_BY_ID_SQL = """\
 UPDATE {schema}.wf_step_ledger
 SET status = $2,
@@ -166,13 +178,14 @@ WHERE id = $1
        -- updated_at, and the guard below refuses it.
        OR (status = 'fenced' AND starts_with(step_key, job_id::text)))
   -- The re-mint guard: the caller presents its OWN claim's RETURNING
-  -- instant (``claim_step_ledger``'s updated_at — the claim's instance
-  -- identity) and writes ONLY the row that claim actually wrote, at the
-  -- stamp that claim left. The arbiter's re-use (the refund re-claims the
-  -- SAME ordinal → the SAME arbiter row) re-stamps updated_at, and the
-  -- stale instant REFUSES the write: a re-minted LIVE winner's ledger row
-  -- can never inherit a stale claimant's stamp (the deadline's 'failed'
-  -- burn included).
+  -- instant (the claim statement's updated_at — claim_step_ledger or
+  -- claim_substep_ledger, whichever granted the claim — the claim's
+  -- instance identity) and writes ONLY the row that claim actually wrote,
+  -- at the stamp that claim left. The arbiter's re-use (the refund
+  -- re-claims the SAME ordinal → the SAME arbiter row) re-stamps
+  -- updated_at, and the stale instant REFUSES the write: a re-minted LIVE
+  -- winner's ledger row can never inherit a stale claimant's stamp (the
+  -- deadline's 'failed' burn included).
   AND updated_at = $7::timestamptz
 RETURNING id
 """
@@ -192,14 +205,29 @@ SET status = 'fenced',
 WHERE id = $1
   AND status IN ('running', 'awaited', 'crashed')
   -- The re-mint guard: a caller presenting its OWN claim's
-  -- RETURNING instant (``claim_step_ledger``'s updated_at — the claim's
-  -- instance identity) fences ONLY the row that claim actually wrote.
+  -- RETURNING instant (the claim statement's updated_at —
+  -- claim_step_ledger or claim_substep_ledger — the claim's instance
+  -- identity) fences ONLY the row that claim actually wrote.
   -- The refund re-mints the ordinal — the arbiter re-use hands a LIVE
   -- winner the SAME ledger row (the DO UPDATE re-stamps updated_at) —
   -- and the stale instant REFUSES the fence: the winner's own terminal
   -- writes the row, the record never marks a live attempt 'fenced'.
   AND updated_at = $3::timestamptz
 RETURNING id
+"""
+
+
+# The refusal diagnose: after LEDGER_TERMINAL_BY_ID_SQL's guarded write
+# matches no row, the caller reads the row back by its id to name the CAUSE
+# (WorkflowSteps._record_terminal) — a missing row means retention deleted
+# it; a 'fenced' row means a genuine fence took it; any other status means a
+# newer claim superseded it (the re-stamp). One keyed single-row SELECT on
+# an already-rare path; ``updated_at`` rides beside the status so a caller
+# may date the winning writer's write.
+LEDGER_ROW_STATUS_BY_ID_SQL = """\
+SELECT status, updated_at
+FROM {schema}.wf_step_ledger
+WHERE id = $1
 """
 
 

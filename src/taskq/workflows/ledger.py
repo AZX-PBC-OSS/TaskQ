@@ -160,7 +160,10 @@ class LedgerClaim:
     error).
     ``ledger_id`` is the claimed LEDGER ROW's own id (the RETURNING id) —
     the strongest terminal-write key: the finalize that holds it pins the
-    outcome write to exactly this row (``LEDGER_TERMINAL_BY_ID_SQL``).
+    outcome write to exactly this row (``LEDGER_TERMINAL_BY_ID_SQL``). The
+    substep memo projection (``memoized_substep_result``) populates it too
+    (the row that answered), so a caller can tell whether the row it read is
+    the exact row a later claim re-opens.
     """
 
     flow_id: JobId
@@ -318,6 +321,10 @@ async def claim_substep_ledger(
     re-stamped), so the re-mint guard
     that refuses a stale claimant's terminal write is unchanged.
 
+    Clearing the failed call's ``error_class``/``error_message`` is not
+    silent: the re-open path (:meth:`WorkflowSteps.step`) logs the retired
+    error (``workflow-substep-failure-retired``) before the row loses it.
+
     Node and loop claims stay on :func:`claim_step_ledger`: neither re-runs a
     failed unit under the same ``(attempt, claim_epoch)``."""
     return await _claim_ledger_row(
@@ -374,7 +381,10 @@ async def memoized_substep_result(
     ``step_keys[0]`` (the scoped key) or a pre-#743 bare name after it.
     *legacy_iteration_key* (``<loop>.iter<n>``) attributes a bare row to
     the loop iteration that recorded it. The claim's ``step_key`` is the
-    key of the row that answered. ``None`` when no terminal row exists."""
+    key of the row that answered; its ``ledger_id`` is that row's own id,
+    so a caller can compare it with a fresh claim's id and know whether the
+    claim re-opened the exact row this read saw. ``None`` when no terminal
+    row exists."""
     rec = await conn.fetchrow(
         wsql.ledger_substep_memoized,
         flow_id,
@@ -395,6 +405,7 @@ async def memoized_substep_result(
         result=_decode_jsonb(rec["result"]),
         error_class=rec["error_class"],
         error_message=rec["error_message"],
+        ledger_id=JobId(rec["id"]),
     )
 
 
