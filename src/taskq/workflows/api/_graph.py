@@ -818,16 +818,18 @@ class NodeDecl:
 
     @property
     def is_fan_out_source(self) -> bool:
-        """True when this node SPAWNS a fork — the map's children or the
-        typed route's arms — whose derived ``<key>.join`` row its own fork
-        writes. The one spelling of the question the validator's re-proof
-        and the runner's fail-closed guard both ask (the wiring refusals
-        already know the answer structurally: they ARE the attachment).
+        """True when this NODE carries a fork-spawning attachment — the
+        node-local half of the question.
 
         Today exactly ``map_item is not None or map_arms is not None`` (the
         two are mutually exclusive — a node finalizes once, one fork); a
         future fork-spawning attachment decides here, once, instead of
-        drifting across call sites.
+        drifting across call sites. This property cannot see the graph, so
+        it cannot tell that a cleared attachment's derived ``map_join``
+        decl still names this node as its parent: the validator's re-proof
+        and the runner's fail-closed guard ask
+        :meth:`CompiledWorkflow.is_fan_out_source`, which consults both
+        this property and the derived join's parent edge.
         """
         return self.map_item is not None or self.map_arms is not None
 
@@ -1721,26 +1723,6 @@ def _attach_route[S](
                 "reservations= so the arm rides the source's cohort), or "
                 "put the arm on its own step with its own declared cap."
             )
-    if source_node.skip is not None:
-        # skip= on a route source wedges the run the same way cache=True does:
-        # the dispatch-time skip gate finalizes the source ``succeeded``
-        # without entering the body path where the fork is built
-        # (``_finalize_skipped`` calls ``finalize_node`` with no fork), so
-        # ``<source>.join`` never spawns, the consumer's reserved dependency
-        # is never released, and the run stands ``running`` forever with no
-        # error row. The fail-closed guard in the success finalize never sees
-        # this door, so the wiring refuses it here.
-        raise WorkflowBuildError(
-            f"node {source.key!r} declares a skip= predicate and now carries "
-            "a typed route — the combination is refused: a skipped route "
-            "source terminalizes succeeded WITHOUT its route fork (the skip "
-            "gate never reaches the body path where the fork is built), so "
-            "the join never spawns, the downstream waits forever, and the "
-            "run stands running with no error row. Move the condition into "
-            "the source body (return [] when there is nothing to route — an "
-            "empty list is the honest empty corpus and still fires the join), "
-            "or drop the route from this node"
-        )
     if source_node.cache:
         # cache=True on a typed-route source wedges the run forever at the
         # first cache hit — the hit path never rebuilds the route fork (the arm

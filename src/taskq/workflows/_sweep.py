@@ -139,7 +139,11 @@ class SweepResult:
     #: The flow-fenced fix: never-fired join rows whose resolution the flow's own
     #: death fenced (the fire's flow-status leg refuses a terminal flow) —
     #: stamped blocked-with-reason by this pass, never a hanging claimable
-    #: join on a dead flow.
+    #: join on a dead flow. The count spans TWO statements: the rederive's
+    #: ``flow_fenced`` arm (flows already terminal when the pass began) and
+    #: the root-maintenance ``fenced_waiters`` CTE (the roots this pass
+    #: terminalizes, covering both ``join`` rows and rows an earlier pass
+    #: stamped ``orphan_parent``).
     flow_fenced: int = 0
     fired: tuple[FiredJoin, ...] = ()
 
@@ -297,34 +301,21 @@ async def sweep_join_rederive(
         # by the root batch; the per-root node scan rides the flow-nodes
         # expression index (01.00.26_02 — the uuid-cast expression, the
         # workflow-rows-only partial) — never a seq scan.
+        #
+        # The same statement carries the terminal waiters' fence: the roots
+        # it terminalizes THIS pass can still hold a pending join-wait row,
+        # either a never-fired ``join`` row or one an earlier pass stamped
+        # ``orphan_parent`` while its root was still running (the bounded
+        # roots batch, or a root held by a concurrent transaction, deferred
+        # that root past the stamp pass). ``fenced_waiters`` replaces that
+        # live-flow record with the dead-flow resolution in the same
+        # statement, so a cross-pass deferral can no longer leave the
+        # wiring-fault stamp on a dead run. Its count is the only report of
+        # that half; the rederive's own ``flow_fenced`` arm covers flows
+        # that were already terminal when the pass began.
         maintain = await conn.fetchrow(wsql.workflow_root_maintain, batch_size)
-        # Root maintenance runs after rederive so a join fired above reaches
-        # the root's all-terminal derivation in this same pass. That ordering
-        # has one reciprocal edge: the rederive can stamp an edge-less reserved
-        # consumer orphan_parent while its root is still running, then this
-        # maintenance leg terminalizes that root. When one pass does both,
-        # re-run the existing rederive once in this transaction so its
-        # flow_fenced arm can replace the now-stale live-flow diagnosis with
-        # flow_dead before the direct driver observes the terminal root. This
-        # recovery statement does not fire joins; only its terminal-fence count
-        # joins this summary. Its locked batch is ZERO: flow_fenced is
-        # intentionally independent of that batch, while a second general
-        # rederive could reconcile another ready join to zero and discard its
-        # firable result, stranding it outside every later locked scan.
-        if (
-            int(summary["blocked"] or 0) > 0
-            and maintain is not None
-            and int(maintain["roots_updated"] or 0) > 0
-        ):
-            terminal_summary = await conn.fetchrow(
-                wsql.rederive_sweep,
-                0,
-                orphan_blocking_reason,
-                failed_parent_blocking_reason,
-                flow_dead_blocking_reason,
-            )
-            assert terminal_summary is not None
-            flow_fenced += int(terminal_summary["flow_fenced"] or 0)
+        if maintain is not None and "flow_fenced" in maintain:
+            flow_fenced += int(maintain["flow_fenced"] or 0)
         # THE §5.4 REFUSAL'S LOG FACE (the fence itself rode the maintain
         # statement's own not_draining CTE — same transaction, the proof
         # conditions named there): the operator's alert reads the metric

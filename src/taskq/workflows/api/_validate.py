@@ -1144,23 +1144,27 @@ def _rule_cache_unverifiable_source(compiled: CompiledWorkflow) -> list[Workflow
 
 def _rule_skip_fan_out_source(compiled: CompiledWorkflow) -> list[WorkflowValidationError]:
     """E22 (the SKIPPED-FAN-OUT WEDGE'S REFUSAL): a ``skip=`` predicate
-    on a fan-out SOURCE (a node carrying ``map_item`` or ``map_arms``) is
-    the run that wedges FOREVER the first time the predicate returns
-    ``True``. The skip path finalizes the source ``succeeded`` with
-    ``{"skipped": true}`` and never spawns the derived
-    ``<source>.join`` the fork owns, so the reserved downstream consumer
-    waits on a join that cannot come and the root stays ``running`` with
-    no error row; a TERMINAL map (``build(mapped)``) instead reads
-    ``succeeded`` over a ``result()`` of ``None``. The wiring verbs refuse
-    the combination at the attachment (``map_source`` and the route's
-    ``_attach_route``); this rule re-proves the fence from the compiled
-    graph itself (public, mutable data — E3's precedent), and the runner's
-    fail-closed guard covers a graph mutated after construction. The
-    alternative the message names: return ``[]`` from the source body
-    (the born-zero join fires immediately with the honest empty list)."""
+    on a fan-out SOURCE (a node carrying ``map_item``/``map_arms`` OR the
+    parent of a derived ``map_join`` node — the graph-aware question
+    :meth:`CompiledWorkflow.is_fan_out_source` asks) is the run that
+    wedges FOREVER the first time the predicate returns ``True``. The skip
+    path finalizes the source ``succeeded`` with ``{"skipped": true}`` and
+    never spawns the derived ``<source>.join`` the fork owns, so the
+    reserved downstream consumer waits on a join that cannot come and the
+    root stays ``running`` with no error row; a TERMINAL map
+    (``build(mapped)``) instead reads ``succeeded`` over a ``result()`` of
+    ``None``. The wiring verbs refuse the combination at the attachment
+    (``map_source`` and the route's ``_attach_route``); this rule re-proves
+    the fence from the compiled graph itself (public, mutable data — E3's
+    precedent), and the runner's fail-closed guard covers a graph mutated
+    after construction. Asking the graph-aware question matters: clearing
+    ``map_item``/``map_arms`` while leaving the derived join decl in
+    ``nodes`` must not blind this rule. The alternative the message names:
+    return ``[]`` from the source body (the born-zero join fires
+    immediately with the honest empty list)."""
     diagnostics: list[WorkflowValidationError] = []
     for node in compiled.nodes.values():
-        if node.skip is None or not node.is_fan_out_source:
+        if node.skip is None or not compiled.is_fan_out_source(node.key):
             continue
         diagnostics.append(
             WorkflowValidationError(

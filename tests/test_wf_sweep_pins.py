@@ -12,6 +12,7 @@ the unfenced variants kept in this file forever as the rejected shapes.
 
 from __future__ import annotations
 
+import asyncio
 import json
 from datetime import timedelta
 from pathlib import Path
@@ -20,6 +21,7 @@ import asyncpg
 import pytest
 
 from taskq._ids import new_uuid
+from taskq.backend._protocol import JobId
 from taskq.workflows._sql import TERMINAL_SQL_SET, WorkflowSql
 from taskq.workflows._sweep import reap_phantom_ledger, sweep_join_rederive
 from taskq.workflows.engine import finalize_node
@@ -623,10 +625,11 @@ async def test_terminal_fence_recovery_does_not_strand_the_next_firable_join(
     module_pg_pool: asyncpg.Pool,
     wf_sql: WorkflowSql,
 ) -> None:
-    """The post-maintenance recovery is terminal-fence-only, not another
-    general rederive batch. With a bounded batch, a second general rederive
-    can reconcile the NEXT ready join to zero and discard its firable result;
-    every later locked scan then excludes it and the join never fires."""
+    """The maintenance statement's terminal-waiter fence is its own half of
+    the flow-fenced fix, not a second general rederive batch. With a bounded
+    batch, a second general rederive can reconcile the NEXT ready join to
+    zero and discard its firable result; every later locked scan then
+    excludes it and the join never fires."""
     dead_flow = await seed_flow(wf_conn, wf_schema)
     orphan = await seed_join(wf_conn, wf_schema, dead_flow, step_key="orphan", deps=1)
     failed = await seed_running_node(wf_conn, wf_schema, dead_flow, step_key="failed")
@@ -645,10 +648,17 @@ async def test_terminal_fence_recovery_does_not_strand_the_next_firable_join(
     )
 
     # Batch one stamps the dead flow's edge-less consumer and terminalizes its
-    # root, arming the same-transaction recovery. The ready join is outside
-    # that batch and must remain available to the following general pass.
+    # root; the maintenance statement's `fenced_waiters` fences the stamped row
+    # in the same pass. The ready join is outside that batch and must remain
+    # available to the following general pass.
     first = await sweep_join_rederive(module_pg_pool, wf_sql, batch_size=1)
     assert first.blocked == 1, first
+    # The reported fence count is the maintenance statement's
+    # ``fenced_waiters`` half — statement 1's own ``flow_fenced`` arm is
+    # zero here (the row it would fence is the one its ``blocked`` arm just
+    # stamped, and that arm's exclusion holds it). Deleting or mis-coercing
+    # the accumulation would silently under-report the fleet's heal count.
+    assert first.flow_fenced == 1, first
     orphan_state = await node_state(wf_conn, wf_schema, orphan)
     orphan_meta = orphan_state["metadata"]
     if isinstance(orphan_meta, str):
@@ -659,7 +669,237 @@ async def test_terminal_fence_recovery_does_not_strand_the_next_firable_join(
     second = await sweep_join_rederive(module_pg_pool, wf_sql, batch_size=1)
     assert second.firable == 1, second
     assert await fire_count(wf_conn, wf_schema, ready) == 1, (
-        "the recovery rederive consumed the ready join's counter without firing it"
+        "the terminal-waiter fence consumed the ready join's counter without firing it"
+    )
+
+
+# ── The cross-pass terminal fence (the deferred-root heal) ─────────────
+
+
+def _blocking_reason(state: dict[str, object]) -> str | None:
+    meta = state.get("metadata")
+    if isinstance(meta, str):
+        meta = json.loads(meta)
+    if not isinstance(meta, dict):
+        return None
+    reason = meta.get("blocking_reason")
+    return reason if isinstance(reason, str) else None
+
+
+async def _seed_deferred_root_pass(conn: asyncpg.Connection, schema: str) -> tuple[JobId, JobId]:
+    """A refused-fan-out-source record whose stamp pass DEFERS its root.
+
+    The consumer is stamped ``orphan_parent`` while the root stays
+    ``running`` because the bounded root-maintenance batch served an older
+    terminalizable root instead — the production shape (the leader passes
+    ``event_writer_batch_size``, and a contended/over-batch root defers).
+    Returns ``(flow_id, consumer_id)``.
+    """
+    # The older root that consumes the bounded maintenance batch's slot.
+    decoy = await seed_flow(conn, schema)
+    decoy_node = await seed_running_node(conn, schema, decoy, step_key="done")
+    await conn.execute(
+        f"UPDATE \"{schema}\".jobs SET status = 'succeeded', finished_at = now() WHERE id = $1",
+        decoy_node,
+    )
+
+    # The refused fan-out source's flow: the source terminal-FAILED with the
+    # refusal class (what the runner's guard records), the reserved consumer
+    # born pending on the join the fork never wrote.
+    flow_id = await seed_flow(conn, schema)
+    source = await seed_running_node(conn, schema, flow_id, step_key="items")
+    await conn.execute(
+        f"UPDATE \"{schema}\".jobs SET status = 'failed', finished_at = now(), "
+        "error_class = 'SkippedFanOutSourceError' WHERE id = $1",
+        source,
+    )
+    consumer = await seed_join(conn, schema, flow_id, step_key="consume", deps=1)
+    return flow_id, consumer
+
+
+@pytest.mark.integration
+async def test_a_dead_flow_never_leaves_its_consumer_with_the_wiring_fault_stamp(
+    wf_conn: asyncpg.Connection,
+    wf_schema: str,
+    module_pg_pool: asyncpg.Pool,
+    wf_sql: WorkflowSql,
+) -> None:
+    """A terminal-FAILED flow's reserved consumer must carry the fence's dead
+    record, never ``orphan_parent`` — the misnamed-child diagnosis whose
+    remedy ("fix the definition and re-run") sends the operator after a
+    wiring bug that does not exist.
+
+    The state is CROSS-PASS by construction: root maintenance is a bounded
+    ``FOR UPDATE SKIP LOCKED`` batch, so the pass that stamps the orphan
+    need not be the pass that terminalizes its root. The maintenance
+    statement's ``fenced_waiters`` CTE heals the row in the terminalizing
+    pass, before any driver observes the dead root.
+    """
+    flow_id, consumer = await _seed_deferred_root_pass(wf_conn, wf_schema)
+
+    # Pass 1: the consumer is stamped `orphan_parent`, the root is NOT
+    # maintained (the bounded roots batch served the older root instead).
+    first = await sweep_join_rederive(module_pg_pool, wf_sql, batch_size=1)
+    assert first.blocked == 1, first
+    assert first.flow_fenced == 0, first
+    root = await node_state(wf_conn, wf_schema, flow_id)
+    assert root["status"] == "running", (
+        "the maintenance batch was expected to defer this flow's root"
+    )
+    assert _blocking_reason(await node_state(wf_conn, wf_schema, consumer)) == "orphan_parent"
+
+    # Pass 2: root maintenance terminalizes the root — and the same
+    # statement's `fenced_waiters` replaces the live-flow stamp.
+    second = await sweep_join_rederive(module_pg_pool, wf_sql, batch_size=10)
+    assert second.blocked == 0, second
+    assert second.flow_fenced == 1, second
+    root = await node_state(wf_conn, wf_schema, flow_id)
+    assert root["status"] == "failed", f"the run is terminal: {root['status']}"
+    consumer_state = await node_state(wf_conn, wf_schema, consumer)
+    assert _blocking_reason(consumer_state) in ("flow_dead", "failed_parent"), consumer_state
+
+
+# ── The terminal fence's lock discipline (never waits on a contended row) ──
+
+#: Long enough that a healthy pass finishes, short enough that a blocked one is
+#: unambiguous (the shipped pass is single-digit milliseconds on this shape).
+_FENCE_WAIT_S = 3.0
+
+
+@pytest.mark.integration
+async def test_the_flow_fenced_arm_never_waits_on_a_contended_row(
+    wf_conn: asyncpg.Connection,
+    wf_schema: str,
+    module_pg_pool: asyncpg.Pool,
+    wf_sql: WorkflowSql,
+) -> None:
+    """THE LOCK-ORDER EXEMPTION at the rederive's own fence: with another
+    transaction holding the row the arm wants to fence, the pass must
+    complete (skip it, heal it next pass) — never queue behind the holder
+    while it holds the rederive batch's row locks. Without
+    ``FOR UPDATE OF jj SKIP LOCKED`` on the candidate selection the fence's
+    plain UPDATE waits, and the seat's "it NEVER waits on a contended row"
+    is false as published."""
+    flow_id = await seed_flow(wf_conn, wf_schema, status="failed")
+    join_id = await seed_join(wf_conn, wf_schema, flow_id, step_key="fenced", deps=1)
+
+    tx = wf_conn.transaction()
+    await tx.start()
+    try:
+        await wf_conn.execute(f'SELECT 1 FROM "{wf_schema}".jobs WHERE id = $1 FOR UPDATE', join_id)
+        summary = await asyncio.wait_for(
+            sweep_join_rederive(module_pg_pool, wf_sql), timeout=_FENCE_WAIT_S
+        )
+    finally:
+        await tx.rollback()
+
+    assert summary.flow_fenced == 0, summary  # skipped, not queued
+    skipped = await node_state(wf_conn, wf_schema, join_id)
+    assert _blocking_reason(skipped) == "join", skipped
+
+    # The next pass (holder gone) fences it — the skip is a deferral, never
+    # a loss.
+    healed = await sweep_join_rederive(module_pg_pool, wf_sql)
+    assert healed.flow_fenced == 1, healed
+    fenced = await node_state(wf_conn, wf_schema, join_id)
+    assert _blocking_reason(fenced) == "flow_dead", fenced
+
+
+# ── The flow-fenced arm's plan: index-served, never a jobs walk ────────
+
+
+def _plan_root(rows: list[dict[str, object]]) -> dict[str, object]:
+    raw = rows[0]["QUERY PLAN"]
+    if isinstance(raw, str):
+        raw = json.loads(raw)
+    if isinstance(raw, list):
+        raw = raw[0]
+    assert isinstance(raw, dict)
+    return raw
+
+
+def _flow_fenced_arm(plan: dict[str, object]) -> dict[str, object] | None:
+    """The ModifyTable whose subtree reads wf_join_fire — the flow_fenced arm."""
+    top = plan.get("Plan")
+    assert isinstance(top, dict)
+    for node in top.get("Plans", []):
+        if not isinstance(node, dict):
+            continue
+        if node.get("Node Type") == "ModifyTable" and "wf_join_fire" in json.dumps(node):
+            return node
+    return None
+
+
+def _seq_scans(node: object, out: list[str]) -> None:
+    if isinstance(node, dict):
+        if node.get("Node Type") == "Seq Scan" and node.get("Relation Name"):
+            out.append(
+                f"Seq Scan on {node['Relation Name']} "
+                f"(est {node.get('Plan Rows')} rows, cost {node.get('Total Cost')})"
+            )
+        for value in node.values():
+            _seq_scans(value, out)
+    elif isinstance(node, list):
+        for item in node:
+            _seq_scans(item, out)
+
+
+@pytest.mark.integration
+async def test_the_flow_fenced_arm_is_index_served_on_a_fleet_shape(
+    wf_conn: asyncpg.Connection,
+    wf_schema: str,
+    wf_sql: WorkflowSql,
+) -> None:
+    """The rederive's ``flow_fenced`` arm must stay INDEX-SERVED on a fleet
+    shape where a TERMINAL flow root exists (its own entry condition).
+
+    Its predicate must be exactly ``jobs_wf_join_fire_probe_idx``'s partial
+    (``status='pending' AND metadata @> '{"blocking_reason": "join"}'``).
+    An ``OR`` of a second reason cannot imply the partial, so the planner
+    walks the pending population: measured 12 ms → 2.4 s on the arm at 100k
+    pending jobs. This dedicated pin exercises ``flow_fenced`` directly under
+    a vanilla pending queue without paying the 100k-edge scale-curve setup.
+    """
+    # The arm's population: a terminal flow root holding a pending,
+    # never-fired join-wait row.
+    for _ in range(200):
+        dead = await seed_flow(wf_conn, wf_schema, status="failed")
+        await seed_join(wf_conn, wf_schema, dead, step_key="j", deps=1)
+    # The population a sweep pass shares with the fleet's ordinary queue:
+    # pending vanilla jobs, the rows the join-wait partial exists to skip.
+    pending_ids = [new_uuid() for _ in range(5_000)]
+    await wf_conn.execute(
+        f'INSERT INTO "{wf_schema}".jobs (id, actor, queue, payload, max_attempts, '
+        "retry_kind, status, metadata) "
+        "SELECT u.id, 'v', 'default', '{}', 3, 'transient', 'pending', '{}'::jsonb "
+        "FROM unnest($1::uuid[]) AS u(id)",
+        pending_ids,
+    )
+    await wf_conn.execute(f'ANALYZE "{wf_schema}".jobs')
+
+    plan = _plan_root(
+        [
+            dict(row)
+            for row in await wf_conn.fetch(
+                f"EXPLAIN (FORMAT JSON) {wf_sql.rederive_sweep}",
+                200,
+                "orphan_parent",
+                "failed_parent",
+                "flow_dead",
+            )
+        ]
+    )
+    arm = _flow_fenced_arm(plan)
+    assert arm is not None, "the flow_fenced arm is not in the rederive plan — the pin is unarmed"
+    scans: list[str] = []
+    _seq_scans(arm, scans)
+    assert not scans, (
+        "REDERIVE_SWEEP_SQL's flow_fenced arm plans a sequential scan on a "
+        "fleet shape (" + "; ".join(scans) + "). Its predicate must imply "
+        "jobs_wf_join_fire_probe_idx's partial (status='pending' AND "
+        'metadata @> \'{"blocking_reason": "join"}\'); the pass that '
+        "terminalizes a root heals its other waiters in "
+        "WORKFLOW_ROOT_MAINTAIN_SQL's fenced_waiters, not here."
     )
 
 

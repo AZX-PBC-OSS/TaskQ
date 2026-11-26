@@ -164,16 +164,12 @@ def test_docs3_the_single_value_route_disposition_is_named() -> None:
 
 # ── the docs-numbers count-vs-list law (the green guard) ───────
 
-#: The count claim's shape: "five `wf_*` tables" — a number word (or digit)
-#: immediately scoping the workflow-table family.
-_TABLE_COUNT_CLAIM = re.compile(
-    r"\b(\d+|one|two|three|four|five|six|seven|eight|nine|ten)\s+`wf_\*` tables", re.IGNORECASE
-)
-
 #: Every number word a docs count claim may spell — ONE map for both count
 #: laws in this module (the ``wf_*`` table count and the validator's rule
-#: count). Compounds are summed by :func:`_spelled_count` (``"twenty-eight"``
-#: → 20 + 8), which is how the rule count is spelled.
+#: count), and :data:`_TABLE_COUNT_CLAIM`'s alternation is derived from it,
+#: so extending the map extends both laws. Compounds are summed by
+#: :func:`_spelled_count` (``"twenty-eight"`` → 20 + 8), which is how the
+#: rule count is spelled.
 _NUMBER_WORDS = {
     "one": 1,
     "two": 2,
@@ -208,6 +204,24 @@ def _spelled_count(word: str) -> int | None:
     return sum(value for value in values if value is not None) or None
 
 
+#: The number-word alternation every count claim accepts (longest first, so
+#: a compound's first component is matched whole). Digits ride beside it.
+_NUMBER_WORD_PATTERN = "|".join(sorted(_NUMBER_WORDS, key=len, reverse=True))
+
+#: The count claim's shape: "five `wf_*` tables" — a number word (or digit,
+#: including a compound such as "twenty-eight") immediately scoping the
+#: workflow-table family. The number vocabulary is :data:`_NUMBER_WORDS`'s,
+#: the SAME map :func:`_spelled_count` reads — one map, both count laws.
+_TABLE_COUNT_CLAIM = re.compile(
+    r"\b(\d+|(?:"
+    + _NUMBER_WORD_PATTERN
+    + r")(?:[-\s](?:"
+    + _NUMBER_WORD_PATTERN
+    + r"))*)\s+`wf_\*` tables",
+    re.IGNORECASE,
+)
+
+
 def test_docs4_a_wf_table_count_claim_matches_its_list() -> None:
     """The docs-numbers law at the table count: a sentence claiming "N
     ``wf_*`` tables" must be followed (in its own block, before the next
@@ -228,7 +242,8 @@ def test_docs4_a_wf_table_count_claim_matches_its_list() -> None:
         text = doc.read_text()
         for match in _TABLE_COUNT_CLAIM.finditer(text):
             claim_word = match.group(1).lower()
-            claimed = int(claim_word) if claim_word.isdigit() else _NUMBER_WORDS[claim_word]
+            claimed = int(claim_word) if claim_word.isdigit() else _spelled_count(claim_word)
+            assert claimed is not None, f"unreadable table count {claim_word!r} in {doc}"
             # The claim's own block: from the match to the next heading.
             block = text[match.start() :]
             next_heading = re.search(r"\n#{1,3} ", block)
@@ -241,6 +256,21 @@ def test_docs4_a_wf_table_count_claim_matches_its_list() -> None:
                     f"but lists {len(listed)} ({sorted(listed)})"
                 )
     assert not offenders, "A table-count claim disagrees with its list:\n" + "\n".join(offenders)
+
+
+def test_docs4_the_table_count_law_reads_the_shared_number_vocabulary() -> None:
+    """The "ONE map for both count laws" claim, pinned: the table-count
+    claim's vocabulary IS :data:`_NUMBER_WORDS` (no second hard-coded list
+    that stops at ``ten``), so a count spelled ``eleven`` or above is a
+    match — and therefore checked — rather than silently invisible to the
+    anti-rot guard. The witness is the exact sentence the pre-fix regex
+    missed."""
+    match = _TABLE_COUNT_CLAIM.search("The eleven `wf_*` tables:")
+    assert match is not None, "a table count spelled above ten is invisible to the law"
+    assert _spelled_count(match.group(1)) == 11, match.group(1)
+    compound = _TABLE_COUNT_CLAIM.search("The twenty-eight `wf_*` tables:")
+    assert compound is not None, "a compound table count is invisible to the law"
+    assert _spelled_count(compound.group(1)) == 28, compound.group(1)
 
 
 def test_docs5_the_upgrading_guide_pins_the_folded_backpressure_train() -> None:

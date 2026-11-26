@@ -481,8 +481,8 @@ never diverge.
 > permanently the first time it returned `True`. Now the attachment raises
 > `WorkflowBuildError` at the wiring site, and a compiled graph mutated to
 > carry the combination is refused by `validate_compiled`
-> (`E22-skip-fan-out-source`) in `WorkflowApp.get`, `CompiledWorkflow.validate()`
-> and `FlowRunner.__init__`.
+> (`E22-skip-fan-out-source`) in `CompiledWorkflow.validate()` and
+> `FlowRunner.__init__`.
 
 The skip path finalizes the source `succeeded` with `{"skipped": true}`
 and never spawns the fork, so the derived `<source>.join` row never
@@ -490,6 +490,14 @@ exists: a downstream consumer reserved on that join waits forever (the
 root stays `running` with no error row anywhere) and a terminal map
 (`build(mapped)`) reads `succeeded` over a `result()` of `None`. Refusing
 at registration means no wedged rows are ever created.
+
+A fleet boot does **not** fail on this declaration. The boot's workflow
+projection catches the build/validation refusal, logs
+`workflow-projection-skipped` at ERROR (the error class and the remedy on
+the event), leaves that workflow's cohorts unprojected, and boots the rest
+of the fleet. That workflow's existing rows will not claim until the
+declaration is fixed — so treat the ERROR line as a deployment failure of
+that workflow, not as a warning.
 
 Migration: return `[]` from the source body when there is nothing to fan
 out — the born-zero join fires immediately with the honest empty list —

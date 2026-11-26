@@ -568,6 +568,17 @@ async def test_edge_join_scale_curve_across_the_bound(
     # directly (parallel-array chunks): the fork's map_index and the join's
     # deps_pending counter are separate domains, and the recount reads the
     # edges.
+    #
+    # THE TERMINAL-ROOT LEG (the flow-fenced arm's entry condition): the arm
+    # is reached only through a TERMINAL flow root, and ``seed_flow``'s
+    # default is ``running`` — without this population the arm has no
+    # candidates in front of the plan assertion, and a green here would not
+    # be evidence about the predicate ``test_the_flow_fenced_arm_is_index_served_on_a_fleet_shape``
+    # guards. A failed root holding one pending, never-fired join-wait row is
+    # the exact shape.
+    terminal_flow = await seed_flow(wf_conn, wf_schema, status="failed")
+    await seed_join(wf_conn, wf_schema, terminal_flow, step_key="fenced", deps=1)
+
     big_n = 100_000
     flow_id = await seed_flow(wf_conn, wf_schema)
     join_id = new_uuid()
@@ -621,6 +632,8 @@ async def test_edge_join_scale_curve_across_the_bound(
             chunk,
             [flow_id] * len(chunk),
         )
+    await wf_conn.execute(f'ANALYZE "{wf_schema}".jobs')
+    await wf_conn.execute(f'ANALYZE "{wf_schema}".wf_edge')
     plan_rows = await wf_conn.fetch(
         f"EXPLAIN (FORMAT JSON) {wf_sql.rederive_sweep}",
         200,
@@ -630,6 +643,7 @@ async def test_edge_join_scale_curve_across_the_bound(
     )
     plan_text = json.dumps([dict(r) for r in plan_rows], default=str)
     await _drop_flow(wf_conn, wf_schema, flow_id)
+    await _drop_flow(wf_conn, wf_schema, terminal_flow)
     seq_scanned = [ln for ln in plan_text.split('Node Type": "') if "Seq Scan" in ln[:40]]
     scan_on_core = any(
         f'"Relation Name": "{rel}"' in plan_text and '"Node Type": "Seq Scan"' in plan_text

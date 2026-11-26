@@ -271,6 +271,36 @@ class CompiledWorkflow:
         """The node's dispatch-time skip predicate, if declared."""
         return self.nodes[key].skip
 
+    def is_fan_out_source(self, node_key: str) -> bool:
+        """True when this node OWNS a fork in the compiled graph.
+
+        The graph-level spelling of the question the validator's re-proof
+        (E22) and the runner's fail-closed guard both ask. A node is a
+        fan-out source either because it still carries the attachment
+        fields (``NodeDecl.is_fan_out_source``) or because the graph
+        carries a derived ``map_join`` node whose parent it is — the
+        second leg is load-bearing: a graph mutated to clear ``map_item``/
+        ``map_arms`` while leaving ``<source>.join`` in ``nodes`` still
+        declares a fork the source owns, and asking only the node-local
+        fields would let the skip path run and strand the consumer on a
+        join that is never born.
+
+        ``False`` for an unknown key (the caller's row may name a node the
+        compile does not carry — never a refusal, never an exception).
+        """
+        node = self.nodes.get(node_key)
+        if node is None:
+            return False
+        if node.is_fan_out_source:
+            return True
+        # The derived join's ``parents`` is the authoritative graph edge:
+        # ``kind == "map_join"`` is the one spelling of "fork-spawned join"
+        # (``NodeDecl.is_fork_spawned_join``).
+        return any(
+            other.is_fork_spawned_join and node_key in other.parents
+            for other in self.nodes.values()
+        )
+
     def validate(self) -> tuple[WorkflowValidationError, ...]:
         """The checker-independent validator (the totality refusals) —
         :mod:`taskq.workflows.api._validate`. Returns the same

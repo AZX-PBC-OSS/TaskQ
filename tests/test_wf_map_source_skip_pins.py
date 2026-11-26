@@ -186,6 +186,92 @@ async def test_flow_runner_refuses_mutated_skip_map_source_before_postgres_wedge
     assert "skip" in str(exc_info.value).lower()
 
 
+def test_the_wiring_refusal_leaves_the_source_unattached() -> None:
+    """The refusal must not half-attach: a caller that catches the
+    ``WorkflowBuildError`` and retries the attachment on the SAME source (now
+    without the skip) must get a clean graph, not a second "already carries a
+    map" refusal for an attachment the first attempt never made."""
+    app = WorkflowApp()
+
+    @app.workflow("refusal_leaves_no_residue")
+    def flow() -> Promise[object]:
+        items = step(produce_items, key="items", skip=_always_skip)
+        with pytest.raises(WorkflowBuildError):
+            map_source(items, double_item)
+        # the retry: the same source, the skip dropped (what the author's
+        # remedy does), attached a second time
+        items.graph.nodes["items"].skip = None
+        mapped = map_source(items, double_item)
+        return build(step(consume_items, mapped, key="consume"))
+
+    compiled = app.get("refusal_leaves_no_residue")
+    assert "items.join" in compiled.nodes
+    assert compiled.nodes["items"].map_item is not None
+
+
+@pytest.mark.integration
+async def test_clearing_the_attachment_still_refuses_the_fan_out_source(
+    wf_pool: asyncpg.Pool,
+    wf_schema: str,
+    wf_conn: asyncpg.Connection,
+) -> None:
+    """A graph mutated to CLEAR ``map_item`` while the derived ``items.join``
+    decl remains still declares a fork the source owns.
+
+    The node-local ``NodeDecl.is_fan_out_source`` reads only the attachment
+    fields, so it answers ``False`` here; the graph-aware
+    ``CompiledWorkflow.is_fan_out_source`` reads the derived join's parent
+    edge and answers ``True``. Both the validator's re-proof (E22) and the
+    runner's fail-closed guard must ask the graph-aware question — otherwise
+    the skip path runs, the fork is never spawned, and the reserved consumer
+    wedges exactly as before.
+    """
+    app = WorkflowApp()
+
+    @app.workflow("cleared_attachment_map_source")
+    def flow() -> Promise[object]:
+        items = step(produce_items, key="items")
+        mapped = map_source(items, double_item)
+        return build(step(consume_items, mapped, key="consume"))
+
+    compiled = app.get("cleared_attachment_map_source")
+    assert compiled.nodes["items.join"].parents == ("items",)
+    runner = FlowRunner(compiled, wf_pool, wf_schema)
+    flow_id = (await runner.create_flow()).flow_id
+
+    # The mutation: the fan-out source carries a skip predicate and the
+    # attachment marker it was attached with is gone.
+    runner.compiled.nodes["items"].skip = _always_skip
+    runner.compiled.nodes["items"].map_item = None
+    assert runner.compiled.nodes["items"].is_fan_out_source is False
+    assert runner.compiled.is_fan_out_source("items") is True
+
+    with pytest.raises(WorkflowValidationError) as exc_info:
+        validate_compiled(runner.compiled)
+    message = str(exc_info.value)
+    assert "E22-skip-fan-out-source" in message, message
+    assert "items" in message, message
+
+    verdict = await runner.drive(flow_id, max_ticks=25, tick=0.01)
+    rows = await wf_conn.fetch(
+        f"SELECT step_key, status, attempt, error_class "
+        f'FROM "{wf_schema}".jobs '
+        "WHERE id = $1 OR (metadata->>'flow_id')::uuid = $1 "
+        "ORDER BY step_key",
+        flow_id,
+    )
+    by_key = {str(r["step_key"]): dict(r) for r in rows}
+
+    assert verdict == "terminal", (
+        f"the cleared-attachment mutation wedged the run (drive={verdict!r}); rows={by_key}"
+    )
+    assert by_key["__flow__"]["status"] == "failed", by_key
+    assert by_key["items"]["status"] == "failed", by_key
+    assert by_key["items"]["error_class"] == "SkippedFanOutSourceError", by_key
+    assert by_key["items"]["attempt"] == 1, by_key
+    assert "items.join" not in by_key, f"the refused source must not fork: {by_key}"
+
+
 @pytest.mark.integration
 async def test_runtime_skip_on_map_source_never_wedges_workflow_in_postgres(
     wf_pool: asyncpg.Pool,
