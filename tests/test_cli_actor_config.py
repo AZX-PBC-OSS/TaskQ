@@ -153,16 +153,17 @@ def _patch_connect_only(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_set_result_ttl_nan_rejected_cleanly(monkeypatch: pytest.MonkeyPatch) -> None:
-    """--result-ttl nan parses (float('nan')) and typer's min=0 cannot see
-    it (nan < 0 is False), but writing it would break every completion
-    for the actor: clock_timestamp() + NaN * interval '1 second' raises
-    'interval out of range' in the terminal-write UPDATE. The ops-layer
-    finite guard rejects it, and the CLI prints the reason, not a
-    traceback."""
+    """--result-ttl nan must never reach Postgres: writing NaN would break
+    every completion for the actor (clock_timestamp() + NaN * interval
+    raises 'interval out of range'). Typer 0.29+ rejects NaN at option
+    parsing (exit code 2); older Typer lets float('nan') through min=0 and
+    the ops-layer finite guard rejects it (exit code 1). Either way the CLI
+    prints a clean error, never a traceback."""
     _patch_connect_only(monkeypatch)
     result = runner.invoke(app, ["actor-config", "set", "diff_actor", "--result-ttl", "nan"])
-    assert result.exit_code == 1
-    assert "finite" in plain_cli_output(result.stderr)
+    assert result.exit_code in (1, 2)
+    stderr = plain_cli_output(result.stderr)
+    assert "finite" in stderr or "Invalid value" in stderr
     assert "Traceback" not in plain_cli_output(result.output)
 
 

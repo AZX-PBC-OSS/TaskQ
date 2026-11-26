@@ -460,10 +460,11 @@ async def test_publish_dual_channel_delivers_to_both_subscribers() -> None:
     pub/sub subscribers on the per-job and global channels each receive
     the identical event payload - pipelining the two PUBLISH commands
     must not change what subscribers see."""
-    fakeredis = pytest.importorskip("fakeredis.aioredis")
-    server = fakeredis.FakeServer()
-    publisher = fakeredis.FakeRedis(server=server)
-    subscriber = fakeredis.FakeRedis(server=server)
+    fakeredis_mod = pytest.importorskip("fakeredis")
+    fakeredis_aio = pytest.importorskip("fakeredis.aioredis")
+    server = fakeredis_mod.FakeServer()
+    publisher = fakeredis_aio.FakeRedis(server=server)
+    subscriber = fakeredis_aio.FakeRedis(server=server)
     per_job = progress_channel(_SCHEMA_LABEL, _JOB_ID)
     global_channel = progress_global_channel(_SCHEMA_LABEL)
 

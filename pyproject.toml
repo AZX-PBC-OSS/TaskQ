@@ -18,7 +18,15 @@ classifiers = [
     "Topic :: Software Development :: Libraries",
 ]
 dependencies = [
-    "asyncpg>=0.31.0,<1",
+    # Cap <0.32 until TaskQ adopts asyncpg 0.32's breaking pool/copy changes:
+    # - #1323 changed min_size from an initial-connection count into a
+    #   maintained floor that retains idle connections past
+    #   max_inactive_connection_lifetime (breaking credential rotation /
+    #   idle-connection expiry) and spawns background replacement tasks.
+    # - #1360 enabled statement caching on copy_records_to_table()
+    #   introspection, raising ProtocolViolationError across DDL migrations
+    #   that alter columns between copies.
+    "asyncpg>=0.31.0,<0.32",
     "croniter>=6.2.4",
     "dotenvmodel>=1.1.0,<2",
     # 1.30.0 is the real floor for TaskQ's import surface, not a
@@ -990,7 +998,7 @@ exclude_lines = [
 [dependency-groups]
 dev = [
     "anyio>=4.14.2",
-    "asyncpg-stubs>=0.31.3",
+    "asyncpg-stubs>=0.31.3,<0.32",
     "authlib>=1.7.2",
     "fakeredis>=2.37.0",
     "filelock>=3.32.4",
