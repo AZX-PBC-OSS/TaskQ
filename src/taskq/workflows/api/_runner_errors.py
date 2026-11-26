@@ -12,6 +12,7 @@ __all__ = [
     "ClaimEpochMissingError",
     "DuplicateSubstepError",
     "RootMissingSeat",
+    "SkippedFanOutSourceError",
     "VanishedNodeError",
     "WorkflowResultDetailUnavailableError",
     "WorkflowRootMissingError",
@@ -114,6 +115,40 @@ class DuplicateSubstepError(WorkflowRunError):
     names. Fix the collision rather than retrying the node: the running
     call is not cancelled, so a retry can run its effect again while the
     first call is still inside ``fn``."""
+
+
+class SkippedFanOutSourceError(WorkflowRunError):
+    """A ``skip=``-carrying node that owns a FORK reached execution: the
+    dispatch-time skip would finalize the source ``succeeded`` with
+    ``{"skipped": true}`` and never spawn the derived ``<source>.join``
+    the fork owns, so a downstream consumer reserved on that join waits
+    forever while a terminal map reads ``succeeded`` over a ``result()``
+    of ``None``.
+
+    DETERMINISTIC BY CONSTRUCTION (registered in
+    :func:`_deterministic_classes`): the combination is refused at the
+    wiring and re-proved by the validator, so reaching this seat means a
+    compiled graph mutated after construction — no retry, re-run, or
+    later tick can change the graph the node was claimed from. The
+    runner's guard terminal-FAILS the source on its first attempt with
+    this class on the record rather than entering the skip path, so the
+    run reaches a terminal state (the consumer resolves ``flow_dead``,
+    never ``orphan_parent``) and the operator gets the authoring error
+    instead of an eternal ``running`` root. The remedy is in the message:
+    return ``[]`` from the source body, or move ``skip=`` off the
+    fan-out source."""
+
+    def __init__(self, step_key: str) -> None:
+        self.step_key = step_key
+        super().__init__(
+            f"node {step_key!r} declares skip= and is a fan-out source "
+            "(map_source / route) — the dispatch-time skip never spawns the "
+            "fork, so the derived '<source>.join' row would never exist: a "
+            "downstream consumer would wait on it forever, while a terminal "
+            "map would succeed without its join or result. Return [] from "
+            "the source body when there is nothing "
+            "to fan out, or move skip= onto a step that does not fork"
+        )
 
 
 class WorkflowResultDetailUnavailableError(WorkflowRunError):

@@ -99,7 +99,7 @@ __all__ = [
 #: checker's face is the handle flow.
 BodyFn = Callable[..., Awaitable[object]]
 
-#: A skip guard: ``bool`` or ``Callable[[state], bool]`` — evaluated at
+#: A skip guard: ``Callable[[state], bool]``, called at
 #: dispatch against the flow's state, never at
 #: create time.
 #:
@@ -358,6 +358,37 @@ def _refuse_unbound_keyed_reservations(source_node: object, *, what: str) -> Non
                 "model), or declare the per-item cap as a keyed rate limit "
                 "on the map (rate_limits=), which resolves per child."
             )
+
+
+def _refuse_skipped_fan_out_source(source_node: object, *, what: str) -> None:
+    """The fan-out source's dispatch-skip door: a ``skip=`` predicate on
+    the node a map or route forks FROM refuses here, at the wiring.
+
+    The skip path finalizes the source ``succeeded`` with
+    ``{"skipped": true}`` and never spawns the derived
+    ``<source>.join`` the fork owns — the source's row terminalizes, the
+    join row never exists, and a downstream consumer waits on a join
+    that cannot come (reserved ``deps_pending``, zero incoming edges).
+    The run then stands wedged ``running`` forever with no error row
+    anywhere, and a TERMINAL map (``build(mapped)``) reads
+    ``succeeded`` over a ``result()`` of ``None``. A skip is a per-node
+    guard, never a way to cancel a fan-out: return ``[]`` from the
+    source body when there is nothing to fan out (the born-zero join
+    fires immediately with the honest empty list), or move ``skip=``
+    onto a step that does not fork."""
+    if getattr(source_node, "skip", None) is None:
+        return
+    raise WorkflowBuildError(
+        f"{what} declares a skip= predicate on its source node — the "
+        "combination is refused: the dispatch-time skip finalizes the "
+        "source succeeded WITHOUT spawning the fork, so the derived "
+        "'<source>.join' row never exists, the downstream consumer waits "
+        "on it forever (the run stands wedged 'running' with no error row "
+        "anywhere), and a terminal map reads succeeded over a result of "
+        "None. Return [] from the source body when there is nothing to "
+        "fan out (the empty join fires immediately with the honest []), "
+        "or move skip= onto a step that does not fork."
+    )
 
 
 #: the handle's term fields (the capacity surface the ``@app.actor``
@@ -784,6 +815,21 @@ class NodeDecl:
         here, once, instead of drifting across four call sites.
         """
         return self.kind == "map_join"
+
+    @property
+    def is_fan_out_source(self) -> bool:
+        """True when this node SPAWNS a fork — the map's children or the
+        typed route's arms — whose derived ``<key>.join`` row its own fork
+        writes. The one spelling of the question the validator's re-proof
+        and the runner's fail-closed guard both ask (the wiring refusals
+        already know the answer structurally: they ARE the attachment).
+
+        Today exactly ``map_item is not None or map_arms is not None`` (the
+        two are mutually exclusive — a node finalizes once, one fork); a
+        future fork-spawning attachment decides here, once, instead of
+        drifting across call sites.
+        """
+        return self.map_item is not None or self.map_arms is not None
 
 
 class Promise[T_co]:
@@ -1363,7 +1409,10 @@ def map_source[S, R](
     generic threads through every child body, the mechanism's map face).
     The map attaches to the SOURCE node (its finalize forks the
     children — the engine's FORK ATOMICITY); a second map on the same
-    source is refused (a node finalizes once — one fork).
+    source is refused (a node finalizes once — one fork), and so is a
+    ``skip=`` predicate on that source: the dispatch-time skip never
+    spawns the fork, so the derived join would never exist (return
+    ``[]`` from the source body when there is nothing to fan out).
 
     the DICT FORM IS the TYPED ROUTE (the
     per-element case): ``map_source(src, {A: fn_a, B: fn_b})`` keys the
@@ -1408,6 +1457,7 @@ def map_source[S, R](
             _attach_route(
                 source,
                 cast("Mapping[type, RouteArm[object] | Callable[..., Awaitable[object]]]", body),
+                what=f"map_source {source.key!r}",
                 queue=queue,
                 on_failure=on_failure,
                 max_attempts=max_attempts,
@@ -1440,6 +1490,7 @@ def map_source[S, R](
             "from a distinct source"
         )
     _refuse_unbound_keyed_reservations(source_node, what=f"map_source {source.key!r}")
+    _refuse_skipped_fan_out_source(source_node, what=f"map_source {source.key!r}")
     source_node.map_item = body
     source_node.map_queue = queue
     source_node.map_max_attempts = max_attempts
@@ -1497,6 +1548,7 @@ def _attach_route[S](
     source: Promise[S],
     arms: Mapping[type, RouteArm[object] | Callable[..., Awaitable[object]]],
     *,
+    what: str,
     queue: str,
     on_failure: EdgeFailurePolicy,
     max_attempts: int,
@@ -1510,6 +1562,10 @@ def _attach_route[S](
     ``<source>.join`` node is created exactly as the map's — the join-back
     is BY CONSTRUCTION (every routed child is a fork child with an edge
     to the join).
+
+    ``what`` is the CALLING verb's own label (``"route 'docs'"`` /
+    ``"map_source 'docs'"``) — this lowering serves both spellings, so the
+    refusals it raises must name the verb the author actually wrote.
 
     the VERB'S DOOR (the map_source precedent — the mechanically-
     impossible refuses at the wiring site): an EMPTY arms dict, a
@@ -1624,7 +1680,8 @@ def _attach_route[S](
             f"node {source.key!r} already carries a map or a route — a node "
             "finalizes once (one fork); wire the second from a distinct source"
         )
-    _refuse_unbound_keyed_reservations(source_node, what=f"route {source.key!r}")
+    _refuse_unbound_keyed_reservations(source_node, what=what)
+    _refuse_skipped_fan_out_source(source_node, what=what)
     # an arm overriding the actor stamps none of the source's reservation names
     # (a different cohort — inheriting the source's cap onto it would be the
     # silent lie) — so the override would silently drop the run's own keyed
@@ -1918,6 +1975,7 @@ def route[S, R](
         _attach_route(
             source,
             cast("Mapping[type, RouteArm[object] | Callable[..., Awaitable[object]]]", arms),
+            what=f"route {source.key!r}",
             queue=queue,
             on_failure=on_failure,
             max_attempts=max_attempts,

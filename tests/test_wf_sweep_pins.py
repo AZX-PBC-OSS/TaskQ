@@ -616,6 +616,53 @@ async def test_pin_4_held_row_invisible_to_the_rederive(
     assert (await node_state(wf_conn, wf_schema, held))["deps_pending"] == 0
 
 
+@pytest.mark.integration
+async def test_terminal_fence_recovery_does_not_strand_the_next_firable_join(
+    wf_conn: asyncpg.Connection,
+    wf_schema: str,
+    module_pg_pool: asyncpg.Pool,
+    wf_sql: WorkflowSql,
+) -> None:
+    """The post-maintenance recovery is terminal-fence-only, not another
+    general rederive batch. With a bounded batch, a second general rederive
+    can reconcile the NEXT ready join to zero and discard its firable result;
+    every later locked scan then excludes it and the join never fires."""
+    dead_flow = await seed_flow(wf_conn, wf_schema)
+    orphan = await seed_join(wf_conn, wf_schema, dead_flow, step_key="orphan", deps=1)
+    failed = await seed_running_node(wf_conn, wf_schema, dead_flow, step_key="failed")
+    await wf_conn.execute(
+        f"UPDATE \"{wf_schema}\".jobs SET status = 'failed', finished_at = now() WHERE id = $1",
+        failed,
+    )
+
+    live_flow = await seed_flow(wf_conn, wf_schema)
+    ready = await seed_join(wf_conn, wf_schema, live_flow, step_key="ready", deps=1)
+    parent = await seed_running_node(wf_conn, wf_schema, live_flow, step_key="parent")
+    await seed_edge(wf_conn, wf_schema, ready, parent, live_flow)
+    await wf_conn.execute(
+        f"UPDATE \"{wf_schema}\".jobs SET status = 'succeeded', finished_at = now() WHERE id = $1",
+        parent,
+    )
+
+    # Batch one stamps the dead flow's edge-less consumer and terminalizes its
+    # root, arming the same-transaction recovery. The ready join is outside
+    # that batch and must remain available to the following general pass.
+    first = await sweep_join_rederive(module_pg_pool, wf_sql, batch_size=1)
+    assert first.blocked == 1, first
+    orphan_state = await node_state(wf_conn, wf_schema, orphan)
+    orphan_meta = orphan_state["metadata"]
+    if isinstance(orphan_meta, str):
+        orphan_meta = json.loads(orphan_meta)
+    assert orphan_meta["blocking_reason"] == "flow_dead", orphan_state
+    assert await fire_count(wf_conn, wf_schema, ready) == 0
+
+    second = await sweep_join_rederive(module_pg_pool, wf_sql, batch_size=1)
+    assert second.firable == 1, second
+    assert await fire_count(wf_conn, wf_schema, ready) == 1, (
+        "the recovery rederive consumed the ready join's counter without firing it"
+    )
+
+
 # ── Pin 15: phantom-running (the fenced-attempt sweep arm) ──────────────
 
 

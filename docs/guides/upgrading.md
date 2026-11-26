@@ -472,6 +472,33 @@ never diverge.
 
 ## Breaking API changes
 
+### `skip=` is refused on a fan-out source
+
+> **Unreleased.** Breaking for anyone wiring a `step(..., skip=…)` as the
+> source of `map_source(...)` or `route(...)`: on previous releases the
+> declaration compiled, passed `WorkflowApp.get` / boot-time registration,
+> and ran as long as the predicate returned `False` — and wedged the run
+> permanently the first time it returned `True`. Now the attachment raises
+> `WorkflowBuildError` at the wiring site, and a compiled graph mutated to
+> carry the combination is refused by `validate_compiled`
+> (`E22-skip-fan-out-source`) in `WorkflowApp.get`, `CompiledWorkflow.validate()`
+> and `FlowRunner.__init__`.
+
+The skip path finalizes the source `succeeded` with `{"skipped": true}`
+and never spawns the fork, so the derived `<source>.join` row never
+exists: a downstream consumer reserved on that join waits forever (the
+root stays `running` with no error row anywhere) and a terminal map
+(`build(mapped)`) reads `succeeded` over a `result()` of `None`. Refusing
+at registration means no wedged rows are ever created.
+
+Migration: return `[]` from the source body when there is nothing to fan
+out — the born-zero join fires immediately with the honest empty list —
+or move `skip=` onto a step that does not fork. A graph mutated after the
+runner's construction is caught by its fail-closed guard, which
+terminal-FAILS the source on its first attempt
+with `SkippedFanOutSourceError` on the row instead of entering the skip
+path.
+
 ### New workflow declarations refuse `retry_kind="indefinite"`
 
 > **Unreleased.** Breaking for anyone declaring an indefinite workflow

@@ -167,6 +167,10 @@ blocked_required AS (
 -- the flow's death fenced was the join's last resort. The reconciled and
 -- firable arms exclude the stamped rows (a stamped row is resolved: the
 -- dead-run rescan ends here).
+-- An orphan stamped earlier in THIS pass is also eligible: root maintenance
+-- runs after this statement, so the caller's same-transaction terminal re-pass
+-- must replace that live-flow diagnosis with the dead-flow record rather than
+-- leaving it locked out here.
 flow_fenced AS (
     UPDATE {schema}.jobs j
     SET metadata = j.metadata
@@ -195,7 +199,10 @@ flow_fenced AS (
         WHERE f.step_key = '__flow__'
           AND f.status IN {terminal}
           AND jj.status = 'pending'
-          AND jj.metadata @> '{{"blocking_reason": "join"}}'::jsonb
+          AND (
+              jj.metadata @> '{{"blocking_reason": "join"}}'::jsonb
+              OR jj.metadata->>'blocking_reason' = $2
+          )
           AND NOT EXISTS (
               SELECT 1 FROM {schema}.wf_join_fire fire WHERE fire.join_job_id = jj.id
           )
