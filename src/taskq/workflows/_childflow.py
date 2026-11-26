@@ -95,6 +95,7 @@ from taskq._ids import new_uuid
 from taskq.backend._protocol import ConnLike, JobId
 from taskq.workflows.api._ctx_wait import (
     Expired,
+    HoldMintFencedError,
     NodeHeldError,
     read_claim_marker,
     require_claim_epoch,
@@ -445,9 +446,11 @@ class ChildHandle[G: BaseModel]:
             if held_row is not None:
                 # this claim re-entered onto the standing hold: park the row
                 # onto it, or it stays 'running' with nothing executing it.
+                # A missed park wrote nothing — a newer claim owns the row —
+                # so the unwind is the fresh mint's fence label, never "held".
                 if site.ledger_id is not None:
                     await mark_awaited(conn, site.wsql.schema, site.ledger_id)
-                await reassert_hold(
+                parked = await reassert_hold(
                     conn,
                     schema=site.wsql.schema,
                     node_id=site.job_id,
@@ -456,6 +459,8 @@ class ChildHandle[G: BaseModel]:
                     expires_at=held_row["expires_at"],
                     claim_epoch=site.claim_epoch,
                 )
+                if not parked:
+                    raise HoldMintFencedError(node_id=site.job_id, claim_epoch=site.claim_epoch)
                 raise NodeHeldError(hold_id=str(held_row["id"]), signal_names=(signal_name,))
 
             # register: the ledger 'awaited' (resume-not-retry), then the

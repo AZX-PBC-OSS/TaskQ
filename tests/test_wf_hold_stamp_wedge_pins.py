@@ -19,6 +19,7 @@ sentinel).
 from __future__ import annotations
 
 import asyncio
+import uuid
 from collections.abc import Mapping
 from typing import Any, cast
 from unittest.mock import Mock
@@ -651,8 +652,10 @@ async def test_a_mint_whose_park_matches_nothing_is_named(
     assert misses, [e["event"] for e in captured]
     assert misses[0]["node_id"] == str(node_id), misses[0]
     assert misses[0]["claim_epoch"] == 1, misses[0]
-    # the miss still names the id of the hold it refused to write
-    assert misses[0]["hold_id"], misses[0]
+    # the miss names the refused mint's own fresh id (the row was never
+    # written): a well-formed UUID that is not any committed hold.
+    attempted = uuid.UUID(misses[0]["attempted_hold_id"])
+    assert attempted != _hold_id, misses[0]
     after = await wf_conn.fetchval(
         f'SELECT count(*) FROM "{wf_schema}".wf_signals WHERE workflow_id = $1', _flow_id
     )

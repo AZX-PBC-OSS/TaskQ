@@ -59,20 +59,7 @@ from taskq.workflows.api._hitl_listen import (
     HoldExpired,
     HoldResolved,
 )
-from tests._wf_fixtures import RedLog
-
-
-async def _running_claim(
-    conn: asyncpg.Connection, schema: str, flow_id: JobId, *, step_key: str
-) -> JobId:
-    """A running node row at the granted epoch (1): the fresh hold mint's park
-    admits only the claim that holds the row at its own epoch, and
-    ``seed_running_node`` writes the finalize pin's epoch 0."""
-    from tests._wf_fixtures import seed_running_node
-
-    node = await seed_running_node(conn, schema, flow_id, step_key=step_key)
-    await conn.execute(f'UPDATE "{schema}".jobs SET claim_epoch = 1 WHERE id = $1', node)
-    return node
+from tests._wf_fixtures import RedLog, seed_running_claim
 
 
 class Approval(BaseModel):
@@ -219,7 +206,7 @@ async def test_hold_create_broadcast_is_transactional_and_shaped(
     async with _RawKnocks(module_pg_schema.pg_dsn, HOLD_CREATED_CHANNEL) as knocks:
         # A second hold (new epoch) through the real leg — its knock is
         # the shipped one's witness.
-        node_id = await _running_claim(wf_conn, wf_schema, flow_id, step_key="review")
+        node_id = await seed_running_claim(wf_conn, wf_schema, flow_id, step_key="review")
         hold_id = await register_hold(
             wf_conn,
             schema=wf_schema,
@@ -237,7 +224,6 @@ async def test_hold_create_broadcast_is_transactional_and_shaped(
             lambda: any(str(hold_id) in k for k in knocks.of(HOLD_CREATED_CHANNEL)),
             description="the successful hold-create notification",
         )
-        shaped = [json.loads(k) for k in knocks.of(HOLD_CREATED_CHANNEL) if str(hold_id) in k]
 
         # The successful mint parked its node. A fresh mint at the same epoch
         # is therefore fenced; its rollback must be silent to external
@@ -1137,7 +1123,7 @@ async def test_two_consumers_fan_out_and_each_gets_its_own_sentinel(
             wf_conn,
             schema=wf_schema,
             workflow_id=flow_id,
-            node_id=await _running_claim(wf_conn, wf_schema, flow_id, step_key="review"),
+            node_id=await seed_running_claim(wf_conn, wf_schema, flow_id, step_key="review"),
             node_key="review",
             signal_name="Approval",
             hold_epoch=2,
@@ -1237,7 +1223,7 @@ async def test_two_schemas_one_database_the_payload_filter_is_the_isolation(
         wf_conn,  # any connection on the same database — the schema selects the tables
         schema=schema_b,
         workflow_id=JobId(uuid_module.UUID(foreign_flow)),
-        node_id=await _running_claim(
+        node_id=await seed_running_claim(
             wf_conn, schema_b, JobId(uuid_module.UUID(foreign_flow)), step_key="review"
         ),
         node_key="review",
@@ -1359,7 +1345,7 @@ async def test_notify_payloads_stay_under_the_named_cap(
             wf_conn,
             schema=wf_schema,
             workflow_id=flow_id,
-            node_id=await _running_claim(wf_conn, wf_schema, flow_id, step_key=long_key),
+            node_id=await seed_running_claim(wf_conn, wf_schema, flow_id, step_key=long_key),
             node_key=long_key,
             signal_name="Approval",
             hold_epoch=2,

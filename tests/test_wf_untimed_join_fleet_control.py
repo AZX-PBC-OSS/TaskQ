@@ -291,7 +291,7 @@ async def test_a_reentered_join_on_its_own_standing_hold_parks_the_row(
         handle = await ctx.spawn_flow(child_name, result=_Leaf)
         if ctx.attempt == 1:
             spawned.set()
-            await release.wait()  # the stalled worker: the lease lapses here
+            await release.wait()  # the stalled worker: paused before its first wait
         await handle.wait()
         return 0
 
@@ -573,7 +573,7 @@ async def test_a_reentered_wait_of_every_kind_re_parks_onto_its_standing_hold(
     async def stall(ctx: StepContext) -> None:
         if ctx.attempt == 1:
             stalled.set()
-            await release.wait()  # the stalled worker: the lease lapses here
+            await release.wait()  # the stalled worker: paused before its first wait
 
     async def wrap(ctx: StepContext) -> int:
         if kind == "join":
@@ -659,7 +659,9 @@ async def test_a_stale_body_s_reentry_never_parks_a_newer_claim_s_row(
     """The fencing-token rule on the re-park: X (attempt 1) mints a
     stamp-less standing hold; Y (attempt 2) stalls before its wait and loses
     its lease; Z (attempt 3) claims the row. Y's re-entered wait finds the
-    standing hold but must not park Z's running row; Z's own re-entry does."""
+    standing hold but its park misses Z's running row, so Y unwinds
+    ``"fenced"`` (never ``"held"`` — nothing was parked); Z's own re-entry
+    parks the row."""
     suffix = new_uuid().hex[:12]
     child_name = f"i748_child_{suffix}"
     gates = {a: asyncio.Event() for a in (1, 2, 3)}
@@ -737,7 +739,7 @@ async def test_a_stale_body_s_reentry_never_parks_a_newer_claim_s_row(
         await asyncio.wait_for(at_gate[3].wait(), timeout=10.0)
 
         gates[2].set()  # release the STALE body
-        assert await asyncio.wait_for(y, timeout=10.0) == "held"
+        assert await asyncio.wait_for(y, timeout=10.0) == "fenced"
         mid = await _wrap(wf_conn, wf_schema, flow_id)
         assert (mid["status"], mid["locked_by_worker"], _meta(mid["metadata"]).get("hold")) == (
             "running",
@@ -924,12 +926,12 @@ async def test_a_delivery_inside_the_reentry_window_is_repaired_by_the_reconcile
     real_reassert = hitl.reassert_hold
     raced: list[str] = []
 
-    async def deliver_first(conn: Any, **kw: Any) -> None:
+    async def deliver_first(conn: Any, **kw: Any) -> bool:
         result = await hitl.HitlClient(wf_pool, schema=wf_schema).resolve(
             kw["hold_id"], {"verdict": "approve"}, principal="pin"
         )
         raced.append(result.status)
-        await real_reassert(conn, **kw)
+        return await real_reassert(conn, **kw)
 
     monkeypatch.setattr(hitl, "reassert_hold", deliver_first)
     again = await _claim(wf_conn, wf_schema, worker_id, limit=10)

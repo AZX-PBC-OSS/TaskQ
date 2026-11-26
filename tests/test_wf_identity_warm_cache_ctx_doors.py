@@ -39,7 +39,7 @@ from taskq.workflows._sql import WorkflowSql
 from taskq.workflows.api._ctx import StepContext, build_step_context
 from taskq.workflows.api._ctx_wait import NodeHeldError, SignalUnavailableError
 from taskq.workflows.engine import render_workflow_sql
-from tests._wf_fixtures import seed_flow, seed_running_node
+from tests._wf_fixtures import seed_flow, seed_running_claim, seed_running_node
 
 pytestmark = pytest.mark.integration
 
@@ -107,14 +107,10 @@ async def test_warm_signal_wait_doors_serve_a_high_sibling(
 ) -> None:
     control, schema, wsql, pool = warm_wait_pool
     flow = await seed_flow(control, schema)
-    low_node = await seed_running_node(control, schema, flow, step_key="source")
-    high_node = await seed_running_node(control, schema, flow, step_key="source")
-    # one running row per sibling: each sibling's mint parks its own row, and
-    # the park fences on the claim's epoch (``seed_running_node`` writes 0).
-    await control.execute(
-        f'UPDATE "{schema}".jobs SET claim_epoch = 1 WHERE id = ANY($1::uuid[])',
-        [low_node, high_node],
-    )
+    # one running row per sibling at the granted epoch: each sibling's mint
+    # parks its own row, and the park fences on the claim's epoch.
+    low_node = await seed_running_claim(control, schema, flow, step_key="source")
+    high_node = await seed_running_claim(control, schema, flow, step_key="source")
 
     # Warm the four read statements and the hold mint at LOW, pre-POST.
     with pytest.raises(NodeHeldError):
@@ -198,12 +194,10 @@ async def test_warm_timer_wait_doors_serve_a_high_sibling(
 ) -> None:
     control, schema, wsql, pool = warm_wait_pool
     flow = await seed_flow(control, schema)
-    low_node = await seed_running_node(control, schema, flow, step_key="source")
-    high_node = await seed_running_node(control, schema, flow, step_key="source")
-    await control.execute(
-        f'UPDATE "{schema}".jobs SET claim_epoch = 1 WHERE id = ANY($1::uuid[])',
-        [low_node, high_node],
-    )
+    # one running row per sibling at the granted epoch: each timer mint parks
+    # its own row, and the park fences on the claim's epoch.
+    low_node = await seed_running_claim(control, schema, flow, step_key="source")
+    high_node = await seed_running_claim(control, schema, flow, step_key="source")
 
     with pytest.raises(NodeHeldError):
         await _ctx(

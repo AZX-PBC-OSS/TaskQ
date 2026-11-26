@@ -62,7 +62,7 @@ def _compile(suffix: str, stalled: asyncio.Event, release: asyncio.Event) -> Any
         async def wrap(ctx: StepContext) -> str:
             if ctx.attempt == 1:
                 stalled.set()
-                await release.wait()  # the stalled body: the lease lapses here
+                await release.wait()  # the stalled body: paused before its first wait
             answer = await ctx.wait_signal(_Approval, timeout_s=_TIMED_S)
             if isinstance(answer, Expired):
                 raise SignalTimeoutError("the probe's wait expired")

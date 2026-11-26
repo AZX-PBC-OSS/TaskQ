@@ -368,6 +368,12 @@ VALUES ($1, $2, $3, $4, $5, $6::bigint, $7, $8::jsonb, $9::jsonb, 'held', $10)
 RETURNING created_at
 """
 
+# the claim fence's park: the running row at THIS claim's epoch, and no
+# cancel mark. A cooperative cancel leaves `status='running'` and stamps
+# `metadata.cancel_phase` (and, normally, the `cancel_phase` column), so the
+# mark legs are what refuse a cancelled run's mint — the same predicate the
+# finalize/deferral doors carry (`_sql_finalize.py`). A miss is a fenced
+# mint: nothing is written, nothing is announced.
 _HOLD_HOLD_NODE_SQL = """\
 UPDATE {schema}.jobs
 SET status = 'pending',
@@ -379,6 +385,8 @@ SET status = 'pending',
 WHERE id = $1
   AND status = 'running'
   AND claim_epoch = $4::bigint
+  AND cancel_phase = 0
+  AND NOT metadata ? 'cancel_phase'
 RETURNING id
 """
 
@@ -578,7 +586,7 @@ async def reassert_hold(
     signal_name: str,
     expires_at: datetime | None,
     claim_epoch: int,
-) -> None:
+) -> bool:
     """A re-entered wait's half of the held representation: the body found
     its own standing hold, so the node is parked onto it exactly as the mint
     parked it (pending, unlocked, the stamp, the hold's deadline, a loop's
@@ -587,6 +595,11 @@ async def reassert_hold(
     A delivery that lands between the caller's standing-hold read and this
     park leaves a dead stamp; the leader's hold-stamp reconcile (and the
     dev driver's own tick) clears it.
+
+    Returns whether the park landed (``True``) or missed (``False``). A miss
+    wrote nothing — the row belongs to a newer claim — so the caller must
+    unwind as :class:`HoldMintFencedError`, never as ``NodeHeldError``: the
+    same disposition the fresh mint takes for the identical miss.
 
     ``claim_epoch`` is required and must be positive: at 0 the fence
     (``claim_epoch = $4``) matches no executing row — both claim doors grant
@@ -614,6 +627,8 @@ async def reassert_hold(
             hold_id=str(hold_id),
             claim_epoch=claim_epoch,
         )
+        return False
+    return True
 
 
 async def register_hold(
@@ -685,7 +700,8 @@ async def register_hold(
     (``claim_epoch = $4``) admits only the claim that holds the running
     row, and both claim doors grant at least 1. A mint whose park matches
     nothing raises :class:`HoldMintFencedError` INSIDE the transaction —
-    the signal row and the broadcast roll back with it, so a stale
+    the park runs first, so the signal insert and the broadcast are
+    skipped entirely (never executed, never emitted), and a stale
     execution can never park a successor's row or leave a hold no node
     stands on. The park runs BEFORE the insert so a concurrent mint's
     arbiter collision can never be mistaken for this claim's fence.
@@ -753,12 +769,12 @@ async def register_hold(
             # someone else (or already rests held). Nothing may stand behind
             # it — the transaction rolls back the park and skips the insert
             # and the announce entirely.
-            logger.warning(
+            logger.info(
                 "wf-hold-mint-park-missed",
                 kind="wf_hold_mint_park_missed",
                 flow_id=str(workflow_id),
                 node_id=str(node_id),
-                hold_id=str(hold_id),
+                attempted_hold_id=str(hold_id),
                 signal_name=signal_name,
                 claim_epoch=claim_epoch,
             )
@@ -1299,15 +1315,15 @@ async def sweep_due_timers(
                 # TimerWake (the re-execution doctrine: the body re-runs
                 # from the top; pre-timer side effects are ctx.substep-
                 # ledgered). The same shape the expiry arm keeps — the
-                # faces differ only in the row's resolution state.
+                # faces differ only in the row's resolution state. The node
+                # resolves by the exact hold id (one hold, one node): the
+                # bare stamp matched any stamped sibling of a mapped timer,
+                # so a wake could resume the wrong sibling.
                 node_id = await conn.fetchval(
-                    _render(
-                        "SELECT id FROM {schema}.jobs WHERE step_key = $1 "
-                        "AND (metadata->>'flow_id')::uuid = $2 AND metadata ? 'hold'",
-                        schema,
-                    ),
+                    _render(_HELD_NODE_BY_HOLD_SQL, schema),
                     row["node_key"],
                     row["workflow_id"],
+                    str(row["id"]),
                 )
                 if node_id is not None:
                     await conn.execute(_render(_DELIVER_RESUME_SQL, schema), node_id)
@@ -1398,14 +1414,14 @@ async def sweep_child_joins(pool: asyncpg.Pool, wsql: WorkflowSql, *, batch_size
             len(CHILD_JOIN_SIGNAL_PREFIX) + 1,
         )
         for row in rows:
+            # the node resolves by the exact hold id (one hold, one node): the
+            # bare stamp matched any stamped sibling of a mapped join, so a
+            # wake could resume the wrong sibling.
             node_id = await conn.fetchval(
-                _render(
-                    "SELECT id FROM {schema}.jobs WHERE step_key = $1 "
-                    "AND (metadata->>'flow_id')::uuid = $2 AND metadata ? 'hold'",
-                    wsql.schema,
-                ),
+                _render(_HELD_NODE_BY_HOLD_SQL, wsql.schema),
                 row["node_key"],
                 row["workflow_id"],
+                str(row["id"]),
             )
             if node_id is not None:
                 await conn.execute(_render(_DELIVER_RESUME_SQL, wsql.schema), node_id)

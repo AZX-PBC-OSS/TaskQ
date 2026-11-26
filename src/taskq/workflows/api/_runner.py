@@ -1280,7 +1280,7 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
         node: Any,
         body: Any,
         *,
-        claim_epoch: int = 0,
+        claim_epoch: int,
         run_priority: int | None = None,
         ledger_claimed_at: Any = None,
     ) -> str:
@@ -1369,7 +1369,7 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
         node: Any,
         body: Any,
         *,
-        claim_epoch: int = 0,
+        claim_epoch: int,
         run_priority: int | None = None,
         ledger_claimed_at: Any = None,
     ) -> str:
@@ -1475,7 +1475,7 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
                 )
             finally:
                 await emitter.aclose()
-            return "fenced" if loop_outcome == "fenced" else "loop"
+            return loop_outcome if loop_outcome is not None else "loop"
 
         route_fork: ForkSpec | None = (
             None  # the typed route's prebuilt fork (the body path builds it from the live elements)

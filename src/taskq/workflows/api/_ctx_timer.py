@@ -53,6 +53,7 @@ from pydantic import BaseModel
 
 from taskq._json import loads as _json_loads
 from taskq.workflows.api._ctx_wait import (
+    HoldMintFencedError,
     LoopWaitShapeError,
     NodeHeldError,
     WaitHost,
@@ -344,8 +345,10 @@ class CtxTimerOps(WaitHost):
             )
             if held_row is not None:
                 # this claim re-entered onto the standing timer: park the row
-                # onto it, at the timer's own wake time.
-                await reassert_hold(
+                # onto it, at the timer's own wake time. A missed park wrote
+                # nothing — a newer claim owns the row — so the unwind is the
+                # fresh mint's fence label, never "held".
+                parked = await reassert_hold(
                     conn,
                     schema=self._wsql.schema,
                     node_id=self.job_id,
@@ -354,6 +357,8 @@ class CtxTimerOps(WaitHost):
                     expires_at=held_row["expires_at"],
                     claim_epoch=self.claim_epoch,
                 )
+                if not parked:
+                    raise HoldMintFencedError(node_id=self.job_id, claim_epoch=self.claim_epoch)
                 raise NodeHeldError(hold_id=str(held_row["id"]), signal_names=(signal_name,))
                 # no 'abandoned' arm here — the expiry sweep excludes the reserved
             # prefix by law, so a past-due timer is a due timer (the arm fires

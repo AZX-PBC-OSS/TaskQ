@@ -40,7 +40,7 @@ from taskq.workflows._types import ChildSpec, ForkSpec, NodeSpec, resolve_map_in
 from taskq.workflows.api._hitl import register_hold
 from taskq.workflows.engine import insert_node, render_workflow_sql
 from taskq.workflows.ledger import claim_step_ledger
-from tests._wf_fixtures import seed_flow, seed_running_node
+from tests._wf_fixtures import seed_flow, seed_running_claim, seed_running_node
 
 pytestmark = pytest.mark.integration
 
@@ -200,14 +200,11 @@ async def test_warm_hold_insert_bind_serves_high_identity(
     warm_pool: tuple[asyncpg.Connection, str, WorkflowSql, asyncpg.Pool],
 ) -> None:
     control, schema, _wsql, pool = warm_pool
-    flow, low_node = await _seed(control, schema)
-    # one running row per sibling: each mint parks its own row, and the park
-    # fences on the executing claim's epoch (the seed writes epoch 0).
-    high_node = await seed_running_node(control, schema, flow, step_key="source")
-    await control.execute(
-        f'UPDATE "{schema}".jobs SET claim_epoch = 1 WHERE id = ANY($1::uuid[])',
-        [low_node, high_node],
-    )
+    # one running row per sibling at the granted epoch: each mint parks its own
+    # row, and the park fences on the executing claim's epoch.
+    flow = await seed_flow(control, schema)
+    low_node = await seed_running_claim(control, schema, flow, step_key="source")
+    high_node = await seed_running_claim(control, schema, flow, step_key="source")
     payload_schema: dict[str, object] = {"Approval": {"type": "object", "properties": {}}}
     async with pool.acquire() as conn:
         await register_hold(

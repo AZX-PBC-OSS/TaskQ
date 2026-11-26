@@ -13,7 +13,7 @@ driver here.
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Any, Protocol, cast
+from typing import TYPE_CHECKING, Any, Literal, Protocol, cast
 
 import asyncpg
 import structlog
@@ -45,6 +45,16 @@ if TYPE_CHECKING:
 __all__ = ["LoopOps"]
 
 logger: structlog.stdlib.BoundLogger = get_logger(__name__)
+
+#: The loop deferral's disposition echo (the ROW is the truth; this is the
+#: record's echo): ``"deferred"`` resumes the iteration in place, while the
+#: other three are terminal dispositions the claim tail reports as such.
+LoopDeferVerdict = Literal["deferred", "fenced", "cancelled", "laddered"]
+
+#: The labels the loop driver reports to the claim tail: the deferral's
+#: non-``"deferred"`` verdicts. A ``"deferred"`` keeps the tail's own
+#: ``"loop"`` echo (the row re-claims and resumes this iteration).
+LoopEchoOutcome = Literal["fenced", "cancelled", "laddered"]
 
 
 class _LoopHost(Protocol):
@@ -109,10 +119,10 @@ class LoopOps(_LoopHost):
         ledger_id: JobId | None,
         exc: Snooze | RetryAfter,
         *,
-        claim_epoch: int = 0,
+        claim_epoch: int,
         ledger_claimed_at: Any = None,
         iteration_rest: tuple[JobId, Any] | None = None,
-    ) -> str:
+    ) -> LoopDeferVerdict:
         """the LOOP'S DEFERRAL DISPOSITION (the loop body's signals route
         through the same disposition the step bodies share — the
         decision: the loop's iteration machinery already resumes a
@@ -279,9 +289,9 @@ class LoopOps(_LoopHost):
         ledger_id: JobId | None = None,
         emitter: ProgressEmitter | None = None,
         *,
-        claim_epoch: int = 0,
+        claim_epoch: int,
         ledger_claimed_at: Any = None,
-    ) -> str | None:
+    ) -> LoopEchoOutcome | None:
         """Fresh jobs per iteration
         (``<loop>.iter<i>`` — the ledger's per-iteration identity); the
         carry FROZEN AT SPAWN (read once per iteration from the row) and
@@ -309,9 +319,11 @@ class LoopOps(_LoopHost):
 
         The return label is the driver's ECHO, not the row's truth: a fenced
         body control-flow outcome (a fresh hold mint or a deferral whose claim
-        fence closed) is reported to the caller, so the claim tail can unwind
-        the attempt as ``"fenced"``; every other drive ends through the
-        driver's own doors and returns ``None``."""
+        fence closed) is reported to the caller as ``"fenced"``, and a
+        deferral that terminalised as ``"cancelled"`` / ``"laddered"`` is
+        reported as that label, so the claim tail echoes the row's own
+        disposition rather than the loop's success face. Every other drive
+        ends through the driver's own doors and returns ``None``."""
 
         # The attachment is typed on the NodeDecl field (the lazy-Any
         # correction): the driver reads the field's own type, no cast.
@@ -353,9 +365,9 @@ class LoopOps(_LoopHost):
         ledger_id: JobId | None,
         emitter: ProgressEmitter | None = None,
         *,
-        claim_epoch: int = 0,
+        claim_epoch: int,
         ledger_claimed_at: Any = None,
-    ) -> str | None:
+    ) -> LoopEchoOutcome | None:
         """The loop driver's own drive (the machinery side of the
         escape-point contract — the escape-point contract): every exception
         raised by THIS method's own statements (the state reads, the
@@ -667,7 +679,7 @@ class LoopOps(_LoopHost):
                             else None
                         ),
                     )
-                    return "fenced" if verdict == "fenced" else None
+                    return verdict if verdict != "deferred" else None
                 except Exception as exc:
                     # every exception crossing it is a body failure — the
                     # loop's typed failure (the named class, the flow
@@ -843,7 +855,7 @@ class LoopOps(_LoopHost):
         attempt: int,
         exc: Exception,
         *,
-        claim_epoch: int = 0,
+        claim_epoch: int,
         ledger_id: JobId | None = None,
         ledger_claimed_at: Any = None,
     ) -> None:

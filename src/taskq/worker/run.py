@@ -736,7 +736,9 @@ def _workflow_execution_seam() -> ModuleType | None:
 #: The flow attempt's consumed-message outcome map: the execution tail's
 #: own labels onto the consumed-messages vocabulary (a terminalised or
 #: skipped node consumed; a laddered attempt failed; a held node went
-#: back to a wait state).
+#: back to a wait state). A label ABSENT here records no consumed outcome
+#: by design: ``"fenced"`` (a stale claim that wrote nothing) and
+#: ``"deferred"`` (a rescheduled attempt) both record nothing.
 _FLOW_OUTCOME_TO_CONSUMED: Final[dict[str, ConsumedOutcome]] = {
     "succeeded": "succeeded",
     "skipped": "succeeded",

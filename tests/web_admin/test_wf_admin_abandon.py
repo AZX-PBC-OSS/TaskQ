@@ -236,21 +236,25 @@ async def test_route_refuses_a_timer_hold_and_the_hold_survives(
     from taskq.workflows.api._hitl import TIMER_SIGNAL_PREFIX, register_timer_hold
 
     flow_id = uuid.UUID(run_id)
-    # the mint's park fences on the executing claim's epoch: a fresh running row
-    # at the granted epoch is the admitted shape (the seeded run's node already
-    # rests in its held representation).
-    from tests._wf_fixtures import seed_running_node
-
-    node_id = await seed_running_node(clean_pg_conn, schema, JobId(flow_id), step_key="review")
+    node_id = await module_pg_pool.fetchval(
+        f"SELECT id FROM \"{schema}\".jobs WHERE step_key = 'review' AND "
+        "(metadata->>'flow_id')::uuid = $1",
+        flow_id,
+    )
+    assert node_id is not None
+    # the mint's park fences on the executing claim's epoch: grant it on the
+    # run's OWN node row (a re-claim in place — a duplicate step row is a
+    # shape no flow produces).
     await clean_pg_conn.execute(
-        f'UPDATE "{schema}".jobs SET claim_epoch = 1 WHERE id = $1', node_id
+        f"UPDATE \"{schema}\".jobs SET status = 'running', claim_epoch = 1 WHERE id = $1",
+        node_id,
     )
     async with module_pg_pool.acquire() as conn:
         timer_hold_id = await register_timer_hold(
             conn,
             schema=schema,
             workflow_id=JobId(flow_id),
-            node_id=node_id,
+            node_id=JobId(node_id),
             node_key="review",
             signal_name=f"{TIMER_SIGNAL_PREFIX}wake",
             hold_epoch=2,

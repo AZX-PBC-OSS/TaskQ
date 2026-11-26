@@ -46,19 +46,7 @@ from taskq.workflows.definitions import (
     validate_fork,
 )
 from taskq.workflows.engine import insert_node, render_workflow_sql
-from tests._wf_fixtures import claim_view, seed_flow, seed_running_node
-
-
-async def _running_claim(
-    conn: asyncpg.Connection, schema: str, flow: JobId, *, step_key: str = "review"
-) -> JobId:
-    """A running node at the epoch both claim doors grant (``seed_running_node``
-    writes the finalize pin's epoch 0; a hold mint's park fences on the
-    executing claim's epoch)."""
-    node = await seed_running_node(conn, schema, flow, step_key=step_key)
-    await conn.execute(f'UPDATE "{schema}".jobs SET claim_epoch = 1 WHERE id = $1', node)
-    return node
-
+from tests._wf_fixtures import claim_view, seed_flow, seed_running_claim, seed_running_node
 
 pytestmark = pytest.mark.integration
 
@@ -918,9 +906,9 @@ async def test_high_identity_signal_holds_discriminate_map_siblings(
     from taskq.workflows.api._hitl import register_hold
 
     flow = await seed_flow(wf_conn, wf_schema)
-    first_node = await _running_claim(wf_conn, wf_schema, flow)
-    second_node = await _running_claim(wf_conn, wf_schema, flow)
-    duplicate_node = await _running_claim(wf_conn, wf_schema, flow)
+    first_node = await seed_running_claim(wf_conn, wf_schema, flow, step_key="review")
+    second_node = await seed_running_claim(wf_conn, wf_schema, flow, step_key="review")
+    duplicate_node = await seed_running_claim(wf_conn, wf_schema, flow, step_key="review")
 
     indexdef = await wf_conn.fetchval(
         "SELECT pg_get_indexdef(($1 || '.wf_signals_hold_identity_uniq')::regclass)",
@@ -1013,7 +1001,7 @@ async def test_hold_doors_refuse_negative_and_bool_identity(
 
     payload_schema: dict[str, object] = {"Approval": {"type": "object", "properties": {}}}
     flow = await seed_flow(wf_conn, wf_schema)
-    node = await _running_claim(wf_conn, wf_schema, flow)
+    node = await seed_running_claim(wf_conn, wf_schema, flow, step_key="review")
 
     # The bad values are the point of the case: their real (invalid) type is
     # what the door must refuse at runtime, so the deliberate type violation
