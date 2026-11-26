@@ -1532,11 +1532,27 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
             # boundary is the execution's boundary: from the ledger claim on,
             # anything the attempt raises routes through the ladder — never
             # through the worker's skull.
-            parents_ordered, parents_by_key = await self._parent_results(row["id"])
             payload_raw = row["payload"]
             payload = _json_loads(payload_raw) if isinstance(payload_raw, str) else payload_raw
             assert isinstance(payload, dict)  # the Any-contract walk (the seed wrote the shape)
             payload_doc: dict[str, object] = payload  # pyright: ignore[reportUnknownVariableType]  # Why: the Any-contract walk's boundary — the seed wrote the shape; the assert is the runtime check.
+            # Payload-carried nodes (map/route/emit/chain children carrying
+            # ``wf_item``, terminal effects, and outbox consumers carrying
+            # ``wf_args``) take their arguments directly from ``payload_doc``
+            # and never consult parent results. Skipping ``_parent_results``
+            # avoids a wasted per-item DB read and prevents a streaming emit
+            # child from tripping ``result_expired`` on its still-running or
+            # parked ``chain_source`` parent whose ``result`` is SQL NULL.
+            payload_only = body is not None and (
+                ITEM_KEY in payload_doc
+                or row["step_key"] in self._terminal_effects
+                or (node is None and bool(payload_doc.get(WF_ARGS_KEY)))
+            )
+            if payload_only:
+                parents_ordered: list[tuple[str, object]] = []
+                parents_by_key: dict[str, object] = {}
+            else:
+                parents_ordered, parents_by_key = await self._parent_results(row["id"])
             args = self._resolve_args(
                 node, body, parents_by_key, payload_doc, node_key=row["step_key"]
             )
