@@ -90,6 +90,14 @@ def test_live_workers_gauge_is_capped_like_the_depth_gauge(
     assert sum(reported.values()) == sum(counts.values())
 
 
+def test_stranded_gauge_description_matches_the_rootless_claim_fence() -> None:
+    """The instrument's own description reaches operators through their
+    metrics backend; it must not prescribe the retired claim/snooze loop."""
+    description = otel_mod._stranded_jobs_gauge._description  # pyright: ignore[reportAttributeAccessIssue]  # Why: the proxy stores the exact production creation argument before a provider is attached.
+    assert "no claim fence admits" in description
+    assert "may dispatch" not in description
+
+
 def test_stranded_gauge_carries_the_reason_label(gauge_reader: InMemoryMetricReader) -> None:
     """One series per (actor, reason): the two conditions have different
     remediations, and a per-actor total made the detector look wrong to an

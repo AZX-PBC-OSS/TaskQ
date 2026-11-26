@@ -453,6 +453,16 @@ def test_unserved_queue_alerts_join_depth_to_live_workers_on_queue() -> None:
         assert "$labels.reason" in stranded_text and "$labels.actor" in stranded_text
 
 
+def test_stranded_alert_matches_the_rootless_claim_fence() -> None:
+    """Both shipped alert files must tell the on-call operator that a
+    rootless workflow row is claim-fenced, not that it may dispatch."""
+    for rules_path in (_RULES_YAML, _K8S_RULES_YAML):
+        by_name = {r["alert"]: r for r in _rules_from(rules_path)}
+        text = " ".join(str(v) for v in by_name["TaskQStrandedJobs"]["annotations"].values())
+        assert "no claim fence admits" in text
+        assert "may dispatch" not in text
+
+
 def test_dimensionless_series_annotations_carry_no_label_references() -> None:
     """Alerts on series the bridge emits with no dimensions must not
     reference ``$labels.<dim>`` in their annotations: the rendered alert

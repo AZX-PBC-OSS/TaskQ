@@ -1521,12 +1521,11 @@ queue dispatch routes the row on; ``stamp_unresolved`` — the row carries a
 (delivered, abandoned, cancelled, or absent), so the fleet's dispatch fence
 refuses it and the leader's hold-stamp reconcile is its only repair) are
 conditions NO dispatch round and no deadline sweep will ever touch. The
-fourth (``workflow_root_missing``)
-is NOT dispatch-invisible: the row can dispatch and be bounded-consumed
-when its actor config and effective routing queue are otherwise served;
-what cannot progress is the row's RUN — its own ``__flow__`` root row is
-gone (control-plane data corruption; restore it or quarantine the
-run — the runbook's remedy, never a worker knob)."""
+fourth (``workflow_root_missing``) is also claim-fenced, for a different
+reason: the row's own ``__flow__`` root row is gone, and no body resolves
+without the root's workflow stamp. What cannot progress is the row's RUN
+(control-plane data corruption; restore the root or quarantine the run —
+the runbook's remedy, never a worker knob)."""
 
 _stranded_jobs_cache: dict[tuple[str, StrandedReason], int] = {}
 
@@ -1545,15 +1544,15 @@ def update_stranded_jobs_cache(data: Mapping[tuple[str, StrandedReason], int]) -
     fleet's dispatch fence refuses every stamped row, and the leader's
     hold-stamp reconcile is its only repair). All three shapes accumulate
     invisibly to dispatch and the deadline sweep. The fourth reason,
-    `workflow_root_missing`, is a WORKFLOW-progress fault, not a
-    dispatch fault: the row's own run has lost its `__flow__` root row,
-    so the run can make no progress even though the row itself dispatches
-    and runs normally — its remedy is control-plane recovery (restore the
-    root or quarantine the run), never actor registration or a queue
-    move. Keyed by ``(actor, reason)`` so the gauge says which condition
-    held, the dispatch-invisible reasons have different remediations
-    (register the actor, subscribe a worker to the queue, or wait for the
-    hold-stamp reconcile tick), and a
+    `workflow_root_missing`, is a WORKFLOW-progress fault and a
+    claim-fenced row: the row's own run has lost its `__flow__` root row,
+    so no claim fence admits it (its body resolves from the root's
+    workflow stamp) and the run can make no progress — its remedy is
+    control-plane recovery (restore the root or quarantine the run),
+    never actor registration or a queue move. Keyed by ``(actor, reason)``
+    so the gauge says which condition held, the dispatch-invisible reasons
+    have different remediations (register the actor, subscribe a worker
+    to the queue, or wait for the hold-stamp reconcile tick), and a
     per-actor total made an operator who found the actor_config row
     present conclude the detector lied.
 
@@ -1585,9 +1584,9 @@ _stranded_jobs_gauge = get_meter().create_observable_gauge(
         "hold is no longer held, so the dispatch fence refuses it until the "
         "hold-stamp reconcile clears the stamp; "
         "'workflow_root_missing', the row's own run has lost its __flow__ "
-        "root row — the row itself may dispatch and run, but the run can "
-        "make no progress and needs control-plane recovery, not a worker "
-        "knob)."
+        "root row — no claim fence admits the row because its body resolves "
+        "from the root's workflow stamp; the run can make no progress and "
+        "needs control-plane recovery, not a worker knob)."
     ),
     unit="1",
     callbacks=[_observe_stranded_jobs],

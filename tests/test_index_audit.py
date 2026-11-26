@@ -41,6 +41,7 @@ taskq.backend._sweeps / taskq.worker.cron_loop:
 
 from __future__ import annotations
 
+import json
 import re
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -54,6 +55,7 @@ from taskq._ids import new_base62, new_uuid
 from taskq.actor_config_ops import (
     _MOVE_BACKLOG_BATCH_SQL,  # pyright: ignore[reportPrivateUsage]  # Why: pinning the exact production drain statement, not a copy that could drift from it.
 )
+from taskq.backend._dispatch_sql import DISPATCH_STRICT_FIFO_SQL
 from taskq.backend._sweeps import (  # pyright: ignore[reportPrivateUsage]  # Why: pinning the exact production statements is the point of these tests; redefining them here would let the pins drift from the SQL that actually runs.
     _SWEEP_1_SQL,
     _SWEEP_2_SQL,
@@ -143,6 +145,41 @@ async def _explain(conn: asyncpg.Connection, sql: str, *params: object) -> str:
     are pinned without a rollback wrapper) as joined plan text."""
     rows = await conn.fetch(f"EXPLAIN (BUFFERS) {sql}", *params)
     return "\n".join(r["QUERY PLAN"] for r in rows)
+
+
+def _total_cost(plan: str) -> float:
+    """The statement's estimated total cost (the first plan line's upper bound)."""
+    head = plan.splitlines()[0]
+    return float(head.rsplit("cost=", 1)[1].split("..", 1)[1].split(" ", 1)[0])
+
+
+def _subplan_id_containing(plan: str, needle: str) -> str:
+    """The id of the ``SubPlan N`` block whose body includes *needle*.
+
+    ``EXPLAIN`` prints a subplan's header once and its nodes indented below;
+    slicing each header to the next header is enough to associate a scan with
+    the subplan that owns it, rather than trusting any ``hashed SubPlan``
+    printed elsewhere in the plan.
+    """
+    headers = list(re.finditer(r"(?m)^\s*SubPlan (\d+)\s*$", plan))
+    for index, match in enumerate(headers):
+        end = headers[index + 1].start() if index + 1 < len(headers) else len(plan)
+        if needle in plan[match.start() : end]:
+            return match.group(1)
+    raise AssertionError(f"no SubPlan block contains {needle!r}:\n{plan}")
+
+
+def _plan_nodes(plan: dict[str, object]) -> list[dict[str, object]]:
+    """Flatten an ``EXPLAIN (FORMAT JSON)`` plan tree."""
+    nodes: list[dict[str, object]] = []
+    stack: list[dict[str, object]] = [plan]
+    while stack:
+        node = stack.pop()
+        nodes.append(node)
+        children = node.get("Plans")
+        if isinstance(children, list):
+            stack.extend(child for child in children if isinstance(child, dict))
+    return nodes
 
 
 def _assert_index_cond(plan: str, index: str, cond_substring: str) -> None:
@@ -1328,6 +1365,285 @@ async def test_archive_candidate_actor_is_index_bounded_drained_and_backlog(
         await conn.close()
 
 
+async def test_archive_candidate_outbox_hold_is_a_hashed_subplan(
+    prune_audit_schema: Any, pg_dsn: str
+) -> None:
+    """The undelivered-intent hold must not turn each finished root into a
+    fresh scan of the outbox backlog.
+
+    The IN predicate gives Postgres one hashed flow-id set per candidate
+    statement. This locates the ``SubPlan`` block that actually contains the
+    ``wf_outbox`` scan and requires *that* block's invocation to be hashed —
+    a whole-plan ``hashed SubPlan`` regex would be satisfied by the held-root
+    CTE's own hashed set even after the outbox leg was deleted. Both candidate
+    statements and both statuses are covered.
+    """
+    schema = prune_audit_schema
+    conn = await asyncpg.connect(pg_dsn)
+    try:
+        for candidate_sql in (_ARCHIVE_CANDIDATE_SQL, _ARCHIVE_CANDIDATE_ACTOR_SQL):
+            for status in (_DRAINED_STATUS, _BACKLOG_STATUS):
+                args: tuple[object, ...] = (status, _RETENTION, _BATCH)
+                if candidate_sql is _ARCHIVE_CANDIDATE_ACTOR_SQL:
+                    args += ("test_actor",)
+                plan = await _explain(conn, candidate_sql.format(schema=schema), *args)
+                subplan_id = _subplan_id_containing(plan, "Scan on wf_outbox")
+                assert re.search(rf"hashed SubPlan {subplan_id}\b", plan), (
+                    "the undelivered-outbox guard became a correlated per-root "
+                    f"probe instead of one hashed set (SubPlan {subplan_id}):\n{plan}"
+                )
+    finally:
+        await conn.close()
+
+
+async def test_archive_candidate_vanilla_rows_skip_root_hold_subplans(
+    prune_audit_schema: Any, pg_dsn: str
+) -> None:
+    """The root-only hold must stay inert on the vanilla prune backlog.
+
+    A NULL step_key makes ``NOT (step_key = '__flow__' AND ...)`` evaluate
+    the outbox leg to resolve three-valued logic. The null-safe non-root
+    short-circuit must instead leave the hashed subplan never executed.
+    """
+    schema = prune_audit_schema
+    conn = await asyncpg.connect(pg_dsn)
+    tx = conn.transaction()
+    await tx.start()
+    try:
+        await conn.copy_records_to_table(
+            "wf_outbox",
+            schema_name=schema,
+            columns=["id", "join_job_id", "flow_id", "consumer_step_key"],
+            records=[(new_uuid(), new_uuid(), new_uuid(), "consumer") for _ in range(1000)],
+        )
+        rows = await conn.fetch(
+            f"EXPLAIN (ANALYZE, BUFFERS) {_ARCHIVE_CANDIDATE_SQL.format(schema=schema)}",
+            _BACKLOG_STATUS,
+            _RETENTION,
+            _BATCH,
+        )
+        plan = "\n".join(r["QUERY PLAN"] for r in rows)
+        for marker in ("Scan on wf_outbox", "on jobs wf_ch"):
+            scans = [line for line in plan.splitlines() if marker in line]
+            assert scans and all("never executed" in line for line in scans), plan
+    finally:
+        await tx.rollback()
+        await conn.close()
+
+
+async def test_archive_candidate_root_child_hold_uses_flow_index(
+    prune_audit_schema: Any, pg_dsn: str
+) -> None:
+    """One eligible root must probe its own flow, not the active fleet.
+
+    The held-root CTE's child probe is a correlated scalar on the flow/status
+    expression index (``jobs_wf_flow_nodes_idx``): one bounded seek per
+    candidate root. The held set itself rides ``jobs_wf_root_retention_idx``,
+    and its exclusion from the outer window is the hashed subplan — the child
+    scan is never decorrelated across the live workflow population.
+    """
+    schema = prune_audit_schema
+    conn = await asyncpg.connect(pg_dsn)
+    tx = conn.transaction()
+    await tx.start()
+    try:
+        root = new_uuid()
+        await conn.execute(
+            f'INSERT INTO "{schema}".jobs '
+            "(id, actor, queue, payload, status, finished_at, max_attempts, retry_kind, step_key, metadata) "
+            "VALUES ($1, 'root_actor', 'default', '{}', 'failed', now() - interval '40 days', "
+            "3, 'transient', '__flow__', '{}')",
+            root,
+        )
+        other_flow = new_uuid()
+        await conn.copy_records_to_table(
+            "jobs",
+            schema_name=schema,
+            columns=[
+                "id",
+                "actor",
+                "queue",
+                "payload",
+                "status",
+                "max_attempts",
+                "retry_kind",
+                "step_key",
+                "metadata",
+                "fairness_key",
+            ],
+            records=[
+                (
+                    new_uuid(),
+                    "live.actor",
+                    "default",
+                    "{}",
+                    "pending",
+                    3,
+                    "transient",
+                    "node",
+                    f'{{"flow_id":"{other_flow}"}}',
+                    str(other_flow),
+                )
+                for _ in range(5000)
+            ],
+        )
+        await conn.execute(f'ANALYZE "{schema}".jobs')
+        rows = await conn.fetch(
+            f"EXPLAIN (ANALYZE, BUFFERS) {_ARCHIVE_CANDIDATE_ACTOR_SQL.format(schema=schema)}",
+            _BACKLOG_STATUS,
+            _RETENTION,
+            _BATCH,
+            "root_actor",
+        )
+        plan = "\n".join(r["QUERY PLAN"] for r in rows)
+        assert "jobs_wf_root_retention_idx" in plan, (
+            "the held-root set no longer rides the root-only retention index:\n" + plan
+        )
+        _assert_index_cond_line(
+            plan,
+            "jobs_wf_flow_nodes_idx",
+            "metadata ->> 'flow_id'",
+            "status",
+        )
+    finally:
+        await tx.rollback()
+        await conn.close()
+
+
+async def test_archive_candidate_root_hold_row_work_is_bounded_by_roots(
+    prune_audit_schema: Any, pg_dsn: str
+) -> None:
+    """The root hold's child probe is bounded by candidate ROOTS, not by the
+    live workflow population.
+
+    A decorrelated hold would hash every active workflow row into a ``= ANY``
+    set; the held-root CTE instead evaluates its correlated scalar once per
+    terminal-aged root. With one finished root and thousands of unrelated
+    live children, the flow-index probe's ``Actual Loops`` must equal the
+    candidate roots (one), not the live population.
+    """
+    schema = prune_audit_schema
+    conn = await asyncpg.connect(pg_dsn)
+    tx = conn.transaction()
+    await tx.start()
+    try:
+        finished_at = "now() - interval '40 days'"
+        seeded_roots = 2
+        for _ in range(seeded_roots):
+            await conn.execute(
+                f'INSERT INTO "{schema}".jobs '
+                "(id, actor, queue, payload, status, finished_at, max_attempts, retry_kind, "
+                "step_key, metadata, idempotency_scope, idempotency_key) "
+                "VALUES (gen_random_uuid(), 'root_actor', 'default', '{}', "
+                f"'failed', {finished_at}, 3, 'transient', '__flow__', '{{}}', "
+                "'workflow-run', gen_random_uuid()::text)"
+            )
+        live_children = 20_000
+        live_records: list[tuple[object, ...]] = []
+        for _ in range(live_children):
+            fid = new_uuid()
+            live_records.append(
+                (
+                    new_uuid(),
+                    "live.actor",
+                    "default",
+                    "{}",
+                    "pending",
+                    3,
+                    "transient",
+                    "node",
+                    f'{{"flow_id":"{fid}"}}',
+                    str(fid),
+                    0,
+                )
+            )
+        await conn.copy_records_to_table(
+            "jobs",
+            schema_name=schema,
+            columns=[
+                "id",
+                "actor",
+                "queue",
+                "payload",
+                "status",
+                "max_attempts",
+                "retry_kind",
+                "step_key",
+                "metadata",
+                "fairness_key",
+                "deps_pending",
+            ],
+            records=live_records,
+        )
+        await conn.execute(f'ANALYZE "{schema}".jobs')
+        rows = await conn.fetch(
+            f"EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) "
+            f"{_ARCHIVE_CANDIDATE_SQL.format(schema=schema)}",
+            _BACKLOG_STATUS,
+            _RETENTION,
+            _BATCH,
+        )
+        document: Any = rows[0]["QUERY PLAN"]
+        parsed = json.loads(document) if isinstance(document, str) else document
+        plan = parsed[0]["Plan"]
+        child_probe = [
+            node
+            for node in _plan_nodes(plan)
+            if node.get("Relation Name") == "jobs"
+            and node.get("Index Name") == "jobs_wf_flow_nodes_idx"
+        ]
+        assert child_probe, "the held CTE's child probe left the flow index"
+        child_row_work = sum(
+            float(node.get("Actual Rows") or 0) * float(node.get("Actual Loops") or 0)
+            for node in child_probe
+        )
+        child_loops = sum(float(node.get("Actual Loops") or 0) for node in child_probe)
+        assert child_loops <= seeded_roots, (
+            "the root hold's child probe ran "
+            f"{child_loops:.0f} times for {seeded_roots} candidate roots: it is "
+            "evaluated per live workflow row, not per candidate root"
+        )
+        assert child_row_work <= seeded_roots, (
+            "the root hold's child probe processed "
+            f"{child_row_work:.0f} rows (2 candidate roots, {live_children} live "
+            "children of other flows): the leg is decorrelated across the live "
+            "workflow population instead of seeking per candidate root"
+        )
+    finally:
+        await tx.rollback()
+        await conn.close()
+
+
+async def test_archive_candidate_estimate_stays_below_jit_threshold(
+    prune_audit_schema: Any, pg_dsn: str
+) -> None:
+    """The root hold must not blow up the candidate window's cost estimate.
+
+    JIT is a defect class with its own oracle for the dispatch statement; the
+    prune's candidate window is the other seat where a predicate's estimate
+    matters, because a plan priced past ``jit_above_cost`` compiles a
+    statement that executes in microseconds. The held-root CTE keeps the
+    window near its pre-change estimate (measured ~5k on this corpus against a
+    100k threshold) for both the drained and backlog states.
+    """
+    schema = prune_audit_schema
+    conn = await asyncpg.connect(pg_dsn)
+    try:
+        threshold = float(await conn.fetchval("SHOW jit_above_cost"))
+        for status in (_DRAINED_STATUS, _BACKLOG_STATUS):
+            plan = await _explain(
+                conn, _ARCHIVE_CANDIDATE_SQL.format(schema=schema), status, _RETENTION, _BATCH
+            )
+            cost = _total_cost(plan)
+            assert cost < threshold * 0.5, (
+                f"the {status} candidate window is estimated at {cost:.2f}, not "
+                f"safely below jit_above_cost={threshold}: the guard's per-row "
+                f"subplan charge is back on the terminal population:\n{plan}"
+            )
+    finally:
+        await conn.close()
+
+
 async def _sample_ids(conn: asyncpg.Connection, schema: str, status: str) -> list[object]:
     """A batch of ids of *status* rows: the write-statement pins feed the
     production statement real ids (the plan shape is what is pinned; the
@@ -2137,6 +2453,95 @@ async def test_keyed_slot_reclaim_window_is_index_bounded(
             plan,
             "reservation_slots_keyed_last_used_idx",
             "last_used_at <",
+        )
+    finally:
+        await conn.close()
+
+
+@pytest.fixture(scope="module")
+async def dispatch_fence_plan_schema(pg_dsn: str) -> Any:
+    """A vanilla-only dispatch corpus: one actor/queue with a due backlog and
+    a capability-flagged worker, so the dispatch statement claims real rows
+    and the fence is evaluated per candidate."""
+    schema = f"dispatch_fence_{new_base62()}".lower()
+    conn = await asyncpg.connect(pg_dsn)
+    worker_id = new_uuid()
+    try:
+        await _drop_schema(conn, schema)
+        await migrate_mod.apply_pending(conn, schema=schema)
+        await conn.execute(
+            f'INSERT INTO "{schema}".actor_config (actor, queue) VALUES ($1, $2)',
+            "dispatch_vanilla",
+            "dispatch-vanilla-q",
+        )
+        await conn.execute(
+            f'INSERT INTO "{schema}".workers (id, hostname, pid, queues, metadata) '
+            "VALUES ($1, 'dispatch-plan', 1, $2::text[], $3::jsonb)",
+            worker_id,
+            ["dispatch-vanilla-q"],
+            json.dumps({"workflow_execution": True}),
+        )
+        await conn.execute(
+            f'INSERT INTO "{schema}".jobs '
+            "(id, actor, queue, payload, status, priority, scheduled_at, "
+            "max_attempts, retry_kind) "
+            "SELECT gen_random_uuid(), $1, $2, '{}'::jsonb, 'pending', 0::smallint, "
+            "clock_timestamp() - interval '1 minute', 3, 'transient' "
+            "FROM generate_series(1, $3)",
+            "dispatch_vanilla",
+            "dispatch-vanilla-q",
+            30_000,
+        )
+        await conn.execute(f'VACUUM (ANALYZE) "{schema}".jobs')
+        yield {"schema": schema, "worker_id": worker_id}
+    finally:
+        await _drop_schema(conn, schema)
+        await conn.close()
+
+
+async def test_dispatch_fence_root_subplan_is_never_executed_for_vanilla_rows(
+    dispatch_fence_plan_schema: Any, pg_dsn: str
+) -> None:
+    """The dispatch fence's root-existence leg stays inert on vanilla rows.
+
+    ``_WF_DISPATCH_FENCE_TEMPLATE``'s header states the vanilla cost class (a
+    vanilla row's plan cost is the ``step_key`` short-circuit probe). The
+    prune window has that property pinned; the dispatch statement, which
+    rides every round, must hold it too: with a vanilla-only backlog the root
+    subplans are never entered, so the fence's extra leg costs nothing on the
+    overwhelming majority of rows.
+    """
+    schema = str(dispatch_fence_plan_schema["schema"])
+    worker_id = dispatch_fence_plan_schema["worker_id"]
+    conn = await asyncpg.connect(pg_dsn)
+    try:
+        rows = await conn.fetch(
+            f"EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) "
+            f"{DISPATCH_STRICT_FIFO_SQL.format(schema=schema)}",
+            ["dispatch-vanilla-q"],
+            50,
+            worker_id,
+            timedelta(seconds=30),
+            2,
+        )
+        document: Any = rows[0]["QUERY PLAN"]
+        parsed = json.loads(document) if isinstance(document, str) else document
+        plan = parsed[0]["Plan"]
+        assert float(plan.get("Actual Rows") or 0) > 0, (
+            "the dispatch round claimed nothing, so the fence was never "
+            "evaluated on a candidate and this pin would pass vacuously"
+        )
+        executed = [
+            node
+            for node in _plan_nodes(plan)
+            if node.get("Subplan Name")
+            and node.get("Relation Name") == "jobs"
+            and float(node.get("Actual Loops") or 0) > 0
+        ]
+        assert not executed, (
+            "the root-existence leg was entered for a vanilla-only backlog — "
+            "the fence's vanilla short-circuit (step_key IS NULL) no longer "
+            f"keeps the subplan out of the per-row filter: {executed!r}"
         )
     finally:
         await conn.close()

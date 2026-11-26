@@ -76,6 +76,13 @@ _WRITE_RE = re.compile(r"\b(UPDATE|DELETE)\b")
 # both waves unregistered statements on that table through as bounded
 # and flags properly-registered ones as stale.
 _LIMIT_CLAUSE_RE = re.compile(r"\bLIMIT\b", re.IGNORECASE)
+# A bare ``LIMIT 1`` is a singleton probe (a correlated existence/scalar
+# leg), never a batch window: it cannot bound a write's row set. The
+# staleness check uses this stricter form so a write that composes such a
+# probe (the archive write's held-set child leg) is still judged on its real
+# bounding mechanism. A parameter bound (``LIMIT $n``) and every other
+# literal still count.
+_BOUNDING_LIMIT_RE = re.compile(r"\bLIMIT\s+(?!1\b)\S", re.IGNORECASE)
 
 # Unbounded write statements that are deliberate: each entry is the
 # constant name mapped to (scoping substring that must survive in the
@@ -110,6 +117,17 @@ _EXEMPT: dict[str, tuple[str, str]] = {
         "array, selected by the LIMIT-ed _ARCHIVE_CANDIDATE_SQL window in "
         "the same transaction (the split keeps the plancache off the "
         "generic plan; see _ARCHIVE_CANDIDATE_SQL's comment)",
+    ),
+    # The hold-free core the guarded write and its pre-budget render compose:
+    # the same write class (the candidate ids bound as an array, the same
+    # LIMIT-ed candidate window in the same transaction), stated once so
+    # neither composition re-spells the lock/archive/delete arms.
+    "_ARCHIVE_CTE_CORE_SQL": (
+        "ANY($3::uuid[])",
+        "archive write CORE (the hold-free body the guarded write and its "
+        "pre-budget render compose); its write set is the candidate ids "
+        "bound as an array, selected by the LIMIT-ed _ARCHIVE_CANDIDATE_SQL "
+        "window in the same transaction",
     ),
     # The pre-budget variant: the same write (the same candidate ids bound
     # as an array, the same LIMIT-ed candidate window) rendered against the
@@ -396,11 +414,13 @@ _EXEMPT: dict[str, tuple[str, str]] = {
         "nonterminal",
     ),
     "OUTBOX_DRAIN_FLIP_SQL": (
-        "WHERE id = ANY($1::uuid[])",
+        "WHERE o.id = ANY($1::uuid[])",
         "the drain's undelivered-flag flip; its write set is the ids the "
         "LIMIT-ed OUTBOX_FETCH_UNDELIVERED_SQL window fetched in the same "
         "transaction (the caller-discipline class of _ARCHIVE_CTE_SQL; the "
-        "exactly-once drain is pin 20's)",
+        "exactly-once drain is pin 20's). The flip also re-checks the run "
+        "root, so an intent whose root vanished inside the transaction is "
+        "left undelivered rather than acknowledged",
     ),
     "PHANTOM_REAP_SQL": (
         "WHERE l.status IN ('running', 'awaited', 'crashed')",
@@ -742,7 +762,7 @@ def test_exemption_registry_has_no_stale_entries() -> None:
         found = by_name.get(name)
         if found is None:
             stale.append(f"{name}: no such statement discovered")
-        elif _LIMIT_CLAUSE_RE.search(found[1]):
+        elif _BOUNDING_LIMIT_RE.search(found[1]):
             stale.append(f"{name} ({found[0]}): now carries a LIMIT - remove the entry")
     assert not stale, "Stale _EXEMPT entries:\n  " + "\n  ".join(stale)
 
@@ -808,9 +828,11 @@ class _ArchiveBatchConn:
     async def fetch(self, sql: str, *args: object) -> list[dict[str, object]]:
         if "current_setting" in sql:
             return [{"current_setting": "0"}]
-        if "WITH locked AS MATERIALIZED" in sql:
+        if "locked AS MATERIALIZED" in sql:
             # The write statement binds (status, archive_interval, ids,
-            # retention); record the bound ids.
+            # retention); record the bound ids. The guarded write prefixes the
+            # held-root CTE, so the marker is the lock CTE itself, not the
+            # statement's first WITH.
             self.write_id_bindings.append(args[2])
             return []
         # The candidate window: its result is the scripted id set.

@@ -2862,14 +2862,11 @@ async def _stranded_jobs_loop(ctx: SweepContext, shutdown: asyncio.Event) -> Non
       row (``AND NOT metadata ? 'hold'``, the in-process claim CAS's twin),
       so nothing but the leader's ``wf_hold_stamp_reconcile`` arm can clear
       the stamp; until it does the row is ``pending``, due and unclaimable.
-      This is the shape issue #748 makes load-bearing: before the fence the
-      fleet could re-claim it (the wedge the fence closes), and after it the
-      only repair is a leader tick. A LIVE hold is excluded (the row
-      legitimately rests in the held representation).
-    - **workflow_root_missing** (qualified meaning — NOT dispatch
-      -invisible): a workflow node whose run's own ``__flow__`` root row
-      is gone. The row CAN dispatch and be bounded-consumed when its
-      actor config and effective routing queue are otherwise served;
+      A LIVE hold is excluded (the row legitimately rests in the held
+      representation).
+    - **workflow_root_missing** (claim-fenced): a workflow node whose
+      run's own ``__flow__`` root row is gone. No claim fence admits the
+      row, because its body resolves from the root's workflow stamp;
       what cannot progress is the RUN — every remaining node of a root
       -less flow is stranded work. This is control-plane data corruption
       (restore the exact missing root, or quarantine the orphaned rows

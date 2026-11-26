@@ -357,7 +357,15 @@ children before the join fires (a child's `result_expires_at` is held
 while a join-wait node counts it — after the join fires, the subtree ages
 together), and retention may not prune a parent row of a
 NON-terminal run (the sweep's ledger recount reads parent rows as
-truth). Terminal runs prune on the normal schedule. The guards are
+truth), nor a finished run's own `__flow__` root row while any
+non-terminal child or undelivered `wf_outbox` delivery intent of that run
+remains. The intent leg covers terminal effects and loop escalations,
+whose consumer materializes on the already-terminal root; archiving first
+would make the drain acknowledge a delivery it could not insert. A child
+left rootless would likewise have no body to resolve — no claim fence
+admits it, and the detector reads it as `workflow_root_missing`. Terminal
+runs whose children are all terminal and whose outbox intents are delivered
+prune on the normal schedule. The guards are
 WHERE-class conditions on the EXISTING arms — no new sweep process; the
 failure mode the guards prevent is Oban-Pro's documented
 `preserve_workflows` lesson (the reduce reading holes — the silent

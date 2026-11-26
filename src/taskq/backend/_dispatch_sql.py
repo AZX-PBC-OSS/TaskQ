@@ -387,22 +387,43 @@ _WF_DISPATCH_FENCE_TEMPLATE = """\
               -- perf-evidence-dispatch.md.
               AND NOT __WF_ALIAS__.metadata ? 'hold'
               AND (SELECT wf_exec.capable FROM wf_exec_capable wf_exec)
-              AND (
-                  -- THE ESCALATION-KIND exemption (the why is the
-                  -- template's header note): the loop's registered
-                  -- escalation consumer is dispatchable ON the terminal
-                  -- flow that spawned it.
-                  __WF_ALIAS__.step_key = '__WF_ESCALATION_STEP__'
-                  OR __WF_ALIAS__.metadata ? 'wf_after_terminal_effect'
-                  OR NOT EXISTS (
-                      SELECT 1
-                      FROM "{schema}".jobs wf_flow
-                      WHERE wf_flow.id = (__WF_ALIAS__.metadata->>'flow_id')::uuid
-                        AND wf_flow.status IN __WF_TERMINAL__
-                  )
-              )
+              -- THE ROOT-EXISTENCE LEG (fail-closed): the fence requires
+              -- the run's ``__flow__`` root to BE there. The negative form
+              -- this replaces (``NOT EXISTS (... status IN terminal)``)
+              -- was equivalent only while the root row existed: retention
+              -- archiving or deleting the root made that subquery return
+              -- no rows, the negation held, and an orphaned child of a
+              -- vanished run dispatched, snoozed on a body it cannot
+              -- resolve without the root's stamp, and re-dispatched on
+              -- every sweep. The elaboration lives once, on
+              -- _WF_ROOT_EXISTENCE_TEMPLATE (shared with the probe fence).
+              __WF_ROOT_EXISTENCE__
           )
       )
+"""
+
+
+# THE ROOT-EXISTENCE LEG: the shared predicate both dispatch fences carry
+# verbatim (the claim fence's execution-capability leg is the only difference
+# between them). Rendered per alias by the two fence renderers; the
+# escalation / after-terminal exemptions ride INSIDE the EXISTS, so an
+# escalation or after-terminal row stays dispatchable on a terminal root that
+# is present and is refused with every other workflow row once the root is
+# gone. Both kinds resolve through ``root.metadata->>'workflow'`` and carry no
+# ``workflow`` on their own metadata, so a rootless claim of either can never
+# reach a body. Kept as one fragment so the two fences cannot drift.
+_WF_ROOT_EXISTENCE_TEMPLATE = """\
+              AND EXISTS (
+                  SELECT 1
+                  FROM "{schema}".jobs wf_flow
+                  WHERE wf_flow.id = (__WF_ALIAS__.metadata->>'flow_id')::uuid
+                    AND wf_flow.step_key = '__flow__'
+                    AND (
+                        wf_flow.status NOT IN __WF_TERMINAL__
+                        OR __WF_ALIAS__.step_key = '__WF_ESCALATION_STEP__'
+                        OR __WF_ALIAS__.metadata ? 'wf_after_terminal_effect'
+                    )
+              )
 """
 
 
@@ -426,21 +447,19 @@ _WF_PROBE_FENCE_TEMPLATE = """\
       -- page never expands a round). A stamped row (the held
       -- representation) is not routable work either: the claim fence's
       -- hold-stamp leg, so the two agree on held rows.
-      AND NOT (
-          __WF_ALIAS__.step_key IS NOT NULL
-          AND (
-              __WF_ALIAS__.step_key = '__flow__'
-              OR __WF_ALIAS__.metadata ? 'hold'
-              OR (
-                  __WF_ALIAS__.step_key <> '__WF_ESCALATION_STEP__'
-                  AND NOT __WF_ALIAS__.metadata ? 'wf_after_terminal_effect'
-                  AND EXISTS (
-                      SELECT 1
-                      FROM "{schema}".jobs wf_flow
-                      WHERE wf_flow.id = (__WF_ALIAS__.metadata->>'flow_id')::uuid
-                        AND wf_flow.status IN __WF_TERMINAL__
-                  )
-              )
+      -- The ROOT-EXISTENCE leg is the claim fence's own (minus the
+      -- execution capability the probe cannot read): a workflow row is
+      -- routable only while its run's ``__flow__`` root exists, with the
+      -- escalation / after-terminal exemptions INSIDE the EXISTS — they
+      -- pass on a terminal root that is present and are refused with
+      -- every other row once it is gone (the why is the claim fence's
+      -- derivation at _wf_dispatch_fence).
+      AND (
+          __WF_ALIAS__.step_key IS NULL
+          OR (
+              __WF_ALIAS__.step_key <> '__flow__'
+              AND NOT __WF_ALIAS__.metadata ? 'hold'
+              __WF_ROOT_EXISTENCE__
           )
       )
 """
@@ -454,10 +473,12 @@ def _wf_dispatch_fence(alias: str) -> str:
     # the statement is $n-bound by the templates this composes into. The
     # escalation step key is the constants home's own (backend and
     # workflows read one constant — the exemption cannot drift from the
-    # step the loop registers).
+    # step the loop registers). The root-existence fragment is substituted
+    # before the alias so its own __WF_ALIAS__ holes render too.
     terminal = "('" + "','".join(sorted(TERMINAL_STATUSES)) + "')"
     return (
-        _WF_DISPATCH_FENCE_TEMPLATE.replace("__WF_ALIAS__", alias)
+        _WF_DISPATCH_FENCE_TEMPLATE.replace("__WF_ROOT_EXISTENCE__", _WF_ROOT_EXISTENCE_TEMPLATE)
+        .replace("__WF_ALIAS__", alias)
         .replace("__WF_TERMINAL__", terminal)
         .replace("__WF_ESCALATION_STEP__", WF_LOOP_ESCALATION_STEP_KEY)
     )
@@ -468,10 +489,13 @@ def _wf_probe_fence(alias: str) -> str:
     # set renders from statemachine.TERMINAL_STATUSES (the same
     # derivation _wf_dispatch_fence applies — a table alias and that
     # set, never caller input); the escalation-kind exemption renders
-    # from the same constant (the two fences may not disagree).
+    # from the same constant (the two fences may not disagree). The
+    # root-existence fragment is substituted before the alias so its own
+    # __WF_ALIAS__ holes render too.
     terminal = "('" + "','".join(sorted(TERMINAL_STATUSES)) + "')"
     return (
-        _WF_PROBE_FENCE_TEMPLATE.replace("__WF_ALIAS__", alias)
+        _WF_PROBE_FENCE_TEMPLATE.replace("__WF_ROOT_EXISTENCE__", _WF_ROOT_EXISTENCE_TEMPLATE)
+        .replace("__WF_ALIAS__", alias)
         .replace("__WF_TERMINAL__", terminal)
         .replace("__WF_ESCALATION_STEP__", WF_LOOP_ESCALATION_STEP_KEY)
     )
@@ -551,14 +575,18 @@ pa_actors AS (
 -- (Defined here, ahead of capped_running and per_actor_capacity,
 -- because capped_running's driver reads its DISTINCT actor set.)
 rr_tail_keys AS (
-  -- NO dispatch fence here, deliberately: this enumeration is the
-  -- RE-PENDED population's cohort walk (assignment_routed only). The
-  -- engine's enqueue paths never set the marker, but a workflow STEP
-  -- re-pended by a deferral, an emit park or wake, a lease reclaim or a
-  -- drain hand-back is assignment_routed; a flow root never is (it is
-  -- never claimed). The fence's admission sites are the
-  -- candidates laterals, the lock steps, the terminal race guard, and
-  -- this probe's capacity question is answered per actor, not per row.
+  -- NO dispatch fence here, deliberately: this is a cohort ENUMERATION,
+  -- never an admission site. The engine's enqueue paths never set the
+  -- marker, but workflow steps DO reach the re-pended population
+  -- (assignment_routed = true) via deferrals (NODE_DEFER_SQL), emit park/wake
+  -- (_sql_finalize's EMIT_BACKPRESSURE_PARK_SQL and _WAKE_SQL), retries/snoozes
+  -- (backend mark_snoozed), lease reclaim, drain hand-back, and the worker's
+  -- root-missing release (a flow root never is, since it is never claimed) —
+  -- so the walk can enumerate a cohort whose rows a door will refuse. That
+  -- costs bounded, wasted cohort keys, not work: every lateral that can ADMIT
+  -- a row carries the dispatch fence (the two candidates arms, the lock steps,
+  -- the terminal race guard), and this probe's capacity question is answered
+  -- per actor, not per row.
   (
     SELECT j5.actor, COALESCE(j5.fairness_key, '__null__') AS fkey
     FROM "{schema}".jobs j5

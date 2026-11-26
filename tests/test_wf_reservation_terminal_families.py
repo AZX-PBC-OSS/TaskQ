@@ -44,6 +44,22 @@ def _meta(raw: object) -> dict[str, Any]:
     return decoded
 
 
+async def _seed_flow_root(conn: asyncpg.Connection, schema: str, flow: JobId) -> None:
+    """The run's ``__flow__`` root row — a workflow row is work only while the
+    root that carries the run's workflow stamp exists (the claim fences'
+    root-existence leg), so a fixture asserting claimability seeds the run a
+    healthy estate always has."""
+    await conn.execute(
+        f'INSERT INTO "{schema}".jobs (id, actor, queue, payload, max_attempts, '
+        "retry_kind, status, step_key, metadata, idempotency_scope, idempotency_key) "
+        "VALUES ($1, 'flow', 'default', '{}', 3, 'transient', 'running', '__flow__', "
+        "$2::jsonb, 'workflow-run', $3)",
+        flow,
+        _json.dumps({"flow_id": str(flow)}),
+        f"flow:{flow}",
+    )
+
+
 async def _seed_reserved(
     conn: asyncpg.Connection, schema: str, flow: JobId, step_key: str, status: str, *, width: int
 ) -> JobId:
@@ -179,6 +195,7 @@ async def test_manual_rearm_strips_key_and_park_marker_and_restores_claimability
 
     # ── arm 1: a FAILED reserved row re-armed → ordinary pending, no key ──
     flow = JobId(new_uuid())
+    await _seed_flow_root(wf_conn, wf_schema, flow)
     job = await _seed_reserved(wf_conn, wf_schema, flow, "source", "pending", width=7)
     await wf_conn.execute(
         f"UPDATE \"{wf_schema}\".jobs SET status = 'failed', "
@@ -199,6 +216,7 @@ async def test_manual_rearm_strips_key_and_park_marker_and_restores_claimability
 
     # ── arm 2: a CANCELLED EXACT PARK re-armed → claimable pending ──
     flow2 = JobId(new_uuid())
+    await _seed_flow_root(wf_conn, wf_schema, flow2)
     park = JobId(new_uuid())
     park_meta = {
         "flow_id": str(flow2),
@@ -352,6 +370,7 @@ async def test_node_retry_rearm_strips_key_and_restores_claimability(
 
     wsql = _wsql(wf_schema)
     flow = JobId(new_uuid())
+    await _seed_flow_root(wf_conn, wf_schema, flow)
     job = await _seed_reserved(wf_conn, wf_schema, flow, "source", "pending", width=7)
     await wf_conn.execute(
         f"UPDATE \"{wf_schema}\".jobs SET status = 'failed', "

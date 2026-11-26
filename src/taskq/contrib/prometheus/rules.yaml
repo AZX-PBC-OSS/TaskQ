@@ -447,10 +447,11 @@ groups:
             will ever touch the rows. The fourth reason,
             workflow_root_missing, is control-plane data corruption, not a
             routing condition: the row's own run has lost its __flow__ root
-            row — the row may dispatch and run, but the run can never
-            progress; no worker knob repairs it, and the remedy is the
-            runbook's restore-or-quarantine recovery. The leader's detector is
-            the only signal. Runbook: docs/guides/runbooks.md#taskqstrandedjobs.
+            row — no claim fence admits the row because its body resolves from
+            the root's workflow stamp, and the run can never progress; no
+            worker knob repairs it, and the remedy is the runbook's
+            restore-or-quarantine recovery. The leader's detector is the only
+            signal. Runbook: docs/guides/runbooks.md#taskqstrandedjobs.
 
       - alert: TaskQWorkflowBlockedStuck
         expr: taskq_wf_progress_nodes_total{state="blocked"} > 0

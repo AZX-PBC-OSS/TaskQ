@@ -295,7 +295,7 @@ per-worker gauges are sampled unconditionally by every worker.
 | `taskq_jobs_actor_backlog` | gauge | `actor`, `queue` | Per-actor pending depth (`fetch_actor_backlog.backlog`) |
 | `taskq_jobs_running` | gauge | `actor` | Who holds the fleet's slots (`fetch_actor_backlog.running`) |
 | `taskq_jobs_oldest_running_age_seconds` | gauge | `actor` | An attempt with no `start_to_close` |
-| `taskq_jobs_stranded{reason}` | gauge | `actor`, `reason` | Rows that cannot make progress, and why — the three dispatch-invisible reasons (`no_actor_config`, `unserved_queue`, `stamp_unresolved`) plus `workflow_root_missing` (the row's run has lost its own root row: the row may dispatch, the run cannot progress; the canonical meanings live on `taskq.jobs.stranded` in observability.md and the runbook) |
+| `taskq_jobs_stranded{reason}` | gauge | `actor`, `reason` | Rows that cannot make progress, and why — the three dispatch-invisible reasons (`no_actor_config`, `unserved_queue`, `stamp_unresolved`) plus `workflow_root_missing` (the row's run has lost its own root row: no claim fence admits the row and the run cannot progress; the canonical meanings live on `taskq.jobs.stranded` in observability.md and the runbook) |
 | `taskq_jobs_running_lease_expired` | gauge | — | Zombie-running (claimed, lease past, still `running`) |
 | `taskq_worker_active_jobs`, `taskq_worker_max_concurrency` | gauges | — | Per-process in-flight and its ceiling; the ratio is per-process utilization (the pod is the scrape target's own labels) |
 | `taskq_jobs_queue_wait_seconds` | histogram | `actor`, `queue` | What every dispatched job actually waited — the live, per-job form of `fetch_wait_distribution`'s windowed percentiles |
