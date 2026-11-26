@@ -20,13 +20,22 @@ from pydantic import BaseModel
 
 from taskq._json import dumps_jsonb_str
 from taskq._json import loads as _json_loads
+from taskq.workflows.api._runner_errors import ClaimEpochMissingError
 from taskq.workflows.api._sql_runner import render_sql
 
 if TYPE_CHECKING:
-    from taskq.backend._protocol import JobId
+    from taskq.backend._protocol import ConnLike, JobId
     from taskq.workflows._sql import WorkflowSql
 
-__all__ = ["CtxWaitOps", "LoopWaitShapeError", "SignalUnavailableError", "WaitHost"]
+__all__ = [
+    "CtxWaitOps",
+    "LoopWaitShapeError",
+    "SignalUnavailableError",
+    "WaitHost",
+    "read_claim_marker",
+    "require_claim_epoch",
+    "write_claim_marker",
+]
 
 from datetime import timedelta
 
@@ -35,6 +44,117 @@ import structlog
 from taskq.obs import get_logger
 
 logger: structlog.stdlib.BoundLogger = get_logger(__name__)
+
+
+# ── the claim-scoped replay marker (the wait, timer and join sites' shared
+# cursor): an ``{epoch: <claim_epoch>, ...}`` document under one per-attempt
+# metadata key. The bounded-by-one non-consuming refunds — ``Snooze``,
+# ``RetryAfter(consume_budget=False)`` and the lost-claim refund — subtract
+# one from ``jobs.attempt`` while ``jobs.claim_epoch`` stays strictly
+# monotonic, and the re-claim restores the same ordinal, so the re-claim
+# runs at the SAME attempt ordinal and a new epoch. A marker keyed by
+# attempt alone therefore survives into an execution that never wrote it and
+# reports an answer it never consumed. The ``EmitBackpressure`` park also
+# leaves ``jobs.claim_epoch`` strictly monotonic, but it zeroes the ordinal
+# outright (``attempt = 0``); only ``chain_source`` nodes restore
+# ``wf_source_logical_attempt`` across that park, so only their ctx attempt
+# (and the attempt leg of their answer queue) survives it. A plain step
+# re-claims at attempt 1 after the park and its answers minted at attempt >=
+# 2 fall outside the ``1..attempt`` queue window. The epoch in the value is
+# what makes the marker belong to one execution either way.
+# The key names carry a leg the bare-integer keys never had, so a row
+# stamped by the previous release reads as no marker at all (the new claim
+# replays its queue from the start, which is what a from-the-top
+# re-execution wants) and an older worker reads NO key under the names it
+# knows — no ``::int`` cast ever meets a JSON object.
+
+#: The marker document *key* carries (``NULL`` when the key was never
+#: written).
+_CLAIM_MARKER_READ_SQL = """
+SELECT metadata->$2::text AS marker FROM {schema}.jobs WHERE id = $1
+"""
+
+#: The marker's write, fenced forward-only on the epoch it stores: a stale
+#: body whose lease lapsed (sharing the attempt number with the claim that
+#: now owns the row) never overwrites the live claim's marker with an older
+#: epoch's count.
+_CLAIM_MARKER_WRITE_SQL = """
+UPDATE {schema}.jobs
+SET metadata = metadata || $3::jsonb
+WHERE id = $1
+  AND COALESCE((metadata->$2::text->>'epoch')::bigint, 0) <= $4::bigint
+RETURNING id
+"""
+
+
+def require_claim_epoch(site: str, *, flow_id: JobId, node_key: str, claim_epoch: int) -> None:
+    """The claim epoch a replay marker is scoped to, refused loudly when it
+    cannot scope anything. Both claim doors grant at least 1
+    (``_sql_runner.NODE_CLAIM_SQL_TEMPLATE`` and the terminal claim UPDATE
+    both write ``claim_epoch + 1``), so 0 means the epoch was never supplied:
+    every stored marker would compare unequal to it and the site would replay
+    a queue it already consumed — the second hold this marker exists to
+    prevent."""
+    if claim_epoch > 0:
+        return
+    raise ClaimEpochMissingError(
+        f"{site} on node {node_key!r} of flow {flow_id} was handed "
+        f"claim_epoch={claim_epoch!r}: an executing claim's epoch is at least 1 "
+        "(both claim doors increment it). The wait replay marker resets per "
+        "claim, so at 0 it never resets and the re-executed site treats its "
+        "already-delivered answer as spent; pass the claim's granted epoch."
+    )
+
+
+async def read_claim_marker(
+    conn: ConnLike,
+    *,
+    schema: str,
+    job_id: JobId,
+    key: str,
+    claim_epoch: int,
+) -> dict[str, Any]:
+    """The marker document *key* carries for THIS claim: empty when the key
+    was never written, when it belongs to another execution, or when the
+    value under it is not a document (a scalar, an array or any other
+    non-document value reads as ``{}`` instead of raising)."""
+    raw = await conn.fetchval(render_sql(_CLAIM_MARKER_READ_SQL, schema), job_id, key)
+    document = _json_loads(raw) if isinstance(raw, str) else raw
+    if not isinstance(document, dict):
+        return {}
+    marker = cast("dict[str, Any]", document)
+    if marker.get("epoch") != claim_epoch:
+        return {}
+    return marker
+
+
+async def write_claim_marker(
+    conn: ConnLike,
+    *,
+    schema: str,
+    job_id: JobId,
+    key: str,
+    claim_epoch: int,
+    marker: dict[str, int],
+) -> None:
+    """Record *marker* under *key* for THIS claim (the epoch rides the value,
+    so a later claim's read sees no marker of its own and starts clean). The
+    fence value is written LAST, so a caller payload can never displace or
+    zero it."""
+    landed = await conn.fetchval(
+        render_sql(_CLAIM_MARKER_WRITE_SQL, schema),
+        job_id,
+        key,
+        dumps_jsonb_str({key: {**marker, "epoch": claim_epoch}}),
+        claim_epoch,
+    )
+    if landed is None:
+        logger.debug(
+            "wf-claim-marker-fenced",
+            job_id=str(job_id),
+            claim_epoch=claim_epoch,
+            key=key,
+        )
 
 
 class NodeHeldError(Exception):
@@ -75,7 +195,7 @@ class LoopWaitShapeError(RuntimeError):
     iteration is indistinguishable at the wait site from a retry (both
     are cursor < len) — the second wait re-reads the iteration's own
     answer; this docstring is that shape's only guard. A plain
-    (non-loop) step never sees this rule: its per-attempt cursor is
+    (non-loop) step never sees this rule: its claim-scoped cursor is
     consumption-ordered, so conditional waits are legal there."""
 
 
@@ -123,12 +243,13 @@ class WaitHost(Protocol):
     job_id: JobId
     node_key: str
     attempt: int
-    #: The claim's epoch: a re-entered wait re-parks its row fenced on it.
+    #: The claim's epoch: a re-entered wait re-parks its row fenced on it,
+    #: and the answer-queue cursor / expiry-face marker is scoped to it.
     claim_epoch: int
-    #: The per-attempt wait-call counter (the wait site's deterministic
-    #: call identity — see ``CtxWaitOps.wait_signal``): the body replays
-    #: the same call order within an attempt, so the Nth ``wait_signal``
-    #: call of attempt N has the same site id on every execution.
+    #: The wait-call counter (the wait site's deterministic call
+    #: identity — see ``CtxWaitOps.wait_signal``): the body replays the
+    #: same call order within one execution, so the Nth ``wait_signal``
+    #: call has the same site id on every execution.
     _wait_call_seq: int
     _pool: asyncpg.Pool
     _wsql: WorkflowSql
@@ -210,7 +331,7 @@ class CtxWaitOps(WaitHost):
         fail-close arm the checker forces. The re-execution never
         automatically mints a new epoch — hold → expire → re-hold → ∞
         is the rejected dragon: the read filters the site's own rows by
-        the call's identity, so every replay of the attempt lands the
+        the call's identity, so every replay of the site lands the
         same deterministic face (the site's own abandoned row, never a
         mint); a deliberate re-wait (the body matched the expiry member
         and waits again) is a new body decision at a new call ordinal —
@@ -269,7 +390,7 @@ class CtxWaitOps(WaitHost):
             refuse_reserved_timer_name(model_name, mint="ctx.wait_signal")
 
         # the call ordinal is this wait site's identity: the body replays
-        # the same call order within an attempt, so the id is stable
+        # the same call order within one execution, so the id is stable
         # across the resume's re-execution. the hold row carries it as
         # its call_id (the mint below) and the site's three reads — the
         # delivered-answer queue, the standing-hold arm, the abandoned
@@ -300,50 +421,60 @@ class CtxWaitOps(WaitHost):
             async with self._pool.acquire() as conn:
                 await mark_awaited(conn, self._wsql.schema, self._ledger_id)
 
-                # two facts, both structural. (1) the answer queue: the
+        # two facts, both structural. (1) the answer queue: the
         # delivered holds are the node's durable answers, consumed in
         # epoch order by each wait call's own sequence (the per-call
-        # cursor, beneath the attempt, over the call-disjoint queue
-        # below): a retry replays the answers (the operator never
-        # re-answers), a wait past the queue's end registers a new hold.
-        # (2) the consumed hold can never answer twice. for a loop-kind
-        # node the cursor is the row's iteration counter (the advance
-        # statement's own write): iteration k's wait consumes the k-th
-        # answer — a hold-resume continues, a failed iteration's retry
-        # replays its own answer. a plain step's cursor is per call: each
-        # of the body's wait calls counts its own consumptions under its
-        # own ordinal key, so one site's consumption can never advance
-        # another site's position past its own answer.
+        # cursor, scoped to the executing claim, over the call-disjoint
+        # queue below): a resume or a retry replays the answers (the
+        # operator never re-answers), a wait past the queue's end
+        # registers a new hold. (2) the consumed hold can never answer
+        # twice. for a loop-kind node the cursor is the row's iteration
+        # counter (the advance statement's own write): iteration k's wait
+        # consumes the k-th answer — a hold-resume continues, a failed
+        # iteration's retry replays its own answer. a plain step's cursor
+        # is per call: each of the body's wait calls counts its own
+        # consumptions under its own ordinal key, so one site's
+        # consumption can never advance another site's position past its
+        # own answer.
         async with self._pool.acquire() as conn:
             row_meta = await conn.fetchrow(
                 render_sql(
-                    "SELECT (metadata ->> $2)::int AS cursor, "
-                    "metadata->>'kind' AS kind, "
+                    "SELECT metadata->>'kind' AS kind, "
                     "(metadata->>'iteration')::int AS iteration "
                     "FROM {schema}.jobs WHERE id = $1",
                     self._wsql.schema,
                 ),
                 self.job_id,
-                # the cursor is keyed to the wait call (its own ordinal,
-                # beneath the attempt), never bare to the attempt nor
-                # shared per signal name: one body's two wait calls must
-                # each count their own consumptions. a shared key lets
-                # one site's consumption advance another site's position
-                # past its own answer.
-                f"hold_cursor_{self.attempt}_{seq}",
             )
             is_loop_kind = row_meta is not None and row_meta["kind"] == "loop"
-            row_cursor = (
-                int(row_meta["cursor"])
-                if row_meta is not None and row_meta["cursor"] is not None
-                else 0
-            )  # pyright: ignore[reportIndexType,reportArgumentType]
             row_iteration = (
                 int(row_meta["iteration"])
                 if row_meta is not None and row_meta["iteration"] is not None
                 else 0
             )  # pyright: ignore[reportIndexType,reportArgumentType]
-            cursor = row_iteration if is_loop_kind else row_cursor
+            # the cursor is keyed to the wait call (its own ordinal,
+            # beneath the attempt), never bare to the attempt nor
+            # shared per signal name: one body's two wait calls must
+            # each count their own consumptions. a shared key lets
+            # one site's consumption advance another site's position
+            # past its own answer. ``seq`` gives every call its own
+            # key and a plain step's body runs once per claim, so the
+            # epoch fence is the whole mechanism here: a re-claim at a
+            # refunded attempt ordinal reads no marker of its own and
+            # replays from the queue's start instead of inheriting a
+            # spent cursor. the ``"n"`` leg is still written for shape
+            # parity with the timer and join markers, which do read
+            # their count inside one claim.
+            cursor = row_iteration
+            if not is_loop_kind:
+                marker = await read_claim_marker(
+                    conn,
+                    schema=self._wsql.schema,
+                    job_id=self.job_id,
+                    key=f"hold_replay_signal_{self.attempt}_{seq}",
+                    claim_epoch=self.claim_epoch,
+                )
+                cursor = int(marker.get("n", 0))
             # every wait-site read carries the map index: a map sibling's
             # answers, holds and timeout face are the sibling's own rows —
             # a node_key-only read would let one sibling's hold or answer
@@ -386,9 +517,9 @@ class CtxWaitOps(WaitHost):
                     "the wait out of the loop"
                 )
             if cursor < len(queue):
-                # this wait takes the queue's next answer (the per-attempt
+                # this wait takes the queue's next answer (the claim's own
                 # cursor advances — the same hold can never answer the same
-                # attempt twice; the loop's counter is the advance statement's
+                # claim twice; the loop's counter is the advance statement's
                 # own write, never this one).
                 answer = queue[cursor]
                 payload = (
@@ -397,15 +528,21 @@ class CtxWaitOps(WaitHost):
                     else answer["payload"]
                 )
                 if not is_loop_kind:
-                    await conn.execute(
-                        render_sql(
-                            "UPDATE {schema}.jobs SET metadata = metadata || $2::jsonb WHERE id = $1",
-                            self._wsql.schema,
-                        ),
-                        self.job_id,
-                        dumps_jsonb_str({f"hold_cursor_{self.attempt}_{seq}": cursor + 1}),
+                    require_claim_epoch(
+                        "ctx.wait_signal",
+                        flow_id=self.flow_id,
+                        node_key=self.node_key,
+                        claim_epoch=self.claim_epoch,
                     )
-                    # the resumed body's answer identity — the epoch of the hold
+                    await write_claim_marker(
+                        conn,
+                        schema=self._wsql.schema,
+                        job_id=self.job_id,
+                        key=f"hold_replay_signal_{self.attempt}_{seq}",
+                        claim_epoch=self.claim_epoch,
+                        marker={"n": cursor + 1},
+                    )
+                # the resumed body's answer identity — the epoch of the hold
                 # this wait consumed (the body asserting on ctx sees which
                 # answer it got).
                 self._runtime["hold_epoch"] = int(answer["hold_epoch"])
@@ -450,7 +587,7 @@ class CtxWaitOps(WaitHost):
             # failure raises the glossary exception itself off the member). no
             # automatic new epoch: a re-execution after abandonment never
             # re-holds. the return is unconditional on the site's own row, so
-            # every replay of the attempt lands the same deterministic face. a
+            # every replay of the site lands the same deterministic face. a
             # deliberate re-wait is a new body decision at a new call ordinal:
             # the next call's own site state is empty, so that registration
             # mints the new hold with the new epoch. (the one-shot

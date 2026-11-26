@@ -127,9 +127,13 @@ The wake — the child's terminal event is the hold's resolver:
 * **the JOIN'S own timeout**: `timeout_s=` arms the hold's deadline (the
   DB clock, the clock-precedence law — the wait's value wins, on the rows).
   The expiry sweep abandons the hold; the resumed site returns `Expired`
-  once per attempt (the face-marker pattern, `child_join_face_{attempt}`
+  once per execution (the face-marker pattern, `child_join_replay_{attempt}`
   — the hold→expire→re-hold→∞ dragon's kill site, the hitl broadcast's amendment
-  verbatim). `timeout_s=None` waits as long as the child lives — safe by
+  verbatim). The replay slot is one per node row and attempt, not per
+  child: an execution that observes two expired children leaves the second
+  child's `hold_epoch` in the slot, so a deliberate re-wait on the first
+  replays `Expired` again instead of minting a new hold. `timeout_s=None`
+  waits as long as the child lives — safe by
   the cascade (Q4): a cancelled parent cancels its children, so no join
   outlives its flow.
 

@@ -1650,11 +1650,11 @@ def _rule_loop_wait_shape(compiled: CompiledWorkflow) -> list[WorkflowValidation
     per iteration"); the conditional-wait shape is now the NAMED
     warning. The unconditional wait is the shape kept — the
     zero-false-positive bound (the plain STEP's conditional wait is
-    fine: the per-attempt cursor replays it honestly)."""
+    fine: the claim-scoped cursor replays it honestly)."""
     diagnostics: list[WorkflowValidationError] = []
     for node in compiled.nodes.values():
         if node.loop_spec is None:
-            continue  # the shape law is the loop's — the per-attempt cursor owns the plain steps
+            continue  # the shape law is the loop's — the claim-scoped cursor owns the plain steps
         for body in _node_bodies(node):
             sites = _wait_signal_sites(body)
             if sites is None:

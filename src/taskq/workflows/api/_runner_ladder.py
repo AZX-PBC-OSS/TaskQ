@@ -114,6 +114,7 @@ def _deterministic_classes() -> tuple[type[BaseException], ...]:
     from taskq.workflows._progress import ProgressRefusedError
     from taskq.workflows._types import MapIndexSchemaError
     from taskq.workflows.api._runner_errors import (
+        ClaimEpochMissingError,
         DuplicateSubstepError,
         VanishedNodeError,
         WorkflowResultDetailUnavailableError,
@@ -132,6 +133,7 @@ def _deterministic_classes() -> tuple[type[BaseException], ...]:
         SpawnDepthExceededError,
         SpawnKeyReservedError,
         ChildFlowLostError,
+        ClaimEpochMissingError,
         VanishedNodeError,
         DuplicateSubstepError,
         WorkflowResultDetailUnavailableError,

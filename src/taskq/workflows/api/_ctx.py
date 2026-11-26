@@ -117,14 +117,16 @@ class StepContext(CtxSpawnOps, CtxWaitOps, CtxTimerOps):
     _pool: asyncpg.Pool
     _wsql: WorkflowSql
     #: This attempt's claim epoch (the emit's cursor-fence's value, the
-    #: hold fence's value, and the spawn slot's reset key — the claim CAS
-    #: granted it). REQUIRED: both claim doors grant at least 1
+    #: hold fence's value, the spawn slot's reset key, and the wait/timer/
+    #: child-join replay markers' scope — the claim CAS granted it).
+    #: REQUIRED: both claim doors grant at least 1
     #: (``_sql_runner.NODE_CLAIM_SQL_TEMPLATE`` and the terminal claim
     #: UPDATE both write ``claim_epoch + 1``), and an unsupplied epoch used
-    #: to default to 0, where the hold fence matches nothing and the spawn
-    #: cursor never resets — two silent failures. The consumers refuse a
+    #: to default to 0, where the hold fence matches nothing, the spawn
+    #: cursor never resets, and a wait marker can never reset — the silent
+    #: failures. The consumers refuse a
     #: non-positive epoch loudly instead (``reassert_hold``,
-    #: ``spawn_flow``'s slot claim).
+    #: ``spawn_flow``'s slot claim, the wait sites' ``require_claim_epoch``).
     #: The direct driver's own claim grants the NEXT epoch atomically with
     #: its attempt; a fleet-claimed row carries its dispatch claim's granted
     #: epoch — the emit's cursor checkpoint fences on the epoch beside the
@@ -174,9 +176,9 @@ class StepContext(CtxSpawnOps, CtxWaitOps, CtxTimerOps):
     #: The scoped substep keys running in this execution (one context per
     #: claim, per loop iteration): the same-name duplicate's guard.
     _substeps_in_flight: set[str] = field(default_factory=lambda: set[str]())
-    #: The per-attempt wait-call counter (the wait site's deterministic call
+    #: The per-execution wait-call counter (the wait site's deterministic call
     #: identity — ``_ctx_wait.wait_signal`` mints ``call:{attempt}:{seq}``
-    #: from it): the body replays the same call order within an attempt, so
+    #: from it): the body replays the same call order within one execution, so
     #: the Nth wait call's id is stable across the resume's re-execution.
     #: The frozen dataclass's counter: ``object.__setattr__`` at the wait
     #: site, the same escape ``_set_actor_body_task`` keeps.
