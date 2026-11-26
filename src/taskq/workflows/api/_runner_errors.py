@@ -6,13 +6,37 @@ refused loudly; never a silent wedge."""
 
 from __future__ import annotations
 
+from typing import Final, Literal, get_args
+
 __all__ = [
+    "RootMissingSeat",
     "VanishedNodeError",
     "WorkflowResultDetailUnavailableError",
     "WorkflowRootMissingError",
     "WorkflowRunCancelledError",
     "WorkflowRunError",
 ]
+
+#: Every seat that raises :class:`WorkflowRootMissingError`. The set is
+#: closed: a caller cannot invent a fourth disposition at runtime, because
+#: the class validates the value against this literal and refuses anything
+#: else rather than silently asserting a transactional rollback it cannot
+#: know happened.
+RootMissingSeat = Literal["failed-parent", "park", "execution-door"]
+
+_ROOT_MISSING_SEATS: Final[frozenset[str]] = frozenset(get_args(RootMissingSeat))
+
+#: The per-seat disposition sentence. ``failed-parent`` and ``park`` raise at
+#: their transaction's entry and roll it back whole; ``execution-door`` runs
+#: after dispatch already claimed the row (``attempt``/``claim_epoch`` spent),
+#: so it must describe the worker's bounded release rather than a rollback.
+_SEAT_DISPOSITION: Final[dict[str, str]] = {
+    "failed-parent": "the transaction rolled back without any write",
+    "park": "the transaction rolled back without any write",
+    "execution-door": (
+        "the row's claim was already spent and no body ran, so the worker's bounded release owns it"
+    ),
+}
 
 
 class WorkflowRunError(RuntimeError):
@@ -130,10 +154,16 @@ class WorkflowRootMissingError(WorkflowRunError):
     """Durable run-root corruption: the flow's own ``__flow__`` root row
     is gone while one of its nodes needs it. Raised at the root-ordered
     seats' ENTRY — the failed-parent propagation's seat (before any
-    cascade, fan-in, decrement, fire, or outbox write) and the capacity
-    park's seat (before any intent adoption or park write) — so the
+    cascade, fan-in, decrement, fire, or outbox write), the capacity
+    park's seat (before any intent adoption or park write), so the
     transaction rolls back whole and the already-committed state stands
-    untouched.
+    untouched — and at the worker EXECUTION DOOR's seat
+    (``seat='execution-door'``), where the claimed row's root-ordered read
+    finds no ``__flow__`` row at all. The execution-door seat is
+    pre-execution rather than transactional: no workflow transaction has
+    run, and the row was already claimed by dispatch (its
+    ``attempt``/``claim_epoch`` are spent), so the message says what the
+    worker's bounded release does.
 
     This is control-plane data corruption, never an author/body-resolution
     error and never a capacity fault: it is not converted into a
@@ -143,12 +173,22 @@ class WorkflowRootMissingError(WorkflowRunError):
     release arm owns it there). The remedy is the runbook's
     restore-or-quarantine recovery, not a worker knob."""
 
-    def __init__(self, flow_id: object, parent_id: object, seat: str = "failed-parent") -> None:
+    def __init__(
+        self,
+        flow_id: object,
+        parent_id: object,
+        seat: RootMissingSeat = "failed-parent",
+    ) -> None:
+        if seat not in _ROOT_MISSING_SEATS:
+            raise ValueError(
+                f"unknown WorkflowRootMissingError seat: {seat!r}; "
+                f"expected one of {sorted(_ROOT_MISSING_SEATS)!r}"
+            )
         self.flow_id = flow_id
         self.parent_id = parent_id
         self.seat = seat
         super().__init__(
             f"run {flow_id}'s __flow__ root row is missing while its node "
             f"{parent_id} reached the {seat} seat (durable run-root corruption; "
-            "the transaction rolled back without any write)"
+            f"{_SEAT_DISPOSITION[seat]})"
         )

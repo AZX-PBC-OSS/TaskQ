@@ -1552,10 +1552,11 @@ async def di_consumer_loop(
                 except _flow_seam.WorkflowRootMissingError:
                     # THE ROOT-MISSING RELEASE (A9.2): durable run-root
                     # corruption — the run's own __flow__ row is gone, so
-                    # the run can never progress; this ROW may still
-                    # dispatch and be bounded-consumed, but re-running it
-                    # cannot help until the root is restored. The defined
-                    # disposition is ONE bounded budget-free release at
+                    # the run can never progress. The claim fences refuse
+                    # later attempts; this arm owns the one claimed row
+                    # whose root vanished before its execution-door read.
+                    # Re-running it cannot help until the root is restored.
+                    # The defined disposition is ONE bounded budget-free release at
                     # the documented delay with its own reason/log —
                     # never the body-unresolvable vocabulary (this is not
                     # a body-resolution failure) and never the generic

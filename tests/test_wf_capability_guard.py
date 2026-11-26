@@ -570,13 +570,15 @@ async def test_populated_old_schema_upgrades_without_touching_existing_rows(
         applied = await apply_pending(conn, schema=schema)
         # The folded train: 42_01 is the one new PRE file after 41_02 (the
         # withdrawn 41_03/41_04 identities never shipped on the binding base),
-        # and 42_02 is the POST widening of the five identity carriers.
+        # 42_02 is the POST widening of the five identity carriers, and 43_01
+        # adds the prune root-hold's partial root index.
         assert [migration.key for migration in applied] == [
             "01.00.38_01:pre",
             "01.00.41_01:pre",
             "01.00.41_02:pre",
             "01.00.42_01:pre",
             "01.00.42_02:post",
+            "01.00.43_01:pre",
         ]
         row = await conn.fetchrow(
             f'SELECT payload, metadata, status, required_worker_schema, run_epoch FROM "{schema}".jobs WHERE id = $1',  # noqa: S608

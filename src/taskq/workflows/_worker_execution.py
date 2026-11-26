@@ -103,15 +103,19 @@ logger = get_logger(__name__)
 #: vanilla JobRow has no fields for them) + the flow root's stamped
 #: workflow name + the run's stamped priority override (the wf-priority
 #: fix — ``create_flow(priority=…)`` wrote it; the door's fork builds
-#: resolve it as the precedence law's first level), one bounded
+#: resolve it as the precedence law's first level) + the root's own id,
+#: the existence leg the door classifies a missing root row on (a NULL
+#: here is absent durable state, never an unstamped name), one bounded
 #: primary-key round trip per claimed flow row (the same cost class the
 #: leader's fire arm pays for the same stamped name).
 _CLAIMED_NODE_READ_SQL_TEMPLATE = """
 SELECT j.step_key, j.map_index,
+       root.id AS root_id,
        root.metadata->>'workflow' AS workflow,
        root.metadata->>'wf_priority' AS wf_priority
 FROM {schema}.jobs j
 LEFT JOIN {schema}.jobs root ON root.id = (j.metadata->>'flow_id')::uuid
+                          AND root.step_key = '__flow__'
 WHERE j.id = $1
 """
 
@@ -1086,7 +1090,11 @@ async def execute_flow_job(
     Raises :class:`WorkflowBodyUnresolvableError` when the stamped name
     or the step key resolves to nothing registered in this process —
     the caller's defined behavior is the actor-not-found parking (the
-    loud, budget-free snooze), never a silent wedge.
+    loud, budget-free snooze), never a silent wedge — and
+    :class:`WorkflowRootMissingError` when the run's ``__flow__`` root
+    row itself is gone (durable run-root corruption: no body can resolve
+    without the root's stamp, and the caller's bounded release arm owns
+    that disposition).
     """
     flow_raw = job.metadata.get("flow_id")
     if flow_raw is None:
@@ -1102,6 +1110,15 @@ async def execute_flow_job(
             "the execution door resolves workflow rows only"
         )
     workflow_name = read["workflow"]
+    if read["root_id"] is None:
+        # The run's ``__flow__`` root row is GONE (retention archived it out
+        # from under a surviving child, or the row was deleted outright). The
+        # ``LEFT JOIN`` above collapses that to a NULL workflow name, which is
+        # a different defect: a root that IS there without the stamp. Naming
+        # the corruption as corruption keeps the consumer loop's bounded,
+        # budget-free root-missing release in play instead of the
+        # body-unresolvable snooze, which cannot ever resolve.
+        raise WorkflowRootMissingError(flow_raw, job.id, seat="execution-door")
     if not workflow_name:
         raise WorkflowBodyUnresolvableError(
             f"the flow root of row {job.id} stamps no workflow name — "

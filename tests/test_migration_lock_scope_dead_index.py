@@ -320,6 +320,12 @@ _PINNED_JOBS_INDEXES: frozenset[str] = frozenset(
         # access path (the estate-waiter index it replaces was never
         # published on the binding base).
         "jobs_wf_emit_park_idx",
+        # 01.00.43_01 (pre): root-only partial covering index
+        # (status, finished_at) INCLUDE (id) WHERE step_key = '__flow__'
+        # serving the retention prune candidate window's held-root CTE
+        # without scanning the live workflow population or crossing
+        # jit_above_cost.
+        "jobs_wf_root_retention_idx",
     }
 )
 _PINNED_JOBS_ARCHIVE_INDEXES: frozenset[str] = frozenset(

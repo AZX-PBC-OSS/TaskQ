@@ -1162,8 +1162,9 @@ keeps winning.
     at a hold that is no longer `held`: the dispatch fence refuses it until
     the leader's hold-stamp reconcile clears the stamp), and
     `workflow_root_missing` (a workflow node whose run has lost its own
-    `__flow__` root row — the row may dispatch and run, but the run cannot
-    progress; control-plane data corruption, the runbook owns the remedy).
+    `__flow__` root row — no claim fence admits it, since the body resolves
+    from the root's stamp, and the run cannot progress; control-plane data
+    corruption, the runbook owns the remedy).
 
 Failover SLA: a graceful stop resigns the row, so a follower's next election
 cycle already finds it free, and the leader gap is `heartbeat_interval` plus

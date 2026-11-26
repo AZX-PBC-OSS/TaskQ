@@ -115,6 +115,7 @@ from taskq.workflows._sql_sweep import (
     NODELESS_ROOT_REAP_SQL,
     OUTBOX_DRAIN_CONSUMERS_SQL,
     OUTBOX_DRAIN_FLIP_SQL,
+    OUTBOX_FETCH_ROOTLESS_SQL,
     OUTBOX_FETCH_UNDELIVERED_SQL,
     OUTBOX_RETENTION_SQL,
     PHANTOM_REAP_SQL,
@@ -191,6 +192,7 @@ class WorkflowSql:
     fire: str
     outbox_insert: str
     outbox_fetch_undelivered: str
+    outbox_fetch_rootless: str
     outbox_drain_consumers: str
     outbox_drain_flip: str
     fork_children: str
@@ -287,6 +289,7 @@ class WorkflowSql:
             fire=render(FIRE_SQL),
             outbox_insert=render(OUTBOX_INSERT_SQL),
             outbox_fetch_undelivered=render(OUTBOX_FETCH_UNDELIVERED_SQL),
+            outbox_fetch_rootless=render(OUTBOX_FETCH_ROOTLESS_SQL),
             outbox_drain_consumers=render(OUTBOX_DRAIN_CONSUMERS_SQL),
             outbox_drain_flip=render(OUTBOX_DRAIN_FLIP_SQL),
             fork_children=render(FORK_CHILDREN_SQL),

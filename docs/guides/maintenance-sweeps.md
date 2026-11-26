@@ -512,9 +512,32 @@ preserved — the guards never touch reclaim-owned rows):
 * **The parent-prune hold** (the archive candidate windows): retention
   must not prune a parent row of a NON-terminal run — the sweep's ledger
   recount (the lock-first re-derive) reads parent rows as truth; a pruned
-  parent mid-run breaks the recount. Terminal/cancelled runs prune on the
-  NORMAL schedule (the guard is liveness-scoped, NOT a retention exemption
-  for the workflow extra — the over-hold shape is its own pin).
+  parent mid-run breaks the recount. The same guard also holds a finished
+  run's own `__flow__` ROOT row while any non-terminal child of that run
+  remains in `jobs` or any undelivered `wf_outbox` intent awaits
+  materialization. The intent leg preserves terminal effects and loop
+  escalations through their legal already-terminal-root handoff. Pruning
+  beneath a materialized child would leave no run to resolve — refused by
+  every claim fence (no body resolves without the root's
+  `metadata.workflow` stamp), and reported by the stranded detector as
+  `workflow_root_missing` corruption the prune itself produced.
+  Terminal/cancelled runs whose children are all terminal and whose
+  delivery intents have drained prune on the NORMAL schedule, exactly as
+  before (the guard is liveness-scoped,
+  NOT a retention exemption for the workflow extra — the over-hold shape
+  is its own pin). A run that keeps non-terminal debris therefore holds
+  its root until an operator terminalises that debris. That debris is
+  **not** reported as its own stranded reason: the detector's
+  `workflow_root_missing` leg requires the root to be ABSENT, and the
+  aggregate `taskq.wf_progress_nodes_total` series carries the row only
+  inside its `state="pending"` count, where it is indistinguishable from
+  healthy pending work. The runbook's rootless-only quarantine recipe
+  selects nothing for it either, because that recipe gates on the root
+  being absent and the hold keeps it present. Identify a held run from the
+  per-run rollup instead: a terminal `__flow__` root whose rollup still
+  shows non-terminal node rows. Adding a stranded reason, a held-roots
+  gauge, or an auto-terminalisation sweep is a separate
+  observability/product decision.
 
 **The operator surface:** the preserve-workflows posture is not a flag —
 the guards are unconditional on any schema the workflow round has applied,

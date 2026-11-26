@@ -2,8 +2,8 @@
 dispatch statement's and the claimable probe's LIMIT bounds, and that cost is
 priced rather than denied.
 
-Issue #748 adds ``AND NOT <alias>.metadata ? 'hold'`` to the dispatch fence
-(``_WF_DISPATCH_FENCE_TEMPLATE``) and ``OR <alias>.metadata ? 'hold'`` to the
+Issue #748 adds ``AND NOT <alias>.metadata ? 'hold'`` to both the dispatch fence
+(``_WF_DISPATCH_FENCE_TEMPLATE``) and the claimable probe fence
 claimable probe's fence (``_WF_PROBE_FENCE_TEMPLATE``). Both statements are
 otherwise built so a round's work is bounded by ``limit_n * oversample``
 candidate rows, never by backlog depth: each inner probe is an ordered index
@@ -207,9 +207,9 @@ async def _widest_for_probe(
 ) -> tuple[float, str]:
     sql = DISPATCH_CLAIMABLE_PROBE_SQL.format(schema=schema)
     if not leg:
-        # The control: the identical statement with the hold-stamp disjunct
+        # The control: the identical statement with the hold-stamp leg
         # removed. Only that one clause differs.
-        sql = sql.replace("OR j.metadata ? 'hold'", "")
+        sql = sql.replace("AND NOT j.metadata ? 'hold'", "")
     rows = await conn.fetch(f"EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) {sql}", [_QUEUE])
     raw = rows[0]["QUERY PLAN"]
     document: Any = json.loads(raw) if isinstance(raw, str) else raw

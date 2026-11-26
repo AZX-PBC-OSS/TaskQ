@@ -107,6 +107,15 @@ NODELESS_ROOT_REAP_GRACE_S: Final[float] = 300.0
 #: ``_PRUNE_RETRY_BACKOFF_INITIAL_SECS`` carries.
 _NULL_STAMP_REWARN_SECS: Final[float] = 3600.0
 
+#: The rootless undelivered-intent warning's re-warn cadence (seconds): a
+#: missing run root is a persistent corruption, so re-warning every drain
+#: pass would flood the log; the leader's hourly cadence is the precedent
+#: (``_NULL_STAMP_REWARN_SECS``).
+_OUTBOX_ROOT_MISSING_REWARN_SECS: Final[float] = 3600.0
+
+#: The cadence state: the monotonic time of the last rootless-intent warn.
+_outbox_root_missing_last_warned: float | None = None
+
 #: The sweep arms' default batch: one call locks, re-derives, and
 #: writes at most this many rows per statement.
 DEFAULT_BATCH_SIZE: Final[int] = 200
@@ -330,6 +339,35 @@ def _outbox_priority(row: asyncpg.Record, binding: ConsumerBinding) -> int:
     return binding.priority if binding.priority is not None else int(row["priority"])
 
 
+def _warn_outbox_root_missing(rows: list[asyncpg.Record], *, fresh: bool = False) -> None:
+    """Report undelivered intents whose run root is gone.
+
+    Such an intent can never materialize its consumer: the drain's insert
+    inner-joins the root and its flip refuses to acknowledge the delivery.
+    One warning names a bounded sample (intent ids plus the missing flow
+    ids) and the caller leaves the rows undelivered. The condition persists
+    until an operator restores the roots, so the observation re-warns on
+    the leader cadence; *fresh* bypasses the cadence for a root that
+    vanished inside the drain's own transaction (a one-off event).
+    """
+    if not rows:
+        return
+    global _outbox_root_missing_last_warned
+    now = monotonic()
+    last = _outbox_root_missing_last_warned
+    if not fresh and last is not None and (now - last) < _OUTBOX_ROOT_MISSING_REWARN_SECS:
+        return
+    _outbox_root_missing_last_warned = now
+    logger.warning(
+        "sweep-wf-outbox-root-missing",
+        kind="sweep_wf_outbox_root_missing",
+        count=len(rows),
+        intents=[
+            {"intent_id": str(row["id"]), "flow_id": str(row["flow_id"])} for row in rows[:10]
+        ],
+    )
+
+
 async def _drain_outbox_once(
     pool: asyncpg.Pool,
     wsql: WorkflowSql,
@@ -352,8 +390,21 @@ async def _drain_outbox_once(
     fix — the fetch's SQL resolves the stamp with the fleet door's own
     arithmetic, degrade-on-malformed, COALESCE to the column default): the
     loop escalation's consumer materializes at the RUN's priority.
+
+    An undelivered intent whose root is gone cannot deliver, so it is
+    reported (``sweep-wf-outbox-root-missing``) and left undelivered rather
+    than acknowledged; the fetch excludes it so it cannot starve healthy
+    intents at the head of the batch. The flip re-checks the root, so a
+    root that vanishes inside this transaction also stays undelivered and is
+    reported. The return value counts the deliveries the flip actually
+    acknowledged.
     """
     async with pool.acquire() as conn, conn.transaction():
+        # The rootless class first: it must be reported even when the
+        # deliverable set is empty (a pass holding only rootless intents is
+        # exactly the loss this observation exists for).
+        rootless = await conn.fetch(wsql.outbox_fetch_rootless, batch_size)
+        _warn_outbox_root_missing(rootless)
         rows = await conn.fetch(wsql.outbox_fetch_undelivered, batch_size)
         if not rows:
             return 0
@@ -474,8 +525,15 @@ async def _drain_outbox_once(
                 for column in range(4)
             ],
         )
-        await conn.execute(wsql.outbox_drain_flip, [r["id"] for r in rows])
-    return len(rows)
+        flipped = await conn.fetch(wsql.outbox_drain_flip, [r["id"] for r in rows])
+        if len(flipped) != len(rows):
+            # A root vanished after the fetch's root join and before the
+            # flip's re-check. The intents stay undelivered; report the
+            # fresh occurrence now rather than acknowledging a delivery the
+            # insert could not make.
+            flipped_ids = {row["id"] for row in flipped}
+            _warn_outbox_root_missing([r for r in rows if r["id"] not in flipped_ids], fresh=True)
+    return len(flipped)
 
 
 async def drain_outbox(

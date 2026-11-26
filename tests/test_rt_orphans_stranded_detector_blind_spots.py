@@ -6,8 +6,10 @@ THIS FILE ATTACKS THE HISTORICAL BASE PREDICATE — the actor-only detector
 src/taskq/worker/_leader_sweeps.py at the pre-correction revision) — not
 today's entire predicate. The shipped detector now also carries the
 run-scoped `workflow_root_missing` leg (a workflow node whose run has lost
-its own `__flow__` root row — a row that MAY dispatch, unlike the
-dispatch-invisible class these probes exercise). Two
+its own `__flow__` root row — a row every claim fence refuses because no
+body can resolve without the root's `workflow` stamp, so it is never
+claimed and the detector is its witness; this is a different class from
+the dispatch-invisible rows these probes exercise). Two
 permanently-undispatchable — dispatch-invisible — strand shapes were
 invisible to the actor-only base:
 

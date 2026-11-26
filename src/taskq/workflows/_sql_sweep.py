@@ -376,11 +376,38 @@ SELECT o.id, o.join_job_id, o.flow_id, o.consumer_step_key, o.map_index, o.bindi
        ) AS priority,
         root.metadata->>'wf_priority' AS run_priority
 FROM {schema}.wf_outbox o
-LEFT JOIN {schema}.jobs root ON root.id = o.flow_id
+-- The deliverable-set boundary: the consumer insert below inner-joins the
+-- run root, so an intent with no root can materialize no consumer. An
+-- inner join here keeps such intents out of the ORDER BY o.id LIMIT $1
+-- head, where they would otherwise occupy every pass and starve healthy
+-- intents behind them. Rootless intents are surfaced separately by
+-- OUTBOX_FETCH_ROOTLESS_SQL and left undelivered; OUTBOX_RETENTION_SQL
+-- deletes delivered rows only, so their evidence survives. The root
+-- identity is part of the join for the same reason the fences require it:
+-- a pointee that is not the run's __flow__ row resolves no body.
+JOIN {schema}.jobs root ON root.id = o.flow_id AND root.step_key = '__flow__'
 WHERE NOT o.delivered
 ORDER BY o.id
 LIMIT $1
 FOR UPDATE OF o SKIP LOCKED
+"""
+
+
+# The drain's rootless-intent observation: an undelivered intent whose run
+# root is absent can never materialize its consumer, and the flip below
+# refuses to acknowledge it. The drain reports this set (a rootless intent is
+# durable delivery loss, never a healthy empty pass) and leaves the rows in
+# place for the operator. Ordered by id so the bounded sample is stable.
+OUTBOX_FETCH_ROOTLESS_SQL = """\
+SELECT o.id, o.flow_id
+FROM {schema}.wf_outbox o
+WHERE NOT o.delivered
+  AND NOT EXISTS (
+      SELECT 1 FROM {schema}.jobs root
+      WHERE root.id = o.flow_id AND root.step_key = '__flow__'
+  )
+ORDER BY o.id
+LIMIT $1
 """
 
 
@@ -424,6 +451,7 @@ FROM unnest(
 )
 JOIN {schema}.jobs AS root
   ON root.id = (delivery.metadata->>'flow_id')::uuid
+ AND root.step_key = '__flow__'
 ON CONFLICT (idempotency_scope, idempotency_key)
     WHERE idempotency_key IS NOT NULL
 DO NOTHING
@@ -432,11 +460,19 @@ RETURNING id
 
 
 OUTBOX_DRAIN_FLIP_SQL = """\
-UPDATE {schema}.wf_outbox
+UPDATE {schema}.wf_outbox o
 SET delivered = true
-WHERE id = ANY($1::uuid[])
-  AND NOT delivered
-RETURNING id
+WHERE o.id = ANY($1::uuid[])
+  AND NOT o.delivered
+  -- Acknowledge only a delivery that happened: the consumer insert's root
+  -- join resolved the run root. A root that vanished inside this
+  -- transaction leaves the intent undelivered and out of RETURNING, so the
+  -- caller reports it instead of consuming durable delivery silently.
+  AND EXISTS (
+      SELECT 1 FROM {schema}.jobs root
+      WHERE root.id = o.flow_id AND root.step_key = '__flow__'
+  )
+RETURNING o.id
 """
 
 

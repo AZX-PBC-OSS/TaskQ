@@ -196,7 +196,7 @@ def test_every_claimable_probe_render_refuses_a_stamped_row(sql: str) -> None:
     row is never counted as routable work. Two seats, both aliased ``j`` —
     an exact inventory, not a self-referential count."""
     fences = sql.count("THE DISPATCH FENCE, P3 leg only")
-    legs = re.findall(r"OR (\w+)\.metadata \? 'hold'", sql)
+    legs = re.findall(r"AND NOT (\w+)\.metadata \? 'hold'", sql)
     by_alias = dict(Counter(legs))
     assert by_alias == _PROBE_FENCE_SEATS, (
         f"the probe render's hold-stamp seats moved: {by_alias} (expected {_PROBE_FENCE_SEATS})"

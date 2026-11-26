@@ -356,13 +356,16 @@ all, the cell says so.*
     finish on the definitions that produced them (Temporal's Pinned
     semantics), new runs get the new digest — and the rows-only shape
     still needs no replay test, because there is no replay. THIS IS A
-    PROPOSAL — do not confuse it with the SHIPPED missing-root reason:
-    `released_reason='workflow-root-missing'` is ACTUAL bounded
-    deployment-corruption handling today (a run whose own `__flow__`
-    root row is gone gets the worker's one bounded budget-free release;
-    the stranded detector's `workflow_root_missing` reason witnesses the
-    run's surviving rows; the runbook owns the
-    restore-or-quarantine remedy).
+    PROPOSAL — do not confuse it with the SHIPPED missing-root handling.
+    A run whose own `__flow__` root row is gone has its surviving rows
+    refused by every claim fence (no body can resolve without the root's
+    `metadata.workflow` stamp), so the worker never claims them; the
+    stranded detector's `workflow_root_missing` reason is their witness,
+    and the runbook owns the restore-or-quarantine remedy. The worker's
+    one bounded budget-free release
+    (`released_reason='workflow-root-missing'`) belongs only to the
+    claimed-row claim→read race: a row a claim already carried can lose
+    its root before the body reads it, and that release collects it.
 
 ## The fill state
 
