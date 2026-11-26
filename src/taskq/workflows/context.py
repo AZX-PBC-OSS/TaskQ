@@ -42,7 +42,7 @@ from taskq.workflows._sql import WorkflowSql
 from taskq.workflows.api._runner_errors import WorkflowRunError
 from taskq.workflows.ledger import (
     LedgerClaim,
-    claim_step_ledger,
+    claim_substep_ledger,
     memoized_substep_result,
 )
 
@@ -93,9 +93,14 @@ class WorkflowSteps:
         **kwargs: Any,
     ) -> Any:
         """Run *fn* once per *name*, the owning unit's scoped ledger key; a
-        ``succeeded`` record replays (a re-call after a ``failed`` one in the
-        same attempt re-runs *fn*). ``idempotent=False`` opts out (the body
-        re-runs on redelivery — its redelivery is declared harmless)."""
+        ``succeeded`` record replays. Re-calling a name whose previous call
+        in the same attempt failed re-runs *fn* and records ITS outcome: the
+        claim re-opens the failed row, so a later call, retry or resume
+        replays a new ``succeeded`` result. If the re-call fails, its newest
+        error replaces the old one and the next invocation runs *fn* again.
+        ``idempotent=False`` opts out
+        (the body re-runs on redelivery — its redelivery is declared
+        harmless)."""
         if not idempotent:
             return await fn(*args, **kwargs)
 
@@ -123,7 +128,7 @@ class WorkflowSteps:
                     )
                 return memo.result
 
-            claim = await claim_step_ledger(
+            claim = await claim_substep_ledger(
                 conn,
                 self._wsql,
                 flow_id=self._flow_id,

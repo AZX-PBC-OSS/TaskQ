@@ -422,19 +422,23 @@ legs, all shipped, any two insufficient:
 
 The step ledger's claim is ONE round trip
 (`INSERT … ON CONFLICT (flow_id, step_key, COALESCE(map_index, -1),
-attempt) DO UPDATE … RETURNING`) — the ledger row IS the claim, the
-arbiter physically blocks double-recording, and map children of one step
-key are DIFFERENT claims. `ctx.substep("name", fn)` is the user-facing
-shape: default idempotent ON, `idempotent=False` opts a step out.
+attempt, claim_epoch) DO UPDATE … RETURNING`) — the ledger row IS the
+claim, the arbiter physically blocks double-recording, and map children of
+one step key are DIFFERENT claims. `ctx.substep("name", fn)` is the
+user-facing shape: default idempotent ON, `idempotent=False` opts a step
+out.
 
 **A substep record belongs to the node execution that made it.** The
 owner is the calling node's job row and, inside a loop body, the loop
 iteration. The same name in two nodes, two map children, two maps or two
 iterations is a different record, so each runs its own `fn`. Within one
 execution, calling the same name again replays a `succeeded` record. A
-re-call after a failed one in the same attempt runs `fn` again, and that
-run is not recorded. A call made while one with the same name is still
-running (for example, both inside one `asyncio.gather`) raises
+re-call after a failed one in the same attempt runs `fn` again and
+records THAT run's outcome: the substep claim re-opens the failed row, so
+a third call, a retry or a hold resume replays a new `succeeded` result.
+If the re-call fails, its newest error replaces the old one and the next
+invocation runs `fn` again. A call made while one with the same name is
+still running (for example, both inside one `asyncio.gather`) raises
 `DuplicateSubstepError` before it claims anything, and the running call
 is left alone. Uncaught, the error fails the node on its first attempt;
 in a loop body the loop exhausts as a body failure whose message names

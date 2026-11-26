@@ -40,6 +40,48 @@ RETURNING id, flow_id, job_id, step_key, map_index, attempt, status,
 """
 
 
+# The ``ctx.substep`` claim: LEDGER_CLAIM_SQL's substep-scoped
+# sibling — the same one round trip, the same arbiter, the same RETURNING
+# columns, one difference the substep contract needs. A substep name is
+# RE-CALLABLE inside one (attempt, claim_epoch): the body catches *fn*'s
+# exception and calls the same name again. LEDGER_CLAIM_SQL's conflict arm
+# only re-stamps updated_at, so that re-call would be handed back the
+# 'failed' row the first call wrote, run *fn* anyway, and then find
+# LEDGER_TERMINAL_BY_ID_SQL's status guard closed — the second call's
+# outcome unrecorded, so every later call, retry and hold resume
+# re-executes *fn*. Here a conflicting 'failed' row is re-opened to
+# 'running' with its stale outcome cleared: the row is
+# truthful while *fn* runs (visible to wf_step_ledger_running_idx and
+# PHANTOM_REAP_SQL, which fences the live row provisionally) and the
+# terminal write that follows lands on it.
+#
+# Only 'failed' re-opens. A 'succeeded' row keeps its status and result for
+# the memo replay, and a 'fenced' row stays fenced. The re-stamp is
+# UNCONDITIONAL — the same law
+# LEDGER_CLAIM_SQL and LEDGER_FENCE_BY_ID_SQL's re-mint guard are built on:
+# a conflicting claim never inherits a live claimant's instant, so a stale
+# claimant's terminal write is refused rather than landed.
+LEDGER_SUBSTEP_CLAIM_SQL = """\
+INSERT INTO {schema}.wf_step_ledger
+    (id, flow_id, job_id, step_key, map_index, attempt, claim_epoch, status)
+VALUES ($1, $2, $3, $4, $5::bigint, $6, $7, 'running')
+ON CONFLICT (flow_id, step_key, COALESCE(map_index, -1), attempt, claim_epoch) DO UPDATE
+    SET status = CASE WHEN wf_step_ledger.status = 'failed'
+                      THEN 'running' ELSE wf_step_ledger.status END,
+        result = CASE WHEN wf_step_ledger.status = 'failed'
+                      THEN NULL ELSE wf_step_ledger.result END,
+        error_class = CASE WHEN wf_step_ledger.status = 'failed'
+                           THEN NULL ELSE wf_step_ledger.error_class END,
+        error_message = CASE WHEN wf_step_ledger.status = 'failed'
+                             THEN NULL ELSE wf_step_ledger.error_message END,
+        capture = CASE WHEN wf_step_ledger.status = 'failed'
+                       THEN NULL ELSE wf_step_ledger.capture END,
+        updated_at = clock_timestamp()
+RETURNING id, flow_id, job_id, step_key, map_index, attempt, status,
+          result, error_class, error_message, updated_at
+"""
+
+
 # The memoized-result read (the loop driver's iteration memo; ctx.substep
 # reads LEDGER_SUBSTEP_MEMOIZED_SQL below): the latest
 # TERMINAL ledger row for (flow, step[, map_index]) — the ON CONFLICT path

@@ -70,6 +70,7 @@ __all__ = [
     "RunClaim",
     "RunClaimKind",
     "claim_step_ledger",
+    "claim_substep_ledger",
     "insert_flow_run",
     "memoized_step_result",
     "memoized_substep_result",
@@ -216,6 +217,47 @@ class RunClaim:
         return "existing-running"
 
 
+async def _claim_ledger_row(
+    conn: ConnLike,
+    sql: str,
+    *,
+    flow_id: JobId,
+    job_id: JobId,
+    step_key: str,
+    map_index: int | None,
+    attempt: int,
+    claim_epoch: int,
+) -> LedgerClaim:
+    """One claim statement's round trip and decode: every claim statement
+    shares the parameter list and the RETURNING shape, so the row becomes a
+    :class:`LedgerClaim` in ONE place."""
+    row_id = new_uuid()
+    rec = await conn.fetchrow(
+        sql,
+        row_id,
+        flow_id,
+        job_id,
+        step_key,
+        map_index,
+        attempt,
+        claim_epoch,
+    )
+    assert rec is not None  # ON CONFLICT DO UPDATE always returns the row
+    return LedgerClaim(
+        ledger_id=JobId(rec["id"]),
+        flow_id=JobId(rec["flow_id"]),
+        job_id=JobId(rec["job_id"]),
+        step_key=rec["step_key"],
+        map_index=rec["map_index"],
+        attempt=rec["attempt"],
+        status=rec["status"],
+        result=_decode_jsonb(rec["result"]),
+        error_class=rec["error_class"],
+        error_message=rec["error_message"],
+        claimed_at=rec["updated_at"],
+    )
+
+
 async def claim_step_ledger(
     conn: ConnLike,
     wsql: WorkflowSql,
@@ -242,30 +284,51 @@ async def claim_step_ledger(
     overwriting the parked attempt's 'awaited' record. The dispatch
     claim's granted epoch binds here; a synthetic caller with no
     dispatch claim behind it stamps 0."""
-    row_id = new_uuid()
-    rec = await conn.fetchrow(
+    return await _claim_ledger_row(
+        conn,
         wsql.ledger_claim,
-        row_id,
-        flow_id,
-        job_id,
-        step_key,
-        map_index,
-        attempt,
-        claim_epoch,
+        flow_id=flow_id,
+        job_id=job_id,
+        step_key=step_key,
+        map_index=map_index,
+        attempt=attempt,
+        claim_epoch=claim_epoch,
     )
-    assert rec is not None  # ON CONFLICT DO UPDATE always returns the row
-    return LedgerClaim(
-        ledger_id=JobId(rec["id"]),
-        flow_id=JobId(rec["flow_id"]),
-        job_id=JobId(rec["job_id"]),
-        step_key=rec["step_key"],
-        map_index=rec["map_index"],
-        attempt=rec["attempt"],
-        status=rec["status"],
-        result=_decode_jsonb(rec["result"]),
-        error_class=rec["error_class"],
-        error_message=rec["error_message"],
-        claimed_at=rec["updated_at"],
+
+
+async def claim_substep_ledger(
+    conn: ConnLike,
+    wsql: WorkflowSql,
+    *,
+    flow_id: JobId,
+    job_id: JobId,
+    step_key: str,
+    map_index: int | None,
+    attempt: int,
+    claim_epoch: int,
+) -> LedgerClaim:
+    """The ``ctx.substep`` claim: :func:`claim_step_ledger`'s substep-scoped
+    sibling, differing only in the conflict arm. A ``ctx.substep`` name is
+    re-callable inside one ``(attempt, claim_epoch)`` — the body catches
+    *fn*'s exception and calls the same name again — so a conflict with the
+    caller's OWN earlier ``failed`` row re-opens it to ``running`` and clears
+    that run's outcome, letting the re-call's terminal write land. A conflict
+    with any other status keeps it (a ``succeeded`` row's outcome stays
+    available to the memo replay; a ``running`` or ``fenced`` row is only
+    re-stamped), so the re-mint guard
+    that refuses a stale claimant's terminal write is unchanged.
+
+    Node and loop claims stay on :func:`claim_step_ledger`: neither re-runs a
+    failed unit under the same ``(attempt, claim_epoch)``."""
+    return await _claim_ledger_row(
+        conn,
+        wsql.ledger_substep_claim,
+        flow_id=flow_id,
+        job_id=job_id,
+        step_key=step_key,
+        map_index=map_index,
+        attempt=attempt,
+        claim_epoch=claim_epoch,
     )
 
 

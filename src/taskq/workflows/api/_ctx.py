@@ -368,10 +368,13 @@ class StepContext(CtxSpawnOps, CtxWaitOps, CtxTimerOps):
 
         The same name in two nodes, two map children, two maps or two
         loop iterations is a different record. The same name twice in
-        one execution replays a ``succeeded`` record; a re-call after a
-        failed one in the same attempt re-runs *fn*, and that run is not
-        recorded. A call made while one with the same name is still
-        running raises :class:`DuplicateSubstepError` before any SQL (the
+        one execution replays a ``succeeded`` record. A re-call after a
+        failed one in the same attempt runs *fn* again and records THAT
+        run's outcome — the claim re-opens the failed row — so a later
+        call, a retry or a hold resume replays a new ``succeeded`` result.
+        If the re-call fails, its newest error replaces the old one and the
+        next invocation runs *fn* again. A call made while one with the same
+        name is still running raises :class:`DuplicateSubstepError` before any SQL (the
         guard does not cancel the running call). Uncaught,
         it fails the node on its first attempt; in a loop body the loop
         exhausts as a body failure whose message names the class.

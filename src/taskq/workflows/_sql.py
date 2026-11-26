@@ -85,6 +85,7 @@ from taskq.workflows._sql_ledger import (
     LEDGER_CLAIM_SQL,
     LEDGER_FENCE_BY_ID_SQL,
     LEDGER_MEMOIZED_SQL,
+    LEDGER_SUBSTEP_CLAIM_SQL,
     LEDGER_SUBSTEP_MEMOIZED_SQL,
     LEDGER_TERMINAL_BY_ID_SQL,
 )
@@ -233,6 +234,7 @@ class WorkflowSql:
     signals_retention: str
     node_progress_retention: str
     ledger_claim: str
+    ledger_substep_claim: str
     ledger_memoized: str
     ledger_substep_memoized: str
     ledger_terminal_by_id: str
@@ -331,6 +333,7 @@ class WorkflowSql:
             signals_retention=render(SIGNALS_RETENTION_SQL),
             node_progress_retention=render(NODE_PROGRESS_RETENTION_SQL),
             ledger_claim=render(LEDGER_CLAIM_SQL),
+            ledger_substep_claim=render(LEDGER_SUBSTEP_CLAIM_SQL),
             ledger_memoized=render(LEDGER_MEMOIZED_SQL),
             ledger_substep_memoized=render(LEDGER_SUBSTEP_MEMOIZED_SQL),
             ledger_terminal_by_id=render(LEDGER_TERMINAL_BY_ID_SQL),
