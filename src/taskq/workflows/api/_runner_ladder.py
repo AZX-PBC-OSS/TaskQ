@@ -123,6 +123,7 @@ def _deterministic_classes() -> tuple[type[BaseException], ...]:
     from taskq.workflows.api._runner_errors import (
         ClaimEpochMissingError,
         DuplicateSubstepError,
+        SkippedFanOutSourceError,
         VanishedNodeError,
         WorkflowResultDetailUnavailableError,
         _RouteForkMissingError,  # pyright: ignore[reportPrivateUsage]  # Why: the fail-closed guard's own refusal is deterministic by construction; its home is the runner's error module.
@@ -151,6 +152,7 @@ def _deterministic_classes() -> tuple[type[BaseException], ...]:
         ClaimEpochMissingError,
         VanishedNodeError,
         DuplicateSubstepError,
+        SkippedFanOutSourceError,
         WorkflowResultDetailUnavailableError,
     )
 

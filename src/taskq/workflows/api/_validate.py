@@ -92,6 +92,11 @@ compile's version of over-rejection).
   SILENTLY uncached step (the operator learns it from a missing hit).
   Refused at the wiring verb on the same ``own_source`` read the
   stamper shares; re-proved here.
+* E22 skip-fan-out-source — ``skip=`` on a fan-out source (a node
+  carrying ``map_item`` or ``map_arms``) is the run that wedges forever
+  the first time the predicate returns true: the skip path never spawns
+  the fork, so the derived ``<source>.join`` never exists. Refused at
+  the map/route attachment; re-proved here.
 * W1 the-eternal-wait — a node whose gate declares no timeout: a workflow
   that waits forever on a human is a support ticket (the explicitness
   warning, the hold's ``timeout=None`` rule).
@@ -179,6 +184,7 @@ def _run_rules(compiled: CompiledWorkflow) -> list[WorkflowValidationError]:
     diagnostics += _rule_cache_ctx_input(compiled)
     diagnostics += _rule_cache_exit_body(compiled)
     diagnostics += _rule_cache_unverifiable_source(compiled)
+    diagnostics += _rule_skip_fan_out_source(compiled)
     diagnostics += _rule_gate_door(compiled)
     diagnostics += _rule_gate_wiring(compiled)
     diagnostics += _rule_fan_in_bound(compiled)
@@ -1131,6 +1137,51 @@ def _rule_cache_unverifiable_source(compiled: CompiledWorkflow) -> list[Workflow
                 "every run re-executes the body while the cache machinery "
                 "looks armed. Define the body as a module-level def its "
                 "source can be read from, or drop cache=True",
+            )
+        )
+    return diagnostics
+
+
+def _rule_skip_fan_out_source(compiled: CompiledWorkflow) -> list[WorkflowValidationError]:
+    """E22 (the SKIPPED-FAN-OUT WEDGE'S REFUSAL): a ``skip=`` predicate
+    on a fan-out SOURCE (a node carrying ``map_item``/``map_arms`` OR the
+    parent of a derived ``map_join`` node — the graph-aware question
+    :meth:`CompiledWorkflow.is_fan_out_source` asks) is the run that
+    wedges FOREVER the first time the predicate returns ``True``. The skip
+    path finalizes the source ``succeeded`` with ``{"skipped": true}`` and
+    never spawns the derived ``<source>.join`` the fork owns, so the
+    reserved downstream consumer waits on a join that cannot come and the
+    root stays ``running`` with no error row; a TERMINAL map
+    (``build(mapped)``) instead reads ``succeeded`` over a ``result()`` of
+    ``None``. The wiring verbs refuse the combination at the attachment
+    (``map_source`` and the route's ``_attach_route``); this rule re-proves
+    the fence from the compiled graph itself (public, mutable data — E3's
+    precedent), and the runner's fail-closed guard covers a graph mutated
+    after construction. Asking the graph-aware question matters: clearing
+    ``map_item``/``map_arms`` while leaving the derived join decl in
+    ``nodes`` must not blind this rule. The alternative the message names:
+    return ``[]`` from the source body (the born-zero join fires
+    immediately with the honest empty list)."""
+    diagnostics: list[WorkflowValidationError] = []
+    for node in compiled.nodes.values():
+        if node.skip is None or not compiled.is_fan_out_source(node.key):
+            continue
+        diagnostics.append(
+            WorkflowValidationError(
+                "E22-skip-fan-out-source",
+                "error",
+                f"node {node.key!r} declares skip= and is a fan-out source "
+                "(map_source / route) — the combination wedges the run "
+                "FOREVER the first time the predicate returns true: the "
+                "dispatch-time skip finalizes the source succeeded WITHOUT "
+                "spawning the fork, the derived '<source>.join' row never "
+                "exists, the downstream consumer reserved on it waits "
+                "forever (the root stands 'running' with no error row "
+                "anywhere), and a terminal map reads succeeded over a "
+                "result of None. Return [] from the source body when there "
+                "is nothing to fan out (the empty join fires immediately "
+                "with the honest []), or move skip= onto a step that does "
+                "not fork",
             )
         )
     return diagnostics

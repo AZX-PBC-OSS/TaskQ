@@ -126,6 +126,7 @@ from taskq.workflows.api._runner_codec import (
 )
 from taskq.workflows.api._runner_defer import DeferOps
 from taskq.workflows.api._runner_errors import (
+    SkippedFanOutSourceError,
     VanishedNodeError,
     WorkflowRunCancelledError,
     WorkflowRunError,
@@ -1420,6 +1421,18 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
             # (``laddered`` / ``deferred`` / ``cancelled`` / ``fenced``) keeps
             # its census meaning.
             try:
+                if self.compiled.is_fan_out_source(row["step_key"]):
+                    # The fail-closed defense: a fan-out source owns the
+                    # fork (and the derived join the fork writes), so the
+                    # skip path would finalize it succeeded without ever
+                    # spawning that join — the wiring and the validator both
+                    # refuse the combination, so a graph reaching this seat
+                    # was mutated after construction. The graph-aware
+                    # question is load-bearing: clearing the attachment
+                    # fields while the derived join decl remains still
+                    # declares a fork this node owns. Fail the node on
+                    # attempt 1 rather than wedge the run.
+                    raise SkippedFanOutSourceError(row["step_key"])
                 should_skip = node.skip(await self._flow_state(flow_id))
             except Exception as exc:  # Why: the gate is outside the body-failure boundary — every raise must be routed, or the claimed node is stranded.
                 route = await self._ladder_or_fail(

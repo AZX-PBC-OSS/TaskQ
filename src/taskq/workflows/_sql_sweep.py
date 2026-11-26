@@ -167,6 +167,32 @@ blocked_required AS (
 -- the flow's death fenced was the join's last resort. The reconciled and
 -- firable arms exclude the stamped rows (a stamped row is resolved: the
 -- dead-run rescan ends here).
+--
+-- THE TWO SEATS, named once so the next editor of either knows the other
+-- exists:
+--
+-- * THIS ARM serves a flow that was ALREADY terminal when the statement
+--   ran. Its predicate is exactly the partial index's own
+--   (jobs_wf_join_fire_probe_idx: status='pending' AND metadata @>
+--   '{{"blocking_reason": "join"}}'), so it is 100% index-served and its
+--   cost is flat in the join-wait population. Adding an OR of a second
+--   reason here breaks that implication (A OR B does not imply A) and
+--   turns the fleet's heal arm into a walk over the pending population:
+--   measured 0.063 ms -> 13.17 ms per arm at 100k pending rows, and the
+--   whole statement 12 ms -> 2.4 s. Never widen this predicate.
+-- * WORKFLOW_ROOT_MAINTAIN_SQL's ``fenced_waiters`` serves the roots THIS
+--   PASS terminalizes, covering both ``join`` rows and rows an earlier
+--   pass stamped ``orphan_parent`` (root maintenance runs after this
+--   statement, so the same-transaction terminal write would otherwise
+--   leave that live-flow diagnosis on a dead run). It carries
+--   ``FOR UPDATE OF jj SKIP LOCKED`` for the same reason every sweep seat
+--   does: a contended row is skipped and healed next pass, never queued
+--   behind.
+--
+-- The candidate selection here also takes ``FOR UPDATE OF jj SKIP LOCKED``
+-- (the lock-order exemption's rule): a fence skipped under contention is
+-- healed by the next pass, and the sweep never waits on a row another
+-- transaction holds.
 flow_fenced AS (
     UPDATE {schema}.jobs j
     SET metadata = j.metadata
@@ -207,6 +233,8 @@ flow_fenced AS (
           -- blocked_required exclusion is the load-bearing one.
           AND NOT EXISTS (SELECT 1 FROM blocked b WHERE b.id = jj.id)
           AND NOT EXISTS (SELECT 1 FROM blocked_required br WHERE br.id = jj.id)
+        ORDER BY jj.id
+        FOR UPDATE OF jj SKIP LOCKED
     ) cand
     WHERE j.id = cand.id
     RETURNING j.id

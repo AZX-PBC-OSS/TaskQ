@@ -164,12 +164,12 @@ def test_docs3_the_single_value_route_disposition_is_named() -> None:
 
 # ── the docs-numbers count-vs-list law (the green guard) ───────
 
-#: The count claim's shape: "five `wf_*` tables" — a number word (or digit)
-#: immediately scoping the workflow-table family.
-_TABLE_COUNT_CLAIM = re.compile(
-    r"\b(\d+|one|two|three|four|five|six|seven|eight|nine|ten)\s+`wf_\*` tables", re.IGNORECASE
-)
-
+#: Every number word a docs count claim may spell — ONE map for both count
+#: laws in this module (the ``wf_*`` table count and the validator's rule
+#: count), and :data:`_TABLE_COUNT_CLAIM`'s alternation is derived from it,
+#: so extending the map extends both laws. Compounds are summed by
+#: :func:`_spelled_count` (``"twenty-eight"`` → 20 + 8), which is how the
+#: rule count is spelled.
 _NUMBER_WORDS = {
     "one": 1,
     "two": 2,
@@ -181,7 +181,45 @@ _NUMBER_WORDS = {
     "eight": 8,
     "nine": 9,
     "ten": 10,
+    "eleven": 11,
+    "twelve": 12,
+    "thirteen": 13,
+    "fourteen": 14,
+    "fifteen": 15,
+    "sixteen": 16,
+    "seventeen": 17,
+    "eighteen": 18,
+    "nineteen": 19,
+    "twenty": 20,
+    "thirty": 30,
 }
+
+
+def _spelled_count(word: str) -> int | None:
+    """``"TWENTY-EIGHT"`` → 28, ``"twenty"`` → 20, ``"seven"`` → 7."""
+    parts = [part for part in re.split(r"[-\s]+", word.strip().lower()) if part]
+    values = [_NUMBER_WORDS.get(part) for part in parts]
+    if not parts or any(value is None for value in values):
+        return None
+    return sum(value for value in values if value is not None) or None
+
+
+#: The number-word alternation every count claim accepts (longest first, so
+#: a compound's first component is matched whole). Digits ride beside it.
+_NUMBER_WORD_PATTERN = "|".join(sorted(_NUMBER_WORDS, key=len, reverse=True))
+
+#: The count claim's shape: "five `wf_*` tables" — a number word (or digit,
+#: including a compound such as "twenty-eight") immediately scoping the
+#: workflow-table family. The number vocabulary is :data:`_NUMBER_WORDS`'s,
+#: the SAME map :func:`_spelled_count` reads — one map, both count laws.
+_TABLE_COUNT_CLAIM = re.compile(
+    r"\b(\d+|(?:"
+    + _NUMBER_WORD_PATTERN
+    + r")(?:[-\s](?:"
+    + _NUMBER_WORD_PATTERN
+    + r"))*)\s+`wf_\*` tables",
+    re.IGNORECASE,
+)
 
 
 def test_docs4_a_wf_table_count_claim_matches_its_list() -> None:
@@ -204,7 +242,8 @@ def test_docs4_a_wf_table_count_claim_matches_its_list() -> None:
         text = doc.read_text()
         for match in _TABLE_COUNT_CLAIM.finditer(text):
             claim_word = match.group(1).lower()
-            claimed = int(claim_word) if claim_word.isdigit() else _NUMBER_WORDS[claim_word]
+            claimed = int(claim_word) if claim_word.isdigit() else _spelled_count(claim_word)
+            assert claimed is not None, f"unreadable table count {claim_word!r} in {doc}"
             # The claim's own block: from the match to the next heading.
             block = text[match.start() :]
             next_heading = re.search(r"\n#{1,3} ", block)
@@ -217,6 +256,21 @@ def test_docs4_a_wf_table_count_claim_matches_its_list() -> None:
                     f"but lists {len(listed)} ({sorted(listed)})"
                 )
     assert not offenders, "A table-count claim disagrees with its list:\n" + "\n".join(offenders)
+
+
+def test_docs4_the_table_count_law_reads_the_shared_number_vocabulary() -> None:
+    """The "ONE map for both count laws" claim, pinned: the table-count
+    claim's vocabulary IS :data:`_NUMBER_WORDS` (no second hard-coded list
+    that stops at ``ten``), so a count spelled ``eleven`` or above is a
+    match — and therefore checked — rather than silently invisible to the
+    anti-rot guard. The witness is the exact sentence the pre-fix regex
+    missed."""
+    match = _TABLE_COUNT_CLAIM.search("The eleven `wf_*` tables:")
+    assert match is not None, "a table count spelled above ten is invisible to the law"
+    assert _spelled_count(match.group(1)) == 11, match.group(1)
+    compound = _TABLE_COUNT_CLAIM.search("The twenty-eight `wf_*` tables:")
+    assert compound is not None, "a compound table count is invisible to the law"
+    assert _spelled_count(compound.group(1)) == 28, compound.group(1)
 
 
 def test_docs5_the_upgrading_guide_pins_the_folded_backpressure_train() -> None:
@@ -580,3 +634,85 @@ def test_docs9_the_upgrading_guide_names_the_replay_marker_key_families() -> Non
     assert "jsonb_object_keys" in body
     assert "starts_with(k, 'hold_cursor_')" in body
     assert "starts_with(k, 'child_join_face_')" in body
+
+
+# ── the skip-on-a-fan-out-source refusal's published currency ───
+
+
+def test_docs10_the_validator_rule_table_matches_the_shipped_rules() -> None:
+    """The api-reference's validator table and the code's own rule set are
+    ONE set — the table cannot omit a rule the validator ships, and cannot
+    keep one it dropped. The prose's spelled rule count must equal the
+    table's row count, so adding a rule without its row (or its count) reds
+    here instead of shipping a reference that describes a different
+    validator. The witness keeps the read honest: the table is non-empty
+    and already carries the two anchor rules."""
+    validate_src = (_REPO / "src" / "taskq" / "workflows" / "api" / "_validate.py").read_text(
+        encoding="utf-8"
+    )
+    shipped = set(re.findall(r'"((?:E|W)\d+-[a-z][a-z-]+)"', validate_src))
+    section = re.search(r"## `wf\.validate\(\)`.*?(?=\n## )", _API_REF.read_text(), re.DOTALL)
+    assert section is not None, "the `wf.validate()` section is missing from the api-reference"
+    rows = re.findall(r"^\| `((?:E|W)\d+-[a-z][a-z-]+)`", section.group(0), re.MULTILINE)
+    assert {"E1-acyclicity", "E15-route-totality"} <= set(rows), (
+        f"the validator table rotted (rows found: {sorted(rows)})"
+    )
+    assert set(rows) == shipped, (
+        "the api-reference's validator table and `_validate.py`'s shipped rules "
+        f"disagree — only in code: {sorted(shipped - set(rows))}; only in docs: "
+        f"{sorted(set(rows) - shipped)}"
+    )
+    claim = re.search(r"The ([A-Za-z-]+) rules\s+shipped", " ".join(section.group(0).split()))
+    assert claim is not None, "the validator section no longer states its shipped rule count"
+    claimed = _spelled_count(claim.group(1))
+    assert claimed is not None, f"unreadable rule count {claim.group(1)!r}"
+    assert claimed == len(rows), (
+        f"the validator prose claims {claimed} rules but the table lists {len(rows)}"
+    )
+
+
+def test_docs11_the_guide_states_the_skip_refusal_on_a_fan_out_source() -> None:
+    """A ``skip=`` predicate on a ``map_source`` / ``route`` source is
+    refused — the guide's dispatch-time-predicates section must say so,
+    name the wedge, and direct the author to the working mechanism (return
+    ``[]`` from the source body), or the reader wires an authoring error
+    the docs never warned about."""
+    text = _GUIDE.read_text(encoding="utf-8")
+    section = re.search(
+        r"The dispatch-time predicates:.*?(?=\n\*\*DEPRECATED FOR DISPATCH)", text, re.DOTALL
+    )
+    assert section is not None, (
+        "the dispatch-time predicates passage moved — the witness fails loud"
+    )
+    body = " ".join(section.group(0).split())
+    assert "map_source" in body and "route" in body, (
+        f"the refusal is not stated over both fan-out attachments: {body[:400]!r}"
+    )
+    assert "E22-skip-fan-out-source" in body, (
+        "the passage does not name the validator rule an author meets"
+    )
+    assert "`[]`" in body and "source body" in body, (
+        f"the passage does not state the working alternative (return [] from the "
+        f"source body): {body[:400]!r}"
+    )
+
+
+def test_docs12_the_upgrading_guide_publishes_the_skip_refusal_breaking_change() -> None:
+    """The refusal breaks previously-accepted declarations (they compiled
+    and ran while the predicate stayed false), so it belongs under
+    ``## Breaking API changes`` with the migration, not only in the API
+    reference."""
+    text = (_REPO / "docs" / "guides" / "upgrading.md").read_text(encoding="utf-8")
+    section = re.search(r"## Breaking API changes\n(.*?)(?=\n## )", text, re.DOTALL)
+    assert section is not None, "the `## Breaking API changes` section is missing"
+    body = " ".join(section.group(1).split())
+    assert "E22-skip-fan-out-source" in body, (
+        "the breaking-change section never names the refusal rule"
+    )
+    assert "skip=" in body and "map_source" in body and "route" in body, (
+        "the breaking-change note does not name the refused declarations"
+    )
+    assert (
+        "Return `[]` from the source body" in body
+        or "return `[]` from the source body" in body.lower()
+    ), "the breaking-change note does not state the migration"

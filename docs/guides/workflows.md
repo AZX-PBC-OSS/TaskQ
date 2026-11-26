@@ -1545,12 +1545,23 @@ Mermaid golden's law). Sequencing, hence a depth-N DAG, is dataflow —
 the migration's depth-3 graph fits ONE flow.
 
 The dispatch-time predicates: `step(..., skip=pred)` —
-`pred: bool | Callable[[state], bool]` — is evaluated WHEN THE NODE
+`pred: Callable[[state], bool]` — is evaluated WHEN THE NODE
 DISPATCHES against the flow's state (`{"input": …, "results": {…}}`), a
 sibling's COMPLETED result decides it. A skipped child SUCCEEDS WITH
 THE RECORD (the result names the skip — the envelope never lies about
 what ran) and fans into its absorbing joins (collect) as a
 typed item — a skip is not an attempt (zero ledger rows).
+
+**A `skip=` PREDICATE IS REFUSED ON A FAN-OUT SOURCE.** Wiring the
+`step(..., skip=…)` as the source of `map_source(...)` or `route(...)`
+is refused at the attachment (`WorkflowBuildError`) and re-proved by the
+validator (`E22-skip-fan-out-source`): the skip path finalizes the
+source with the skip record and never spawns the fork, so the derived
+`<source>.join` row would never exist — the downstream consumer would
+wait on it forever (the run standing `running` with no error row
+anywhere) and a terminal map would read `succeeded` over a `result()` of
+`None`. When there is nothing to fan out, return `[]` from the source
+body: the empty join fires immediately with the honest `[]`.
 
 **DEPRECATED FOR DISPATCH — teach the typed route.** The predicate's
 face is STRINGLY: the state it reads is decoded JSON dicts, and a

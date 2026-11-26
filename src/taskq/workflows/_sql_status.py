@@ -326,6 +326,72 @@ maintained AS (
           CASE WHEN pf.has_failed THEN 1 ELSE 0 END AS failed_root,
           pf.failure_cause_id
 ),
+-- THE TERMINAL WAITERS' FENCE (the second seat of the flow-fenced fix):
+-- the roots THIS pass terminalizes can still hold pending join-wait rows —
+-- a never-fired ``<source>.join`` (``blocking_reason='join'``), or a
+-- consumer an EARLIER pass stamped ``orphan_parent`` while its root was
+-- still running (the bounded roots batch, or a root held by a concurrent
+-- transaction, deferred that root past the stamp pass). Both are
+-- live-flow records on a run that is now dead: the fire's flow-status leg
+-- refuses a terminal flow forever, so the truthful resolution is the
+-- fence's — ``failed_parent`` naming a failed parent when one exists,
+-- ``flow_dead`` otherwise.
+--
+-- The candidate join rides jobs_wf_flow_nodes_idx (01.00.26_02 — the
+-- uuid-cast expression + the workflow-rows-only partial): ``maintained``
+-- is bounded by $1, and each maintained root probes its own node rows, so
+-- the arm is O(the pass's terminalized roots' nodes), never a jobs walk.
+-- ``FOR UPDATE OF jj SKIP LOCKED`` is the seat's lock-order rule: a
+-- contended waiter is skipped, never queued behind while the pass holds its
+-- maintained roots and join rows. A row stamped in THIS pass cannot be
+-- skipped — the ``blocked`` arm's own UPDATE holds its lock in this
+-- transaction — so the skip only defers a waiter an unrelated transaction
+-- already holds; a ``join`` row is then healed by the next pass's rederive
+-- fence (this statement is the terminalizing-pass half only).
+--
+-- The ``join`` rows of flows that were ALREADY terminal when the pass
+-- began are REDERIVE_SWEEP_SQL's ``flow_fenced`` arm, whose predicate is
+-- exactly jobs_wf_join_fire_probe_idx's partial — keep that arm pure so
+-- it stays index-served. This CTE is the terminalizing-pass half only.
+fenced_candidates AS (
+    SELECT jj.id
+    FROM maintained m
+    JOIN {schema}.jobs jj
+      ON (jj.metadata->>'flow_id')::uuid = m.id
+     AND jj.metadata ? 'flow_id'
+     AND jj.step_key <> '__flow__'
+    WHERE jj.status = 'pending'
+      AND (
+          jj.metadata @> '{{"blocking_reason": "join"}}'::jsonb
+          OR jj.metadata @> '{{"blocking_reason": "orphan_parent"}}'::jsonb
+      )
+      AND NOT EXISTS (
+          SELECT 1 FROM {schema}.wf_join_fire fire WHERE fire.join_job_id = jj.id
+      )
+    ORDER BY jj.id
+    FOR UPDATE OF jj SKIP LOCKED
+),
+fenced_waiters AS (
+    UPDATE {schema}.jobs j
+    SET metadata = j.metadata || jsonb_build_object(
+            'blocking_reason',
+            CASE WHEN fp.parent_id IS NOT NULL THEN 'failed_parent' ELSE 'flow_dead' END,
+            'failed_parent', fp.parent_id,
+            'failed_step', fp.step_key
+        )
+    FROM fenced_candidates fc
+    LEFT JOIN LATERAL (
+        SELECT p.id AS parent_id, p.step_key
+        FROM {schema}.wf_edge e
+        JOIN {schema}.jobs p ON p.id = e.parent_id
+        WHERE e.child_id = fc.id
+          AND p.status = 'failed'
+        ORDER BY p.id
+        LIMIT 1
+    ) fp ON true
+    WHERE j.id = fc.id
+    RETURNING j.id
+),
 -- THE AUDIT ROW RIDES THE DERIVATION (the deploy matrix's audit fix):
 -- the root's terminal is a mutation like any other — the events reader
 -- gets the state_change that names it (the shared tier invariant reads
@@ -353,6 +419,7 @@ not_draining AS (
     WHERE maintained.failed_root = 1
 )
 SELECT (SELECT count(*)::int FROM maintained) AS roots_updated,
-       COALESCE((SELECT sum(fenced)::int FROM not_draining), 0) AS not_draining_fenced
+       COALESCE((SELECT sum(fenced)::int FROM not_draining), 0) AS not_draining_fenced,
+       (SELECT count(*)::int FROM fenced_waiters) AS flow_fenced
 """
 )
