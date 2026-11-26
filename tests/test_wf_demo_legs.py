@@ -353,10 +353,10 @@ async def test_leg3_the_live_wf_gauge_scrape(
     # the same query + the same registered-names collapse the maintenance
     # leader's wf-progress sampler runs at its tick (the sampler's read is the
     # feed; the gauge's cache is its only consumer).
-    from taskq.worker._leader_shared import _QUERY_WF_PROGRESS_SQL_TEMPLATE
+    from taskq.workflows._sql_status import WORKFLOW_PROGRESS_SQL
     from taskq.workflows.definitions import get_registry
 
-    wf_rows = await wf_conn.fetch(_QUERY_WF_PROGRESS_SQL_TEMPLATE.format(schema=schema))
+    wf_rows = await wf_conn.fetch(WORKFLOW_PROGRESS_SQL.format(schema=schema))
     registered = frozenset(get_registry()._workflows)  # pyright: ignore[reportPrivateUsage]  # Why: the sampler reads the same registry the definitions' import populated (the leader's own walk).
     collapsed: dict[tuple[str, str], int] = {}
     for row in wf_rows:
@@ -397,6 +397,12 @@ async def test_leg3_the_live_wf_gauge_scrape(
         "fabrication is back"
     )
     assert any('workflow="doc_ingest"' in line for line in wf_lines), wf_lines
+    # the held node is the live ``state="blocked"`` proof: `TaskQWorkflowBlockedStuck`
+    # selects exactly this series, so a scrape without it means the sampler
+    # projected raw job_status again and the alert is dead (the RCA's bug).
+    assert any(
+        'workflow="doc_ingest"' in line and 'state="blocked"' in line for line in wf_lines
+    ), wf_lines
     assert not any('workflow="None"' in line for line in wf_lines), (
         "a workflow=None series reached the capture — the real sampler "
         "never emits it (the unregistered collapse onto _other_); the "

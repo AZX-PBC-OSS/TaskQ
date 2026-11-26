@@ -74,7 +74,6 @@ from taskq.worker._leader_shared import (
     _QUERY_QUEUE_DUE_DEPTH_SQL_TEMPLATE,
     _QUERY_RESERVATION_SLOTS_SQL_TEMPLATE,
     _QUERY_SCHEDULED_HORIZON_SQL_TEMPLATE,
-    _QUERY_WF_PROGRESS_SQL_TEMPLATE,
     SweepContext,
     _build_retention_per_status,
     _dbg,
@@ -335,11 +334,12 @@ def _sampler_read_failed(
 ) -> None:
     """Report a gauge sampler whose read did not complete.
 
-    A sampler failure is the one failure in this module that leaves no trace
-    an alert rule can read: the gauge it feeds keeps serving its last value,
-    so depth stops rising and age stops growing, the same flat picture a
-    drained queue paints. No job fails and nothing is retried, so the warning
-    below is the only other signal, and warnings are not alertable. Every
+    A sampler failure leaves the gauge it feeds serving its last value, so
+    depth stops rising and age stops growing, the same flat picture a drained
+    queue paints. No job fails and nothing is retried, so the alertable
+    signal is the sweep-timeout counter: this function increments
+    ``taskq_maintenance_leader_sweep_timeouts_total{sweep_name=...}`` (the
+    ``TaskQSweepTimeouts`` alert) and logs the warning beside it. Every
     failure is counted, not just the deadline family a completed-but-aborted
     sweep reports: for a detector, "the read did not happen" is the whole
     fault regardless of which error carried it.
@@ -2356,13 +2356,15 @@ async def _queue_depth_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
                     # onto `_other_` (summed) — never per-node labels (the
                     # cardinality doctrine). The registry read is the arms'
                     # lazy-import pattern (the import law: nothing outside
-                    # taskq.workflows imports it at module scope).
+                    # taskq.workflows imports it at module scope). The fleet
+                    # sampler SQL lives beside `absorbed_exists` in
+                    # `_sql_status` so the gauge's absorption record can never
+                    # drift from the derivation's.
                     try:
+                        from taskq.workflows._sql_status import WORKFLOW_PROGRESS_SQL
                         from taskq.workflows.definitions import get_registry
 
-                        wf_rows = await conn.fetch(
-                            _QUERY_WF_PROGRESS_SQL_TEMPLATE.format(schema=schema)
-                        )
+                        wf_rows = await conn.fetch(WORKFLOW_PROGRESS_SQL.format(schema=schema))
                         registered = frozenset(get_registry()._workflows)  # pyright: ignore[reportPrivateUsage]  # Why: the sampler reads the same registry the definitions' import populated; the registry exposes membership via `in` — the names walk is the declared-workflow dimension's source.
                         collapsed: dict[tuple[str, str], int] = {}
                         for row in wf_rows:

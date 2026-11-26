@@ -83,6 +83,10 @@ def test_gauge_caches_are_at_construction_state_for_each_reader() -> None:
     assert otel_mod._running_lease_expired_count == 0  # pyright: ignore[reportPrivateUsage]
     assert otel_mod._heartbeat_consecutive_failures_count == 0  # pyright: ignore[reportPrivateUsage]
     assert otel_mod._disabled_schedules_count == 0  # pyright: ignore[reportPrivateUsage]
+    assert otel_mod._queue_depth_by_status_cache == {}  # pyright: ignore[reportPrivateUsage]
+    assert otel_mod._queue_utilization_cache == {}  # pyright: ignore[reportPrivateUsage]
+    assert otel_mod._cancel_pending_count is None  # pyright: ignore[reportPrivateUsage]
+    assert otel_mod._wf_progress_cache == {}  # pyright: ignore[reportPrivateUsage]
     assert otel_mod._slot_pool_occupancy_source is None  # pyright: ignore[reportPrivateUsage]
     assert otel_mod._queue_label_values == set()  # pyright: ignore[reportPrivateUsage]
     assert otel_mod._cron_actor_label_values == set()  # pyright: ignore[reportPrivateUsage]
@@ -113,6 +117,10 @@ def test_reset_otel_gauge_caches_restores_construction_state() -> None:
     obs_mod.update_running_lease_expired_cache(2)
     obs_mod.update_heartbeat_consecutive_failures("w1", 3)
     obs_mod.update_disabled_schedules_count(1)
+    obs_mod.update_queue_depth_by_status_cache({("default", "pending"): 5})
+    obs_mod.update_queue_utilization_cache({"default": 0.5})
+    obs_mod.update_cancel_pending_cache(3)
+    obs_mod.update_wf_progress_cache({("wf_probe", "blocked"): 2})
     otel_mod.set_slot_pool_occupancy_source(
         _NeverPool()  # pyright: ignore[reportArgumentType]  # Why: the gauge reads the source structurally; any object with the two read methods satisfies it.
     )
@@ -141,6 +149,10 @@ def test_reset_otel_gauge_caches_restores_construction_state() -> None:
     assert otel_mod._running_lease_expired_count == 0  # pyright: ignore[reportPrivateUsage]
     assert otel_mod._heartbeat_consecutive_failures_count == 0  # pyright: ignore[reportPrivateUsage]
     assert otel_mod._disabled_schedules_count == 0  # pyright: ignore[reportPrivateUsage]
+    assert otel_mod._queue_depth_by_status_cache == {}  # pyright: ignore[reportPrivateUsage]
+    assert otel_mod._queue_utilization_cache == {}  # pyright: ignore[reportPrivateUsage]
+    assert otel_mod._cancel_pending_count is None  # pyright: ignore[reportPrivateUsage]
+    assert otel_mod._wf_progress_cache == {}  # pyright: ignore[reportPrivateUsage]
     assert otel_mod._slot_pool_occupancy_source is None  # pyright: ignore[reportPrivateUsage]
     assert otel_mod._queue_label_values == set()  # pyright: ignore[reportPrivateUsage]
     assert otel_mod._cron_actor_label_values == set()  # pyright: ignore[reportPrivateUsage]

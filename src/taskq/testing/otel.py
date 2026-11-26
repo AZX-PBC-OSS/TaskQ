@@ -223,15 +223,18 @@ def reset_otel_gauge_caches() -> None:
     the tests read ``otel_mod.<attr>``), so no holder of a stale object
     exists to desynchronize.
 
-    Covers the gauge-fed caches (queue depth, stranded jobs, reservation
+    Covers the gauge-fed caches (queue depth — including the derived
+    per-status and utilization families — stranded jobs, reservation
     slots, keyed-reclaim pending, sweep success/batch-size stamps, the
     leader lease TTL, jobs-by-status, actor backlog and oldest-pending
     age, oldest-due age, scheduled count, running-lease-expired count,
     heartbeat consecutive failures, disabled schedules, the slot-pool
-    occupancy source) plus the two label-admission sets and the cron
-    failure-level ledger, emitter-side process globals the cardinality
-    tests were already forced to pin per test because a prior test's
-    admissions widen a later test's boundary.  Deliberately not reset:
+    occupancy source, the cancel-pending count and the wf-progress
+    per-(workflow, state) counts) plus the two label-admission sets and
+    the cron failure-level ledger, emitter-side process globals the
+    cardinality tests were already forced to pin per test because a prior
+    test's admissions widen a later test's boundary.  Deliberately not
+    reset:
     ``_lazy_counters`` / ``_lazy_histograms`` (memoized per meter
     identity; a stale entry self-replaces on the first call after a meter
     swap, and clearing would undo the memoization under test),
@@ -263,6 +266,10 @@ def reset_otel_gauge_caches() -> None:
     otel_mod._worker_capacity_source = None  # pyright: ignore[reportPrivateUsage]  # Why: same seam as above.
     otel_mod._jobs_running_cache = {}  # pyright: ignore[reportPrivateUsage]  # Why: same seam as above.
     otel_mod._actor_oldest_running_age_cache = {}  # pyright: ignore[reportPrivateUsage]  # Why: same seam as above.
+    otel_mod._queue_depth_by_status_cache = {}  # pyright: ignore[reportPrivateUsage]  # Why: same seam as above - the queue-depth loop's derived per-status family.
+    otel_mod._queue_utilization_cache = {}  # pyright: ignore[reportPrivateUsage]  # Why: same seam as above - the queue-depth loop's utilization ratios.
+    otel_mod._cancel_pending_count = None  # pyright: ignore[reportPrivateUsage]  # Why: same seam as above - construction state is None ("no data point"), not 0 ("an active claim that no cancel is pending").
+    otel_mod._wf_progress_cache = {}  # pyright: ignore[reportPrivateUsage]  # Why: same seam as above - the wf-progress sampler's per-(workflow, state) counts.
     otel_mod._queue_label_values.clear()  # pyright: ignore[reportPrivateUsage]  # Why: same seam as above, the set is iterated only on the emitter thread, so in-place clear is the copy-on-write exemption's exact case.
     otel_mod._cron_actor_label_values.clear()  # pyright: ignore[reportPrivateUsage]  # Why: same seam and same exemption as above.
     otel_mod._cron_failure_levels.clear()  # pyright: ignore[reportPrivateUsage]  # Why: same seam as above.

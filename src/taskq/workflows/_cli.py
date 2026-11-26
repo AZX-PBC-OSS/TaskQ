@@ -203,20 +203,22 @@ def stuck_lines(node: FlowNodeRow, run_id: str) -> list[str]:
         # failed node that does not exist.
         reason = node.blocking_reason
         if reason == "flow_dead":
-            # flow_dead means the flow died — the failure cascade flipped the
-            # root — and this join can never fire. The line says the path is
-            # dead first; the retry command alone would read as if a retry
-            # revives a dead path.
+            # flow_dead is stamped by the fence over the roots THIS pass
+            # terminalised, and only when NO parent of the join is failed.
+            # Both facts make the old prescription inert: cancel returns at
+            # the terminal root without touching a node row, and there is no
+            # failed upstream node to retry. Say what is true — the root is
+            # already terminal and no shipped verb clears the retained row.
             return [
                 f"  {node.step_key}: BLOCKED — flow_dead "
                 "(source: the row's metadata.blocking_reason stamp): the "
-                "fence's record — the FLOW died (the failure cascade "
-                "finalized the run) and this join can never fire; this "
-                "run's path is dead",
-                f"       remedy: cancel the run — taskq flows cancel {run_id} "
-                "--reason '...'; or retry the failed upstream node "
-                f"(taskq flows status {run_id} names it) to re-open the "
-                "path",
+                "fence's record — the run's root is ALREADY TERMINAL and no "
+                "parent of this join failed; the join can never fire and no "
+                "shipped CLI verb clears the retained row",
+                "       remedy: none shipped — the cancel verb is an "
+                "idempotent no-op on the already-terminal root and there is no "
+                "failed upstream node to retry; only terminalising the "
+                "retained row directly (a hand UPDATE) clears it",
             ]
         if reason == "failed_parent":
             lines = [
@@ -226,7 +228,9 @@ def stuck_lines(node: FlowNodeRow, run_id: str) -> list[str]:
                 "never fire and this node can never run",
                 f"       remedy: retry the failed upstream node — "
                 f"taskq flows status {run_id} names it "
-                "(or cancel the run: the path is dead)",
+                "(while the root is still non-terminal; once the cascade has "
+                "terminalised it as 'failed', taskq flows retry is the verb "
+                "that re-opens it — cancel is an idempotent no-op there)",
             ]
             if node.failed_parent:
                 # the dead parent, named on the record (the 3am operator-truth

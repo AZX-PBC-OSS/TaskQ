@@ -432,8 +432,8 @@ async def test_gauge_cardinality_stays_workflow_dimensioned(
     metrics doctrine violated). The BUILT gauge's input groups by
     (workflow, state) — WORKFLOW-dimensioned; per-child progress lives in
     the ROWS (the map progress line / the display), read on demand."""
-    from taskq.worker._leader_shared import (
-        _QUERY_WF_PROGRESS_SQL_TEMPLATE,  # pyright: ignore[reportPrivateImportUsage]
+    from taskq.workflows._sql_status import (
+        WORKFLOW_PROGRESS_SQL,  # pyright: ignore[reportPrivateImportUsage]
     )
 
     n = 12
@@ -442,7 +442,7 @@ async def test_gauge_cardinality_stays_workflow_dimensioned(
     )
     _ = flow_id
     await runner.drive(flow_id)
-    rows = await wf_conn.fetch(_QUERY_WF_PROGRESS_SQL_TEMPLATE.format(schema=wf_schema))
+    rows = await wf_conn.fetch(WORKFLOW_PROGRESS_SQL.format(schema=wf_schema))
     this_flow = {
         (r["workflow"], r["state"]) for r in rows if r["workflow"] == "progress_gauge_flow"
     }
@@ -459,14 +459,12 @@ async def test_gauge_cardinality_stays_workflow_dimensioned(
     # every series is (workflow, state) — never a node identity
     for _workflow, state in this_flow:
         assert state in (
-            "pending",
-            "scheduled",
             "running",
-            "succeeded",
             "failed",
+            "blocked",
+            "complete",
             "cancelled",
-            "crashed",
-            "abandoned",
+            "pending",
         )
 
 

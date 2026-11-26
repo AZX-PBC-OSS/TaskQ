@@ -112,18 +112,24 @@ def test_failed_parent_line_names_the_dead_parent() -> None:
     assert parent_id in joined
 
 
-def test_flow_dead_names_the_fence_and_the_dead_path() -> None:
-    """flow_dead is the fence's record — the flow died and this join can
-    never fire. The line must say the path is DEAD and name the cancel
-    remedy beside the retry (a bare 'retry the failed upstream node'
-    reads as if a retry revives a dead path)."""
+def test_flow_dead_names_the_terminal_root_and_the_missing_remedy() -> None:
+    """``flow_dead`` is the fence's record over a root that already
+    terminalised: the join can never fire, no shipped CLI verb clears the
+    retained row, and ``taskq flows cancel`` is an idempotent no-op on the
+    terminal root. The line states those facts — it never prescribes
+    ``flows cancel`` or 'retry the failed upstream node' as remedies, both
+    of which leave the row and the alert exactly where they were."""
     row = FlowNodeRow(
         step_key="collect", status="pending", deps_pending=1, blocking_reason="flow_dead"
     )
     lines = stuck_lines(row, "run-1")
     joined = "\n".join(lines)
     assert "flow_dead" in joined
-    assert "cancel" in joined
+    assert "ALREADY TERMINAL" in joined
+    assert "no shipped CLI verb clears" in joined
+    assert "idempotent no-op" in joined
+    assert "flows cancel" not in joined
+    assert "retry the failed upstream node" not in joined
 
 
 # ── 3. the running face: stuck vs slow, at a glance ────────────────────

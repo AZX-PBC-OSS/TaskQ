@@ -419,12 +419,12 @@ async def test_query_count_one_read_per_status_surface(
     # one grouped statement — the same read class the panel uses — never a
     # per-workflow query (the query-count pin's original claim, driven at the
     # real surface).
-    from taskq.worker._leader_shared import (
-        _QUERY_WF_PROGRESS_SQL_TEMPLATE,  # pyright: ignore[reportPrivateUsage]
+    from taskq.workflows._sql_status import (
+        WORKFLOW_PROGRESS_SQL,  # pyright: ignore[reportPrivateUsage]
     )
 
     queries.clear()
-    await counting.fetch(_QUERY_WF_PROGRESS_SQL_TEMPLATE.format(schema=wf_schema))
+    await counting.fetch(WORKFLOW_PROGRESS_SQL.format(schema=wf_schema))
     assert len(queries) == 1, (
         f"the gauge's fleet sample issued {len(queries)} statements — the "
         "gauge and the panel share ONE grouped read"
@@ -640,25 +640,24 @@ async def test_rollup_cost_gate_index_driven(
     wf_sql: WorkflowSql,
 ) -> None:
     """At the FLEET shape the flow-scoped reads are INDEX-DRIVEN (the
-    EXPLAIN assert: no seq scan of the fleet table) and inside the recorded
-    band. the SHAPE IS the LOAD-BEARING PART (the phase-2 attack's H3b):
-    the pre-rewrite pin measured a table that contained only the measured
-    flow's own rows — where the measured flow IS the whole table, a seq
-    scan and an index scan cost the same and the plan assert cannot fail.
-    Here the measured run is one AMONG MANY on a fleet table (40 runs +
-    a 60k-row vanilla population), the production shape — the seq-scan
-    shape (the raw-TEXT index: the key the reads' uuid cast
+    EXPLAIN assert: no seq scan of the fleet table OR its edge ledger) and
+    inside the recorded band. The shape is what makes the gate honest:
+    a fixture whose table contained only the measured flow's own rows would
+    price a seq scan and an index scan identically, so the plan assert could
+    not fail. Here the measured run is one AMONG MANY on a fleet table (50
+    runs + a 100k-row vanilla population), the production shape — the
+    seq-scan shape (the raw-TEXT index: the key the reads' uuid cast
     broke, measured p50 21.2 ms for the rollup and 20.7 ms for the
     per-node read at this very shape —
-    .measurements/fix2/index-before-text-index.txt) REDS the plan assert.
+    .measurements/fix2/index-before-text-index.txt) reds the plan assert.
     The ride: jobs_wf_flow_nodes_idx (01.00.26_02 — the index expression
     carries the same uuid cast the reads carry; the partial covers the
     workflow rows only)."""
     import time
 
-    n_vanilla = 60_000
-    n_flows = 40
-    n_nodes = 500
+    n_vanilla = 100_000
+    n_flows = 50
+    n_nodes = 800
 
     # production's fleet table is mostly not workflow rows — this is what makes
     # the plan assert honest (a seq scan must traverse this to find the
@@ -689,47 +688,127 @@ async def test_rollup_cost_gate_index_driven(
             str(flow_id),
             n_nodes,
         )
+        # The absorption ledger, seeded for real: within each run, the first
+        # 67 of its 200 failed-class nodes take its 200 succeeded children
+        # three at a time (the 67th takes the last two) — 200 edges per run,
+        # 10,000 across the 50-run fleet. An EDGE-FREE fixture would price
+        # the sampler's absorption probe over an empty relation, so the plan
+        # gate could not see how it is planned; this shape makes both
+        # `jobs` and `wf_edge` real.
+        await wf_conn.execute(
+            f"""INSERT INTO "{wf_schema}".wf_edge (child_id, parent_id, flow_id, failure_policy)
+                SELECT c.id, p.id, $1::uuid, 'collect'
+                FROM (SELECT id, row_number() OVER (ORDER BY id) AS rn
+                      FROM "{wf_schema}".jobs
+                      WHERE (metadata->>'flow_id')::uuid = $1::uuid
+                        AND step_key <> '__flow__' AND status = 'failed') p
+                JOIN (SELECT id, row_number() OVER (ORDER BY id) AS rn
+                      FROM "{wf_schema}".jobs
+                      WHERE (metadata->>'flow_id')::uuid = $1::uuid
+                        AND step_key <> '__flow__' AND status = 'succeeded') c
+                  ON c.rn BETWEEN (p.rn - 1) * 3 + 1 AND p.rn * 3""",
+            flow_id,
+        )
 
-        # the vacuumed table (index scans need the visibility map; a freshly-seeded
+    # the vacuumed table (index scans need the visibility map; a freshly-seeded
     # table heap-visits every row — the two measurements both recorded, the
     # argument in the artifact).
     await wf_conn.execute("VACUUM (ANALYZE)")
 
-    # no seq scan of jobs/wf_edge in any flow-scoped read (the rollup, the
-    # per-node read, the maintenance leg — the fleet gauge's sampler is
-    # deliberately fleet-wide: it groups the whole fleet, there is no run id to
-    # key it; its recorded band is its own).
-    async def assert_index_driven(sql: str, *args: object) -> None:
+    # No seq scan of jobs OR wf_edge in any status read: the flow-scoped
+    # rollup, per-node read and maintenance leg, plus the fleet gauge's
+    # sampler. The sampler is fleet-wide by design, but its node scan and
+    # root join must still ride the workflow-node partial index and jobs
+    # pkey, and its absorption probe must ride wf_edge_parent_idx — an
+    # edge-bearing shape is what makes that assertable.
+    async def assert_index_driven(
+        sql: str, *args: object, required_indexes: tuple[str, ...] = ()
+    ) -> dict[str, int]:
         plan_rows = await wf_conn.fetch(f"EXPLAIN (FORMAT JSON) {sql}", *args)
         plan = plan_rows[0][0]
         if isinstance(plan, str):
             plan = json.loads(plan)
 
+        seen_indexes: dict[str, int] = {}
+
         def walk(node: dict[str, Any]) -> None:
             node_type = node.get("Node Type")
             rel = node.get("Relation Name")
-            # The fleet TABLE is the gate's subject: a seq scan of jobs at
-            # the fleet shape is the monster class. (wf_edge is empty in
-            # this shape — a seq scan of an empty relation is the
-            # planner's correct, zero-cost pick, not a fleet walk; the
-            # per-node probes ride wf_edge_parent_idx when rows exist.)
-            assert not (node_type == "Seq Scan" and rel == "jobs"), (
+            # The fleet TABLE and its edge ledger are the gate's subjects:
+            # a seq scan of either at this shape is the monster class.
+            assert not (node_type == "Seq Scan" and rel in ("jobs", "wf_edge")), (
                 f"the read seq-scans {rel} at the fleet shape — the "
                 "index-driven gate reds (the fix: 01.00.26_02's uuid-cast "
-                "expression + the workflow-rows-only partial)"
+                "expression + the workflow-rows-only partial, and "
+                f"wf_edge_parent_idx's per-parent probe); sql={sql.splitlines()[0][:80]!r}"
             )
+            if node.get("Index Name"):
+                index = str(node["Index Name"])
+                seen_indexes[index] = seen_indexes.get(index, 0) + 1
             for child in node.get("Plans", []) or []:
                 walk(child)  # pyright: ignore[reportArgumentType]
 
         walk(plan[0]["Plan"])  # pyright: ignore[reportIndexType]
+        missing = [index for index in required_indexes if index not in seen_indexes]
+        assert not missing, (
+            f"the read did not ride {missing} at the fleet shape — seen "
+            f"indexes: {sorted(seen_indexes)}"
+        )
+        return seen_indexes
 
     measured_flow = flow_ids[-1]
     await assert_index_driven(wf_sql.workflow_rollup, measured_flow)
     await assert_index_driven(wf_sql.workflow_nodes, measured_flow)
     await assert_index_driven(wf_sql.workflow_root_maintain, 200)
+    from taskq.workflows._sql_status import WORKFLOW_PROGRESS_SQL
+
+    sampler_sql = WORKFLOW_PROGRESS_SQL.format(schema=wf_schema)
+    sampler_indexes = await assert_index_driven(
+        sampler_sql,
+        required_indexes=(
+            "jobs_wf_flow_nodes_idx",
+            "jobs_wf_root_retention_idx",
+            "wf_edge_parent_idx",
+        ),
+    )
+    # Beyond "index-driven": the sampler pays ONE scan of the node index (the
+    # materialized ``nodes`` projection; ``failed_nodes`` is derived from it)
+    # and ONE probe of the edge ledger (the aggregated ``edge_parents`` CTE;
+    # the fence check rides ``jobs_pkey`` over the parent's child ids). A
+    # second pass of either relation on every sampler tick is the regression
+    # this pin forbids, so the counts are asserted, not just the names.
+    assert sampler_indexes["jobs_wf_flow_nodes_idx"] == 1, sampler_indexes
+    assert sampler_indexes["jobs_wf_root_retention_idx"] == 1, sampler_indexes
+    assert sampler_indexes["wf_edge_parent_idx"] == 1, sampler_indexes
+
+    # The measured plan: ANALYZE + BUFFERS over the real fleet shape, with the
+    # deterministic planner Total Cost pinned below jit_above_cost (100,000) and
+    # wall time recorded beside the index counts. The correlated EXISTS form
+    # produced Total Cost ~1.2M and a Seq Scan of ``jobs``; the set-based form
+    # stays around ~10k cost regardless of shared-runner CPU jitter.
+    sampler_samples: list[float] = []
+    sampler_plan: dict[str, Any] | None = None
+    for _ in range(5):
+        analyzed_row = await wf_conn.fetch(f"EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) {sampler_sql}")
+        analyzed = analyzed_row[0][0]
+        if isinstance(analyzed, str):
+            analyzed = json.loads(analyzed)
+        plan: dict[str, Any] = analyzed[0]
+        sampler_plan = plan
+        sampler_samples.append(float(plan["Execution Time"]))
+    assert sampler_plan is not None
+    sampler_ms = sorted(sampler_samples)[len(sampler_samples) // 2]
+    sampler_total_cost = float(sampler_plan["Plan"]["Total Cost"])
+    sampler_cost_gate = 100_000.0
+    assert sampler_total_cost <= sampler_cost_gate, (
+        f"the fleet sampler's planner Total Cost {sampler_total_cost:.1f} exceeds "
+        f"the deterministic ceiling ({sampler_cost_gate:.0f}, jit_above_cost) at the "
+        "fleet shape — the plan has regressed toward the correlated form's ~1.2M cost; "
+        f"index scans: {sampler_indexes}"
+    )
 
     # the fleet-shape read is O(the run's own node count) — the measured p50
-    # sits in the sub-millisecond class at the 500-node run shape (measured
+    # sits in the sub-millisecond class at the 800-node run shape (measured
     # 0.12-0.24 ms; the band is set from the measurement with CI-noise margin —
     # bands are set from measurements, then pinned — the band moves only by
     # argument in review).
@@ -761,6 +840,14 @@ async def test_rollup_cost_gate_index_driven(
             "p50_ms": round(p50, 3),
             "samples_ms": [round(s, 3) for s in samples],
             "recorded_band_ms": band_budget_ms,
+            "wf_progress_plan": {
+                "execution_p50_ms": round(sampler_ms, 3),
+                "execution_samples_ms": [round(s, 3) for s in sampler_samples],
+                "planning_ms": round(float(sampler_plan["Planning Time"]), 3),
+                "total_cost": round(sampler_total_cost, 1),
+                "index_scans": dict(sorted(sampler_indexes.items())),
+                "recorded_cost_gate": sampler_cost_gate,
+            },
             "argument": (
                 "the pin REWRITTEN for the fleet shape: the flow-solo shape measured a table "
                 "containing ONLY the measured flow's rows — the "
@@ -775,11 +862,18 @@ async def test_rollup_cost_gate_index_driven(
                 "reads carrying the proving clauses) puts every "
                 "flow-scoped read on the index: p50 ~0.1-0.3 ms — "
                 "O(the run's own node count). The plan gate is the "
-                "load-bearing assert; the band is set from THIS "
+                "assert; the band is set from THIS "
                 "measurement. The fleet-wide gauge sampler ("
-                "_QUERY_WF_PROGRESS_SQL_TEMPLATE) is fleet-wide BY "
-                "DESIGN (no run id to key); its band is recorded in "
-                "index-fleet-bands.json (~23 ms at the 220k-row fleet)."
+                "WORKFLOW_PROGRESS_SQL) is fleet-wide BY "
+                "DESIGN (no run id to key), so its access paths — not a "
+                "run-scoped band — are what the gate above pins at this "
+                "edge-bearing shape: ONE scan of jobs_wf_flow_nodes_idx "
+                "(the materialized node projection; the failed classes "
+                "are derived from it), jobs_wf_root_retention_idx for "
+                "the root population, ONE probe of wf_edge_parent_idx "
+                "for the absorption candidate set, jobs_pkey over each "
+                "parent's aggregated child ids for the fence check, and "
+                "no Seq Scan of jobs or wf_edge."
             ),
             "plan": "index-driven (jobs_wf_flow_nodes_idx, 01.00.26_02)",
         },
@@ -2190,3 +2284,656 @@ async def test_reconstruction_is_byte_identical_under_ledger_heap_motion_and_ana
             f"({first!r} → {second!r} → {third!r}) — reconstruction must "
             "not consult ledger history at all"
         )
+
+
+@pytest.mark.integration
+async def test_wf_progress_sampler_emits_derived_node_states(
+    wf_conn: asyncpg.Connection,
+    wf_schema: str,
+) -> None:
+    """The leader's wf-progress sampler SQL must emit the documented derived
+    node-state classes (running/failed/blocked/complete/cancelled/pending)
+    matching ``taskq.workflows._status``, never raw ``job_status`` enum values.
+
+    ``TaskQWorkflowBlockedStuck`` selects
+    ``taskq_wf_progress_nodes_total{state="blocked"} > 0``: every blocked
+    pending representation (join-wait, held, ``orphan_parent``,
+    ``failed_parent``, ``flow_dead``) must aggregate under ``state="blocked"``,
+    non-blocked pending/scheduled shapes (plain pending, fired join,
+    ``body_unavailable``, scheduled) under ``state="pending"``, succeeded and
+    absorbed failures under ``state="complete"``, unabsorbed failures and the
+    terminal-crash class (``crashed``/``abandoned``) under ``state="failed"``,
+    ``running`` under ``state="running"``, and ``cancelled`` under
+    ``state="cancelled"``. Pending and scheduled rows with their own
+    ``cancel_phase > 0`` derive ``running`` (the node-level cancel-in-flight
+    projection), even when the pending row is also a join-wait.
+    """
+    from taskq.obs._otel import (  # pyright: ignore[reportPrivateUsage]  # Why: the pin exercises the sampler's real gauge cache and observation callback.
+        _observe_wf_progress,
+        update_wf_progress_cache,
+    )
+    from taskq.workflows._sql_status import (
+        WORKFLOW_PROGRESS_SQL,  # pyright: ignore[reportPrivateUsage]
+    )
+
+    flow_id = new_uuid()
+    workflow_name = f"wf_progress_derived_{flow_id.hex[:8]}"
+    await _seed_wf_row(
+        wf_conn,
+        wf_schema,
+        flow_id,
+        job_id=flow_id,
+        actor="flow",
+        status="running",
+        step_key="__flow__",
+        metadata={"workflow": workflow_name},
+    )
+
+    # ── blocked (5 rows) ──
+    # 1. join-wait (pending + deps_pending > 0 + blocking_reason='join')
+    await _seed_wf_row(
+        wf_conn,
+        wf_schema,
+        flow_id,
+        status="pending",
+        step_key="join_wait",
+        deps_pending=2,
+        metadata={"blocking_reason": "join"},
+        fairness_key=str(flow_id),
+    )
+    # 2. held (pending + metadata.hold + wf_signals status='held')
+    await _seed_held_step(wf_conn, wf_schema, flow_id, step_key="held_node")
+    # 3. blocked-with-reason: orphan_parent
+    await _seed_wf_row(
+        wf_conn,
+        wf_schema,
+        flow_id,
+        status="pending",
+        step_key="orphan_join",
+        deps_pending=0,
+        metadata={"blocking_reason": "orphan_parent"},
+        fairness_key=str(flow_id),
+    )
+    # 4. blocked-with-reason: failed_parent
+    failed_parent_join_id = new_uuid()
+    await _seed_wf_row(
+        wf_conn,
+        wf_schema,
+        flow_id,
+        job_id=failed_parent_join_id,
+        status="pending",
+        step_key="failed_parent_join",
+        deps_pending=0,
+        metadata={"blocking_reason": "failed_parent"},
+        fairness_key=str(flow_id),
+    )
+    # 5. blocked-with-reason: flow_dead
+    await _seed_wf_row(
+        wf_conn,
+        wf_schema,
+        flow_id,
+        status="pending",
+        step_key="flow_dead_join",
+        deps_pending=0,
+        metadata={"blocking_reason": "flow_dead"},
+        fairness_key=str(flow_id),
+    )
+
+    # ── pending (4 rows: non-blocked pending & scheduled) ──
+    # 1. plain queued pending
+    await _seed_wf_row(
+        wf_conn,
+        wf_schema,
+        flow_id,
+        status="pending",
+        step_key="plain_pending",
+        deps_pending=0,
+        fairness_key=str(flow_id),
+    )
+    # 2. fired join (deps_pending=0 + blocking_reason='join' is claimable, not blocked)
+    await _seed_wf_row(
+        wf_conn,
+        wf_schema,
+        flow_id,
+        status="pending",
+        step_key="fired_join",
+        deps_pending=0,
+        metadata={"blocking_reason": "join"},
+        fairness_key=str(flow_id),
+    )
+    # 3. body_unavailable (loudness record on fired join; delivery continued, not blocked)
+    await _seed_wf_row(
+        wf_conn,
+        wf_schema,
+        flow_id,
+        status="pending",
+        step_key="body_unavail_join",
+        deps_pending=0,
+        metadata={"blocking_reason": "body_unavailable"},
+        fairness_key=str(flow_id),
+    )
+    # 4. scheduled backoff/sleep
+    await _seed_wf_row(
+        wf_conn,
+        wf_schema,
+        flow_id,
+        status="scheduled",
+        step_key="scheduled_retry",
+        deps_pending=0,
+        fairness_key=str(flow_id),
+    )
+
+    # ── running (3 rows: live + pending/scheduled cancel-in-flight) ──
+    await _seed_wf_row(
+        wf_conn,
+        wf_schema,
+        flow_id,
+        status="running",
+        step_key="live_step",
+        fairness_key=str(flow_id),
+    )
+    await _seed_wf_row(
+        wf_conn,
+        wf_schema,
+        flow_id,
+        status="pending",
+        step_key="cancel_pending_join",
+        deps_pending=1,
+        metadata={"blocking_reason": "join"},
+        fairness_key=str(flow_id),
+    )
+    await _seed_wf_row(
+        wf_conn,
+        wf_schema,
+        flow_id,
+        status="scheduled",
+        step_key="cancel_scheduled",
+        fairness_key=str(flow_id),
+    )
+    await wf_conn.execute(
+        f'UPDATE "{wf_schema}".jobs SET cancel_phase = 1 '
+        "WHERE (metadata->>'flow_id')::uuid = $1 "
+        "AND step_key IN ('cancel_pending_join', 'cancel_scheduled')",
+        flow_id,
+    )
+
+    # ── complete (2 rows: succeeded + absorbed failed) ──
+    collect_join_id = new_uuid()
+    await _seed_wf_row(
+        wf_conn,
+        wf_schema,
+        flow_id,
+        job_id=collect_join_id,
+        status="succeeded",
+        step_key="collect_join",
+        fairness_key=str(flow_id),
+    )
+    absorbed_failed_id = new_uuid()
+    await _seed_wf_row(
+        wf_conn,
+        wf_schema,
+        flow_id,
+        job_id=absorbed_failed_id,
+        status="failed",
+        step_key="absorbed_child",
+        fairness_key=str(flow_id),
+    )
+    await wf_conn.execute(
+        f'INSERT INTO "{wf_schema}".wf_edge (child_id, parent_id, flow_id, failure_policy) '
+        "VALUES ($1, $2, $3, 'collect')",
+        collect_join_id,
+        absorbed_failed_id,
+        flow_id,
+    )
+
+    # ── failed (4 rows: unabsorbed failed, fenced-collect failed, crashed, abandoned) ──
+    await _seed_wf_row(
+        wf_conn,
+        wf_schema,
+        flow_id,
+        status="failed",
+        step_key="unabsorbed_failed",
+        fairness_key=str(flow_id),
+    )
+    # A failed child whose collect edge points at a failed_parent-blocked join
+    # was fenced, never absorbed (absorbed_exists's policy-vs-fence clause).
+    fenced_failed_id = new_uuid()
+    await _seed_wf_row(
+        wf_conn,
+        wf_schema,
+        flow_id,
+        job_id=fenced_failed_id,
+        status="failed",
+        step_key="fenced_collect_child",
+        fairness_key=str(flow_id),
+    )
+    await wf_conn.execute(
+        f'INSERT INTO "{wf_schema}".wf_edge (child_id, parent_id, flow_id, failure_policy) '
+        "VALUES ($1, $2, $3, 'collect')",
+        failed_parent_join_id,
+        fenced_failed_id,
+        flow_id,
+    )
+    await _seed_wf_row(
+        wf_conn,
+        wf_schema,
+        flow_id,
+        status="crashed",
+        step_key="crashed_node",
+        fairness_key=str(flow_id),
+    )
+    await _seed_wf_row(
+        wf_conn,
+        wf_schema,
+        flow_id,
+        status="abandoned",
+        step_key="abandoned_node",
+        fairness_key=str(flow_id),
+    )
+
+    # ── cancelled (1 row) ──
+    await _seed_wf_row(
+        wf_conn,
+        wf_schema,
+        flow_id,
+        status="cancelled",
+        step_key="cancelled_node",
+        fairness_key=str(flow_id),
+    )
+
+    rows = await wf_conn.fetch(WORKFLOW_PROGRESS_SQL.format(schema=wf_schema))
+    derived_states = {"running", "failed", "blocked", "complete", "cancelled", "pending"}
+    emitted_states = {str(r["state"]) for r in rows}
+    assert emitted_states <= derived_states, (
+        f"wf-progress sampler emitted non-derived raw job_status values: "
+        f"{sorted(emitted_states - derived_states)} (all emitted: {sorted(emitted_states)})"
+    )
+
+    by_state = {
+        str(r["state"]): int(r["count"]) for r in rows if str(r["workflow"]) == workflow_name
+    }
+    expected = {
+        "blocked": 5,
+        "pending": 4,
+        "running": 3,
+        "complete": 2,
+        "failed": 4,
+        "cancelled": 1,
+    }
+    assert by_state == expected, (
+        f"wf-progress sampler state counts drifted from derivation contract: "
+        f"got {by_state}, expected {expected}"
+    )
+
+    # Feed through the leader's cache + OTel gauge callback to verify the
+    # exact observation matching TaskQWorkflowBlockedStuck's selector.
+    update_wf_progress_cache({(workflow_name, state): count for state, count in by_state.items()})
+    observations = list(_observe_wf_progress(None))  # pyright: ignore[reportArgumentType]  # Why: the callback ignores the options argument (the OTel contract).
+    blocked_obs = [
+        o
+        for o in observations
+        if (o.attributes or {}).get("workflow") == workflow_name
+        and (o.attributes or {}).get("state") == "blocked"
+    ]
+    assert len(blocked_obs) == 1 and blocked_obs[0].value == 5, (
+        f"TaskQWorkflowBlockedStuck selector state='blocked' did not match: {observations}"
+    )
+
+
+@pytest.mark.integration
+async def test_queue_depth_loop_publishes_derived_blocked_state(
+    wf_schema: str,
+    wf_pool: asyncpg.Pool,
+    pg_dsn: str,
+) -> None:
+    """The production leader loop, not a reimplemented sampler, feeds the gauge."""
+    from taskq.backend.clock import SystemClock
+    from taskq.obs import (
+        _otel as otel_mod,  # pyright: ignore[reportPrivateUsage]  # Why: the probe waits on the loop's observable publication through the rebind-on-write cache.
+    )
+    from taskq.settings import WorkerSettings
+    from taskq.testing.assertions import wait_for_condition
+    from taskq.worker._leader_shared import SweepContext
+    from taskq.worker._leader_sweeps import (
+        _queue_depth_loop,  # pyright: ignore[reportPrivateUsage]  # Why: the production entry point is the surface under test.
+    )
+    from taskq.worker.deps import WorkerDeps
+    from taskq.workflows import Promise, StepContext, WorkflowApp, build, step
+
+    flow_id = new_uuid()
+    workflow_name = f"wf_progress_leader_{flow_id.hex[:8]}"
+    app = WorkflowApp()
+
+    async def body(ctx: StepContext) -> None:
+        return None
+
+    @app.workflow(workflow_name)
+    def leader_progress_flow() -> Promise[None]:
+        return build(step(body, key="held_node"))
+
+    app.get(workflow_name)
+    try:
+        # The production loop reads through its own pool connections. These
+        # rows are COMMITTED on purpose (clean_pg_conn does not open a
+        # rollback transaction), and this pin deletes them in the ``finally``
+        # below so no residue reaches a sibling loop-driving pin.
+        async with wf_pool.acquire() as seed_conn:
+            await _seed_wf_row(
+                seed_conn,
+                wf_schema,
+                flow_id,
+                job_id=flow_id,
+                actor="flow",
+                status="running",
+                step_key="__flow__",
+                metadata={"workflow": workflow_name},
+            )
+            await _seed_held_step(seed_conn, wf_schema, flow_id, step_key="held_node")
+
+        settings = WorkerSettings.load_from_dict(
+            {
+                "TASKQ_PG_DSN": pg_dsn,
+                "TASKQ_SCHEMA_NAME": wf_schema,
+            }
+        )
+        deps = WorkerDeps(
+            settings=settings,
+            dispatcher_pool=wf_pool,
+            heartbeat_pool=wf_pool,
+            worker_pool=wf_pool,
+            notify_conn=None,
+            leader_conn=None,
+        )
+        deps.is_leader.set()
+        ctx = SweepContext(
+            deps=deps,
+            backend=None,  # type: ignore[arg-type]  # Why: the queue-depth loop never touches ctx.backend.
+            clock=SystemClock(),
+            worker_id=new_uuid(),
+        )
+        import structlog.testing
+
+        shutdown = asyncio.Event()
+        with structlog.testing.capture_logs() as captured:
+            task = asyncio.create_task(_queue_depth_loop(ctx, shutdown))
+            try:
+                await wait_for_condition(
+                    lambda: otel_mod._wf_progress_cache.get((workflow_name, "blocked")) == 1,  # pyright: ignore[reportPrivateUsage]  # Why: the loop's only publication surface is the cache.
+                    description="the production leader loop to publish the held row",
+                )
+            except AssertionError:
+                raise AssertionError(
+                    "leader loop never published the held row: "
+                    f"cache={otel_mod._wf_progress_cache}, logs={captured}"  # pyright: ignore[reportPrivateUsage]  # Why: as above.
+                ) from None
+            finally:
+                shutdown.set()
+                await asyncio.wait_for(task, timeout=5.0)
+
+        published = {
+            state: count
+            for (workflow, state), count in otel_mod._wf_progress_cache.items()  # pyright: ignore[reportPrivateUsage]  # Why: as above.
+            if workflow == workflow_name
+        }
+    finally:
+        # The pin seeded committed rows for the production loop's own pool;
+        # remove them rather than leaving a count the next loop-driving pin
+        # did not create (the isolation argument is the cleanup, not a
+        # rollback that does not exist).
+        async with wf_pool.acquire() as cleanup:
+            await cleanup.execute(
+                f'DELETE FROM "{wf_schema}".wf_signals WHERE workflow_id = $1',
+                flow_id,
+            )
+            await cleanup.execute(
+                f'DELETE FROM "{wf_schema}".wf_step_ledger WHERE flow_id = $1',
+                flow_id,
+            )
+            await cleanup.execute(
+                f'DELETE FROM "{wf_schema}".wf_edge WHERE flow_id = $1',
+                flow_id,
+            )
+            await cleanup.execute(
+                f'DELETE FROM "{wf_schema}".jobs '
+                "WHERE id = $1 OR (metadata->>'flow_id')::uuid = $1",
+                flow_id,
+            )
+    assert published == {"blocked": 1}, published
+
+
+@pytest.mark.integration
+async def test_wf_progress_sampler_absorbs_maybe_and_terminal_crash_classes(
+    wf_conn: asyncpg.Connection,
+    wf_schema: str,
+    wf_sql: WorkflowSql,
+) -> None:
+    """Every terminal failure class absorbed by the edge record derives complete.
+
+    The main sampler pin covers a failed child on a collect edge. This pin
+    closes the other two axes of the same SQL branch: a maybe edge absorbs
+    just as collect does, and crashed/abandoned rows receive the same
+    absorbed-failure projection as failed rows.
+    """
+    from taskq.workflows._sql_status import WORKFLOW_PROGRESS_SQL
+
+    flow_id = new_uuid()
+    workflow_name = f"wf_progress_absorbed_{flow_id.hex[:8]}"
+    await _seed_wf_row(
+        wf_conn,
+        wf_schema,
+        flow_id,
+        job_id=flow_id,
+        actor="flow",
+        status="running",
+        step_key="__flow__",
+        metadata={"workflow": workflow_name},
+    )
+
+    maybe_join_id = new_uuid()
+    collect_join_id = new_uuid()
+    for join_id, step_key in ((maybe_join_id, "maybe_join"), (collect_join_id, "collect_join")):
+        await _seed_wf_row(
+            wf_conn,
+            wf_schema,
+            flow_id,
+            job_id=join_id,
+            status="succeeded",
+            step_key=step_key,
+            fairness_key=str(flow_id),
+        )
+
+    absorbed_rows = (
+        ("failed", "maybe", "maybe_failed", maybe_join_id),
+        ("crashed", "collect", "collect_crashed", collect_join_id),
+        ("abandoned", "maybe", "maybe_abandoned", maybe_join_id),
+    )
+    for actual_status, policy, step_key, join_id in absorbed_rows:
+        node_id = new_uuid()
+        await _seed_wf_row(
+            wf_conn,
+            wf_schema,
+            flow_id,
+            job_id=node_id,
+            status=actual_status,
+            step_key=step_key,
+            fairness_key=str(flow_id),
+        )
+        await wf_conn.execute(
+            f'INSERT INTO "{wf_schema}".wf_edge (child_id, parent_id, flow_id, failure_policy) '
+            "VALUES ($1, $2, $3, $4)",
+            join_id,
+            node_id,
+            flow_id,
+            policy,
+        )
+
+    rows = await wf_conn.fetch(WORKFLOW_PROGRESS_SQL.format(schema=wf_schema))
+    by_state = {
+        str(row["state"]): int(row["count"])
+        for row in rows
+        if str(row["workflow"]) == workflow_name
+    }
+
+    assert by_state == {"complete": 5}, (
+        "absorbed maybe/crashed/abandoned rows must join succeeded rows in "
+        f"state='complete', not state='failed': {by_state}"
+    )
+    assert await reconstruct_workflow_status(wf_conn, wf_sql, JobId(str(flow_id))) == "complete", (
+        "the fleet sampler and the per-run reconstruction must agree on "
+        "the same absorbed terminal rows"
+    )
+
+
+@pytest.mark.integration
+async def test_reconstruction_absorption_does_not_leak_across_map_siblings(
+    wf_conn: asyncpg.Connection,
+    wf_schema: str,
+    wf_sql: WorkflowSql,
+) -> None:
+    """One absorbed map child must not absorb an unabsorbed sibling by step key."""
+    flow_id = new_uuid()
+    await _seed_wf_row(
+        wf_conn,
+        wf_schema,
+        flow_id,
+        job_id=flow_id,
+        actor="flow",
+        status="running",
+        step_key="__flow__",
+        metadata={"workflow": "wf_progress_map_absorption"},
+    )
+    join_id = new_uuid()
+    await _seed_wf_row(
+        wf_conn,
+        wf_schema,
+        flow_id,
+        job_id=join_id,
+        status="succeeded",
+        step_key="join",
+        fairness_key=str(flow_id),
+    )
+    absorbed_id = new_uuid()
+    await _seed_wf_row(
+        wf_conn,
+        wf_schema,
+        flow_id,
+        job_id=absorbed_id,
+        status="failed",
+        step_key="item",
+        map_index=0,
+        fairness_key=str(flow_id),
+    )
+    await wf_conn.execute(
+        f'INSERT INTO "{wf_schema}".wf_edge (child_id, parent_id, flow_id, failure_policy) '
+        "VALUES ($1, $2, $3, 'collect')",
+        join_id,
+        absorbed_id,
+        flow_id,
+    )
+    fail_closed_join_id = new_uuid()
+    await _seed_wf_row(
+        wf_conn,
+        wf_schema,
+        flow_id,
+        job_id=fail_closed_join_id,
+        status="pending",
+        step_key="fail_closed_join",
+        metadata={"blocking_reason": "failed_parent"},
+        fairness_key=str(flow_id),
+    )
+    unabsorbed_id = new_uuid()
+    await _seed_wf_row(
+        wf_conn,
+        wf_schema,
+        flow_id,
+        job_id=unabsorbed_id,
+        status="failed",
+        step_key="item",
+        map_index=1,
+        fairness_key=str(flow_id),
+    )
+    await wf_conn.execute(
+        f'INSERT INTO "{wf_schema}".wf_edge (child_id, parent_id, flow_id, failure_policy) '
+        "VALUES ($1, $2, $3, 'fail_closed')",
+        fail_closed_join_id,
+        unabsorbed_id,
+        flow_id,
+    )
+
+    assert await reconstruct_workflow_status(wf_conn, wf_sql, JobId(str(flow_id))) == "failed", (
+        "the sibling on a fail_closed edge is a real failure; the other "
+        "sibling's collect absorption must not hide it"
+    )
+
+
+@pytest.mark.integration
+async def test_reconstruction_cancelled_collect_child_stays_cancelled(
+    wf_conn: asyncpg.Connection,
+    wf_schema: str,
+    wf_sql: WorkflowSql,
+) -> None:
+    """Absorption belongs to the failure class, never a cancelled skip.
+
+    A never-granted cancelled child can feed a succeeded collect join. Its
+    edge satisfies the status-blind SQL absorption predicate, but cancelling
+    the child must still reconstruct ``cancelled`` just as the fleet sampler
+    projects it; preserving that edge absorption on the terminal duplicate
+    must not turn the run complete.
+    """
+    from taskq.workflows._sql_status import WORKFLOW_PROGRESS_SQL
+
+    flow_id = new_uuid()
+    workflow_name = f"wf_progress_cancelled_{flow_id.hex[:8]}"
+    await _seed_wf_row(
+        wf_conn,
+        wf_schema,
+        flow_id,
+        job_id=flow_id,
+        actor="flow",
+        status="running",
+        step_key="__flow__",
+        metadata={"workflow": workflow_name},
+    )
+    join_id = new_uuid()
+    await _seed_wf_row(
+        wf_conn,
+        wf_schema,
+        flow_id,
+        job_id=join_id,
+        status="succeeded",
+        step_key="collect_join",
+        fairness_key=str(flow_id),
+    )
+    cancelled_id = new_uuid()
+    await _seed_wf_row(
+        wf_conn,
+        wf_schema,
+        flow_id,
+        job_id=cancelled_id,
+        status="cancelled",
+        step_key="cancelled_child",
+        fairness_key=str(flow_id),
+    )
+    await wf_conn.execute(
+        f'INSERT INTO "{wf_schema}".wf_edge (child_id, parent_id, flow_id, failure_policy) '
+        "VALUES ($1, $2, $3, 'collect')",
+        join_id,
+        cancelled_id,
+        flow_id,
+    )
+
+    rows = await wf_conn.fetch(WORKFLOW_PROGRESS_SQL.format(schema=wf_schema))
+    by_state = {
+        str(row["state"]): int(row["count"])
+        for row in rows
+        if str(row["workflow"]) == workflow_name
+    }
+    assert by_state == {"complete": 1, "cancelled": 1}, by_state
+
+    # The shared per-node read feeds the CLI and admin directly. It must
+    # carry the same failure-class boundary or those surfaces derive complete
+    # even after reconstruction is repaired.
+    node_rows = await wf_conn.fetch(wf_sql.workflow_nodes, flow_id)
+    absorbed_by_key = {str(row["step_key"]): bool(row["absorbed"]) for row in node_rows}
+    assert absorbed_by_key == {"collect_join": False, "cancelled_child": False}
+    assert await reconstruct_workflow_status(wf_conn, wf_sql, JobId(str(flow_id))) == "cancelled"

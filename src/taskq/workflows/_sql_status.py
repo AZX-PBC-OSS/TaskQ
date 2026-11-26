@@ -2,7 +2,10 @@
 current jobs rows are the current-node record — no status cache to
 corrupt; wf_step_ledger is claim/attempt history and replay data, never
 a current-status source), the per-node
-variant (the admin page's read, by run id — bounded), and the per-map
+variant (the admin page's read, by run id — bounded), the fleet
+wf-progress sampler (the maintenance leader's gauge read, deriving the
+node-state classes IN the query — the gauge's contract is the
+derivation's), and the per-map
 done/total (the counter's complement, computed IN the query — not a
 second instrument, one fewer series to keep consistent).
 
@@ -13,20 +16,54 @@ parameter binding (the JSONB-landmine rule, _sql.py's docstring).
 
 from __future__ import annotations
 
-
 # ── the absorption record (the flow-fenced join fix) ──────
-# The SQL predicate deciding whether a failed node's failure was
-# absorbed — shared verbatim by the per-node rollup (the derivation's
-# input) and the maintenance leg (the root finalize), so the two can
-# never drift. the fence is not absorption: the edge's declared policy
-# (collect | maybe) alone absorbs nothing — the record must show the
-# absorption ran, and a join row blocked with a terminal reason
-# ('failed_parent' — a failed parent's fail-closed/fenced resolution —
-# 'orphan_parent', or 'flow_dead' — the flow's own death fencing the
-# fire) can never deliver the fan-in. The EXISTS-any-absorbing-edge
-# variant marked every mixed-policy failure absorbed, and the derivation
-# could never say 'failed' for a failed-closed run — the envelope lied
-# ``{node}`` is the failed node's row alias.
+# One predicate, and every rendering site applies its own status gate:
+# ``absorbed_exists`` is the POLICY-vs-FENCE probe and is status-blind on
+# the node it is handed. Its consumers:
+#
+# * ``absorbed_projection`` wraps it in the failure-class CASE for the
+#   per-node rollup (``WORKFLOW_NODES_SQL``) and ``taskq flows list``'s
+#   node projection — only failed / crashed / abandoned rows can be
+#   absorbed, so a cancelled skip on a collect/maybe edge stays cancelled
+#   rather than deriving through the edge as an absorbed failure;
+# * ``WORKFLOW_ROOT_MAINTAIN_SQL`` (the maintenance leg) conjoins the
+#   probe with the same failure-class gate at both of its sites, spelled
+#   inline because ``bool_or`` / ``array_agg`` need the predicate, not a
+#   projected column;
+# * ``FLOW_FAILURE_SQL_TEMPLATE`` (``api/_sql_runner.py`` — the run's
+#   failure face) negates the probe to find the newest non-absorbed failed
+#   node;
+# * ``WORKFLOW_PROGRESS_SQL`` (the fleet sampler) builds the same
+#   policy-vs-fence set once in its ``absorbed`` CTE, sharing
+#   ``_ABSORBING_POLICIES_SQL`` and ``_child_unfenced_predicate`` with the
+#   probe, and joins it as ``a.id IS NOT NULL``.
+#
+# The probe itself: the edge's declared policy (collect | maybe) alone
+# absorbs nothing — the record must show the absorption ran, and a join row
+# blocked with a terminal reason ('failed_parent' — a failed parent's
+# fail-closed/fenced resolution — 'orphan_parent', or 'flow_dead' — the
+# flow's own death fencing the fire) can never deliver the fan-in. The
+# EXISTS-any-absorbing-edge variant marked every mixed-policy failure
+# absorbed, and the derivation could never say 'failed' for a failed-closed
+# run — the envelope lied. ``{node}`` is the failed node's row alias.
+
+#: The edge policies whose declared fan-in can absorb a failure.
+_ABSORBING_POLICIES_SQL = "('collect', 'maybe')"
+
+#: The terminal ``blocking_reason`` stamps the fence writes on a join row
+#: that can never fire; such a row cannot deliver the fan-in.
+_FENCED_BLOCKING_REASONS_SQL = "('failed_parent', 'orphan_parent', 'flow_dead')"
+
+
+def _child_unfenced_predicate(alias: str) -> str:
+    """The child row is not fenced out of the fan-in: a pending row blocked
+    with a terminal reason can never deliver its edge's absorption."""
+    return (
+        f"NOT ({alias}.status = 'pending'"
+        f" AND {alias}.metadata->>'blocking_reason' IN {_FENCED_BLOCKING_REASONS_SQL})"
+    )
+
+
 def absorbed_exists(node_alias: str) -> str:
     return (
         "EXISTS (\n"
@@ -34,9 +71,33 @@ def absorbed_exists(node_alias: str) -> str:
         '            FROM "{schema}".wf_edge e\n'
         '            JOIN "{schema}".jobs j2 ON j2.id = e.child_id\n'
         f"            WHERE e.parent_id = {node_alias}.id\n"
-        "              AND e.failure_policy IN ('collect', 'maybe')\n"
-        "              AND NOT (j2.status = 'pending' AND j2.metadata->>'blocking_reason' IN ('failed_parent', 'orphan_parent', 'flow_dead'))\n"
+        f"              AND e.failure_policy IN {_ABSORBING_POLICIES_SQL}\n"
+        f"              AND {_child_unfenced_predicate('j2')}\n"
         "        )"
+    )
+
+
+# The failure-class gate every absorption projection applies. A node can be
+# absorbed only when it failed (the derivation folds crashed/abandoned into
+# the failed class); a cancelled or otherwise non-failed row that happens to
+# parent a collect/maybe edge is NOT absorbed. One rendering of the gate for
+# the per-node rollup, ``taskq flows list`` and the fleet sampler, so the
+# surfaces cannot disagree about which rows are even candidates.
+#
+# ``absorbed`` overrides the correlated probe for the fleet sampler, which
+# precomputes the same set once and passes ``a.id IS NOT NULL`` against its
+# materialized CTE: PostgreSQL decorrelates the correlated form inside the
+# sampler into a hashed subplan built before any row is classified (a full
+# ``jobs`` + ``wf_edge`` walk — measured), while the CTE form stays
+# per-relation index-driven.
+def absorbed_projection(node_alias: str, *, absorbed: str | None = None) -> str:
+    probe = absorbed if absorbed is not None else absorbed_exists(node_alias)
+    return (
+        "CASE WHEN "
+        f"{node_alias}.status IN ('failed', 'crashed', 'abandoned')\n"
+        f"            THEN {probe}\n"
+        "            ELSE FALSE\n"
+        "       END"
     )
 
 
@@ -82,9 +143,11 @@ GROUP BY status
 # marker's derivation input). Every status surface reads this query; the
 # columns at the source are one read — no CLI-side supplement fetch
 # (two reads where one suffices).
-# The absorption record is absorbed_exists's policy-vs-
-# fence predicate — the edge's declaration alone absorbs nothing (the
-# envelope never lies).
+# The absorption record is absorbed_projection's failure-class gate around
+# absorbed_exists — the edge's declaration alone absorbs nothing (the
+# envelope never lies). Project it only for the failure class: the predicate
+# is status-blind on the node, and a cancelled skip on a collect/maybe edge
+# is cancelled, never an absorbed failure.
 WORKFLOW_NODES_SQL = (
     """\
 SELECT j.id, j.step_key, j.map_index, j.status, j.deps_pending, j.parent_id,
@@ -122,7 +185,7 @@ SELECT j.id, j.step_key, j.map_index, j.status, j.deps_pending, j.parent_id,
        j.lock_expires_at, j.last_heartbeat_at,
        j.code_version,
        """
-    + absorbed_exists("j")
+    + absorbed_projection("j")
     + """ AS absorbed,
        j.metadata->>'error' AS error_jsonb,
        j.error_class, j.error_message
@@ -131,6 +194,136 @@ WHERE (j.metadata->>'flow_id')::uuid = $1::uuid
   AND j.metadata ? 'flow_id'
   AND j.step_key <> '__flow__'
 ORDER BY j.id
+"""
+)
+
+
+# The fleet wf-progress sampler: per (declared workflow, DERIVED node
+# state) node counts — one grouped read for ``taskq.wf_progress_nodes_total``
+# and its ``TaskQWorkflowBlockedStuck`` alert. The gauge's documented
+# contract (docs/guides/observability.md) is the derivation's node-state
+# classes, NOT the raw ``job_status`` enum: the enum has no 'blocked' and
+# no 'complete' member (01.00.00_01), so a raw projection left
+# ``state="blocked"`` emit-able by nothing and the alert permanently dead.
+# The classification below is ``NodeView.is_blocked_row`` /
+# ``derive_workflow_status`` (``_status.py``) applied per ROW — this gauge
+# counts individual nodes, so the derivation's run-level
+# ``cancel_in_flight`` reads the node's own ``cancel_phase`` rather than
+# the root's ``cancel_requested_at``.
+#
+# THE PLAN IS PART OF THE CONTRACT (measured, not asserted). Every
+# relation is index-served: the ``nodes`` pass rides
+# ``jobs_wf_flow_nodes_idx`` (01.00.26_02 — the uuid-cast expression, the
+# workflow-rows-only partial, which this WHERE names exactly) exactly
+# ONCE; ``failed_nodes`` is derived from that materialized projection (no
+# second walk of the node index). The root population rides
+# ``jobs_wf_root_retention_idx`` (the root-only partial, 01.00.43_01 — one
+# row per run), the absorption candidate scan rides ``wf_edge_parent_idx``
+# ONCE (driven by the failed ids as an array, so the edge ledger is
+# probed, never walked), and each candidate's fence check rides
+# ``jobs_pkey`` over the parent's aggregated child ids (``LIMIT 1`` stops
+# at the first absorbing edge). Measured with EXPLAIN (ANALYZE, BUFFERS) at
+# 140,050 jobs / 40,050 workflow nodes / 10,000 failed-class rows:
+# zero Seq Scan on ``jobs`` and zero Seq Scan on ``wf_edge``; one scan of
+# ``jobs_wf_flow_nodes_idx`` and one of ``wf_edge_parent_idx``; total cost
+# ~1.1e4, p50 ~56 ms and ~15.7k shared buffer hits on the development host
+# (warm cache) — equal-or-better than the prior two-scan CTE form on the
+# same host (~1.5e4, ~58 ms, ~28k hits). Below ``jit_above_cost`` so
+# nothing is JIT-amplified. The same access paths hold at a 110,000-edge
+# shape (one bitmap index probe of ``wf_edge_parent_idx``, ~174 ms, still
+# zero Seq Scan on ``wf_edge``).
+# The correlated form (``absorbed_exists`` inline in the CASE) is NOT
+# used here: PostgreSQL decorrelates it into a hashed subplan built
+# before any row is classified — a full ``Seq Scan`` of ``jobs`` (130k
+# rows at that shape) plus ``wf_edge``, cost ~1.2e6, ~451-600 ms. The
+# branch guard was inert in this statement, whatever it buys the
+# per-node read. Precomputing the same predicate into ``absorbed``
+# keeps the gate literal (only failed/crashed/abandoned rows are
+# probed) and the plan linear in the node population.
+#
+# Held detection is the in-row ``metadata ? 'hold'`` JSONB check — the
+# dispatch fence itself (``_dispatch_sql``), so no ``wf_signals`` join.
+# The ``nodes`` projection carries only the scalar columns the
+# classification reads (never the raw JSONB blob). The ``_other_``
+# collapse stays in the sampler (it knows the registered names); the read
+# groups by the run's own stamped name, registered or not.
+# The fallback is ``n.status::text``, not ``'pending'``: every current enum
+# member is classified explicitly, so a future one surfaces loudly instead
+# of silently folding into the queue bucket.
+WORKFLOW_PROGRESS_SQL = (
+    """\
+WITH nodes AS MATERIALIZED (
+    SELECT n.id, n.status, n.deps_pending, n.cancel_phase,
+           (n.metadata ? 'hold') AS held,
+           n.metadata->>'blocking_reason' AS blocking_reason,
+           (n.metadata->>'flow_id')::uuid AS flow_id
+    FROM "{schema}".jobs n
+    WHERE n.metadata ? 'flow_id'
+      AND n.step_key IS NOT NULL AND n.step_key <> '__flow__'
+),
+roots AS MATERIALIZED (
+    SELECT r.id, r.metadata->>'workflow' AS workflow
+    FROM "{schema}".jobs r
+    WHERE r.step_key = '__flow__'
+),
+failed_nodes AS MATERIALIZED (
+    SELECT id FROM nodes WHERE status IN ('failed', 'crashed', 'abandoned')
+),
+failed_ids AS MATERIALIZED (
+    SELECT array_agg(id) AS ids FROM failed_nodes
+),
+edge_parents AS MATERIALIZED (
+    SELECT e.parent_id AS id, array_agg(e.child_id) AS child_ids
+    FROM failed_ids fi
+    CROSS JOIN LATERAL (
+        SELECT e.parent_id, e.child_id
+        FROM "{schema}".wf_edge e
+        WHERE e.parent_id = ANY(fi.ids)
+          AND e.failure_policy IN """
+    + _ABSORBING_POLICIES_SQL
+    + """
+    ) e
+    GROUP BY e.parent_id
+),
+absorbed AS MATERIALIZED (
+    SELECT DISTINCT ep.id
+    FROM edge_parents ep
+    JOIN LATERAL (
+        SELECT 1 AS hit
+        FROM "{schema}".jobs j2
+        WHERE j2.id = ANY(ep.child_ids)
+          AND """
+    + _child_unfenced_predicate("j2")
+    + """
+        LIMIT 1
+    ) hit ON TRUE
+)
+SELECT COALESCE(rt.workflow, '_other_') AS workflow,
+       CASE
+           WHEN n.status = 'running' THEN 'running'
+           WHEN n.status IN ('pending', 'scheduled') AND n.cancel_phase > 0
+               THEN 'running'
+           WHEN """
+    + absorbed_projection("n", absorbed="a.id IS NOT NULL")
+    + """
+               THEN 'complete'
+           WHEN n.status IN ('failed', 'crashed', 'abandoned') THEN 'failed'
+           WHEN n.status = 'succeeded' THEN 'complete'
+           WHEN n.status = 'cancelled' THEN 'cancelled'
+           WHEN n.status = 'pending' AND (
+                   n.deps_pending > 0
+                   OR n.held
+                   OR (n.blocking_reason IS NOT NULL
+                       AND n.blocking_reason NOT IN ('join', 'body_unavailable'))
+               ) THEN 'blocked'
+           WHEN n.status IN ('pending', 'scheduled') THEN 'pending'
+           ELSE n.status::text
+       END AS state,
+       count(*) AS count
+FROM nodes n
+JOIN roots rt ON rt.id = n.flow_id
+LEFT JOIN absorbed a ON a.id = n.id
+GROUP BY 1, 2
 """
 )
 

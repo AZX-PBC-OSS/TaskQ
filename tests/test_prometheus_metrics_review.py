@@ -1476,13 +1476,17 @@ def test_harness_series_are_bound_to_the_served_exposition(
                 f"promtool input series {name!r} is not a series the real "
                 "scrapes served - the harness has drifted from the emitted truth"
             )
-    # The four emitter-bound families: the fed label VALUES must match
-    # what the real emitters serve, not just the names.
+    # The emitter-bound families: the fed label VALUES must match what
+    # the real emitters serve, not just the names. ``wf_progress`` is
+    # bound on BOTH labels it carries: ``state`` is the one the alert
+    # filters on, so binding only ``workflow`` left the harness free to
+    # feed a state the production sampler cannot emit.
     for family, bound_label in (
         ("taskq_maintenance_leader_sweep_timeouts_total", "sweep_name"),
         ("taskq_maintenance_leader_sweep_unexpected_errors_total", "sweep_name"),
         ("taskq_cron_skipped_slots_total", "actor"),
         ("taskq_wf_progress_nodes_total", "workflow"),
+        ("taskq_wf_progress_nodes_total", "state"),
     ):
         served_label_values = emitter.label_values(family, bound_label)
         for case in cases:

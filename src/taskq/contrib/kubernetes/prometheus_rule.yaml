@@ -272,7 +272,8 @@ spec:
               gauge sampler's read did not complete. The sweep_name label
               says which: sweep names are aborted batches; the sampler names
               (queue_depth, backlog_detection, actor_backlog,
-              reservation_slots) are reads that did not happen for ANY
+              reservation_slots, wf_progress, cancel_pending, retry_ladder,
+              ratelimit_buckets) are reads that did not happen for ANY
               reason, counted every failure because a dead sampler's gauges
               go stale or absent while nothing else names the loss — the
               per-actor backlog read dying, for instance, resolves
@@ -488,11 +489,15 @@ spec:
               in docs/guides/insights.md); the node rows name the blocking
               reason (metadata.blocking_reason: 'join' waiting on parents,
               'orphan_parent' a misnamed child, 'failed_parent' a failed
-              parent's fail-closed cascade, 'body_unavailable' a fired join
-              whose body never resolved — that one is a deployment defect:
-              the workflow's definitions are not imported in every worker
-              process). Operators should override the threshold in their
-              own rule configuration. Runbook:
+              parent's fail-closed cascade, 'flow_dead' a join whose run
+              root terminalized before it fired, 'body_unavailable' a fired
+              join whose body never resolved — that last is a deployment
+              defect: the workflow's definitions are not imported in every
+              worker process). A fired 'join' or 'body_unavailable' row
+              derives state="pending" unless the same row is also held
+              (metadata ? 'hold'), which is a block in its own right and
+              makes the row unclaimable. Operators should override the
+              threshold in their own rule configuration. Runbook:
               docs/guides/runbooks.md#taskqworkflowblockedstuck.
 
         - alert: TaskQRunningLeaseExpired
