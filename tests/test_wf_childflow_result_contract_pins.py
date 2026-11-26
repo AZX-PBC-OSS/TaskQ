@@ -33,7 +33,7 @@ from __future__ import annotations
 import asyncio
 import json
 from dataclasses import dataclass
-from typing import Any, NoReturn, cast
+from typing import Any, cast
 
 import asyncpg
 import pytest
@@ -56,6 +56,7 @@ from taskq.workflows import (
 )
 from taskq.workflows._childflow import CtxSpawnOps
 from taskq.workflows.api._runner_ladder import is_deterministic_authoring_failure
+from tests._wf_fixtures import StubSpawnHost
 
 
 class LeafOut(BaseModel):
@@ -132,39 +133,10 @@ _CANARY = "i749-dur-canary"
 _UNREGISTERED = "i749_never_registered"
 
 
-class _InertSentinel:
-    """A stand-in for one of the host's declared fields: attribute reads
-    succeed (and return the sentinel), any invocation fails loudly."""
-
-    def __getattr__(self, name: str) -> _InertSentinel:
-        return self
-
-    def __call__(self, *args: object, **kwargs: object) -> NoReturn:
-        raise AssertionError("the spawn used a host field before refusing the result contract")
-
-
-class _StubSpawnHost:
-    """``_SpawnHost``'s seven declared fields as inert sentinels. A harmless
-    ``self.*`` read before the guard costs nothing (a behaviour-preserving
-    hoist must not red the ordering pin); the first real use raises."""
-
-    __slots__ = ("_ledger_id", "_pool", "_wsql", "attempt", "flow_id", "job_id", "node_key")
-
-    def __init__(self) -> None:
-        sentinel = _InertSentinel()
-        self.flow_id = sentinel
-        self.job_id = sentinel
-        self.node_key = sentinel
-        self.attempt = sentinel
-        self._pool = sentinel
-        self._wsql = sentinel
-        self._ledger_id = sentinel
-
-
 def _refusal_message(name: str, result: object) -> str:
     """The refusal text for *result*, taken from the guard itself."""
     with pytest.raises(SpawnResultModelError) as exc_info:
-        asyncio.run(CtxSpawnOps.spawn_flow(_StubSpawnHost(), name, result=result))
+        asyncio.run(CtxSpawnOps.spawn_flow(StubSpawnHost(), name, result=result))
     return str(exc_info.value)
 
 
@@ -366,7 +338,7 @@ class TestSpawnResultGuardIsFirst:
     ) -> None:
         with pytest.raises(SpawnResultModelError, match=r"spawn_flow.*result="):
             asyncio.run(
-                CtxSpawnOps.spawn_flow(_StubSpawnHost(), _UNREGISTERED, result=result, key=key)
+                CtxSpawnOps.spawn_flow(StubSpawnHost(), _UNREGISTERED, result=result, key=key)
             )
 
     @pytest.mark.parametrize("key", [None, "k"])
@@ -378,7 +350,7 @@ class TestSpawnResultGuardIsFirst:
     def test_a_model_class_passes_the_guard(self, result: object, key: str | None) -> None:
         with pytest.raises(ChildWorkflowUnknownError):
             asyncio.run(
-                CtxSpawnOps.spawn_flow(_StubSpawnHost(), _UNREGISTERED, result=result, key=key)
+                CtxSpawnOps.spawn_flow(StubSpawnHost(), _UNREGISTERED, result=result, key=key)
             )
 
     @pytest.mark.parametrize(

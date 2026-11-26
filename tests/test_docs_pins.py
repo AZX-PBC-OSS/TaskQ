@@ -716,3 +716,90 @@ def test_docs12_the_upgrading_guide_publishes_the_skip_refusal_breaking_change()
         "Return `[]` from the source body" in body
         or "return `[]` from the source body" in body.lower()
     ), "the breaking-change note does not state the migration"
+
+
+def test_docs13_the_guide_states_the_terminal_less_spawn_refusal() -> None:
+    """§3b's spawn-target paragraph is the operator-consequence text: it must
+    name both target refusals, state the Python catch compatibility AND the
+    row-level exact-match consequence (the rows record the subclass only, so
+    matching the base matches zero of them), state the determinism with its
+    per-process rolling-deploy caveat, and name the remedy. It must not
+    repeat the false row-level advice "match ... the base's"."""
+    text = _GUIDE.read_text(encoding="utf-8")
+    section = re.search(r"\*\*The spawn target\.\*\*(.*?)(?=\n\n\*\*)", text, re.DOTALL)
+    assert section is not None, "the guide's §3b spawn-target paragraph moved — the pin fails loud"
+    body = " ".join(section.group(1).split())
+
+    assert "ChildWorkflowUnknownError" in body and "ChildWorkflowNoTerminalError" in body, (
+        f"the paragraph does not name both target refusals: {body[:400]!r}"
+    )
+    assert "`except ChildWorkflowUnknownError:` catches both" in body, (
+        "the paragraph does not state the Python catch compatibility"
+    )
+    assert "(or the base's)" not in body, (
+        "the paragraph repeats the row-level 'or the base's' advice — a row-level "
+        "alert matching only the base matches zero terminal-less refusal rows"
+    )
+    assert "match both names" in body, (
+        "the paragraph does not tell row-level alerts/queries to match both names"
+    )
+    assert "spends no retry budget" in body, (
+        "the paragraph does not state that the refusal spends no retry budget"
+    )
+    assert "jobs.attempt" in body and "claim ordinal" in body, (
+        "the paragraph does not qualify jobs.attempt as the claim ordinal (a "
+        "hold's resume increments it, so it is not always 1)"
+    )
+    assert "within a process" in body and "rolling deploy" in body, (
+        "the paragraph states the determinism premise as absolute — the "
+        "per-process premise needs its rolling-deploy caveat"
+    )
+    assert "returning its step promise" in body, (
+        "the paragraph does not name the remedy (return the child's step promise)"
+    )
+
+
+def test_docs14_the_upgrading_guide_publishes_the_terminal_less_spawn_refusal() -> None:
+    """The durable ``error_class`` rename and the collapsed attempt count
+    change what existing rows report without changing what callers accept, so
+    ``## Silent behaviour changes`` owes the entry — matching the bare-decimal
+    ``key=`` precedent's shape: the catch compatibility, the determinism with
+    its rolling-deploy caveat, and the remedy."""
+    text = (_REPO / "docs" / "guides" / "upgrading.md").read_text(encoding="utf-8")
+    section = re.search(r"## Silent behaviour changes\n(.*?)(?=\n## )", text, re.DOTALL)
+    assert section is not None, "the `## Silent behaviour changes` section is missing"
+    blocks = [
+        " ".join(block.split())
+        for block in section.group(1).split("\n\n")
+        if "ChildWorkflowNoTerminalError" in block
+    ]
+    assert blocks, (
+        "the silent-behaviour-changes section never names ChildWorkflowNoTerminalError: "
+        "the durable error_class these rows record changed with no upgrading entry, so "
+        "an operator's exact-match alert or saved query silently stops matching"
+    )
+    entry = " ".join(blocks)
+    assert "error_class" in entry, (
+        f"the entry does not name the durable error_class rename: {entry[:400]!r}"
+    )
+    assert "`except ChildWorkflowUnknownError:`" in entry, (
+        "the entry does not state that Python's base-class guard still catches both"
+    )
+    assert "(or the base's)" not in entry, (
+        "the entry repeats the row-level 'or the base's' advice — matching only the "
+        "base matches zero terminal-less refusal rows"
+    )
+    assert "retry ladder" in entry and "exactly one failed ledger row" in entry, (
+        "the entry does not state the deterministic refusal and its one failed row"
+    )
+    assert "claim ordinal" in entry, (
+        "the entry does not qualify jobs.attempt as the claim ordinal (a hold's "
+        "resume bumps it, so it is not always 1)"
+    )
+    assert "within a process" in entry and "rolling deploy" in entry, (
+        "the entry states the determinism premise as absolute — the per-process "
+        "premise needs its rolling-deploy caveat"
+    )
+    assert "step promise" in entry, (
+        "the entry does not name the remedy (return the child's step promise)"
+    )

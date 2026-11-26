@@ -162,15 +162,21 @@ class ChildWorkflowNoTerminalError(ChildWorkflowUnknownError):
     could never read a result, so the spawn refuses before any child row
     or spawn cursor is written.
 
-    A DETERMINISTIC authoring failure (the ladder's own routing): the
-    compiled graph of a registered name cannot gain a terminal by
-    re-running, so the node terminal-fails on attempt 1 with this class
-    on the record and no ``on_exhaustion`` effect. Distinct from its base
-    :class:`ChildWorkflowUnknownError` because the workflow is neither
-    unknown nor missing — reusing that class would record a registered
-    workflow as unregistered. The remedy: give the child workflow a
-    terminal (return its step promise, or ``build(...)`` it) rather than
-    sinking it."""
+    A DETERMINISTIC authoring failure (the ladder's own routing): within
+    a process, re-running cannot give the compiled graph a terminal, so
+    the refusal spends no retry budget and writes one failed ledger row
+    (``jobs.attempt`` reads the claim ordinal, which a prior hold's resume
+    increments, so it is not always 1), with this class on the record and
+    no ``on_exhaustion`` effect. During a mixed-version rolling deploy that
+    adds a terminal to a previously terminal-less child, an in-flight
+    parent landing on an older worker fails deterministically without
+    retrying onto a newer worker.
+
+    Distinct from its base :class:`ChildWorkflowUnknownError` because the
+    workflow is neither unknown nor missing — reusing that class would
+    record a registered workflow as unregistered. The remedy: give the
+    child workflow a terminal (return its step promise, or ``build(...)``
+    it) rather than sinking it."""
 
 
 class ChildFlowLostError(RuntimeError):
@@ -620,19 +626,25 @@ class ChildHandle[G: BaseModel]:
 # ── the spawn (the ctx mixin) ───────────────────────────────────────────
 
 
-#: The persisted refusal message's name budget. The ladder and the loop
-#: boundary keep only the first ``MESSAGE_TERMINAL_MAX`` characters of the
-#: body's exception (``_progress``), so the display name is bounded to keep
-#: the diagnosis and the remedy inside that window for any registry key —
-#: nothing else bounds a workflow name.
+#: The persisted refusal message's name budget, measured on the RENDERED
+#: ``repr`` (``repr`` is not length-preserving: a non-printable astral code
+#: point costs ten characters). The ladder and the loop boundary keep only
+#: the first ``MESSAGE_TERMINAL_MAX`` characters of the body's exception
+#: (``_progress``), so the rendered name is bounded to keep the diagnosis
+#: and the remedy inside that window for any registry key — nothing else
+#: bounds a workflow name.
 _SPAWN_NAME_DISPLAY_MAX: Final[int] = 40
 
 
 def _display_spawn_name(name: str) -> str:
-    """The workflow name as the persisted message shows it."""
-    if len(name) <= _SPAWN_NAME_DISPLAY_MAX:
-        return name
-    return f"{name[: _SPAWN_NAME_DISPLAY_MAX - 3]}..."
+    """The workflow name as the persisted message shows it: the already
+    quoted ``repr`` (the repr IS the display) bounded so escaped
+    non-printable characters cannot crowd the diagnosis and the remedy out
+    of the ``MESSAGE_TERMINAL_MAX`` window."""
+    rendered = repr(name)
+    if len(rendered) <= _SPAWN_NAME_DISPLAY_MAX:
+        return rendered
+    return f"{rendered[: _SPAWN_NAME_DISPLAY_MAX - 3]}..."
 
 
 def _offending_value_name(value: object) -> str:
@@ -718,10 +730,11 @@ class CtxSpawnOps(_SpawnHost):
             # an offending value is named by class: the message is persisted
             # unredacted.
             got = _offending_value_name(result)
-            # remedy before the value: the loop boundary keeps only 200 chars,
-            # and the name is bounded so the remedy lands there for any key.
+            # remedy before the value: the loop boundary keeps only
+            # MESSAGE_TERMINAL_MAX chars (`_progress`), and the name is
+            # bounded so the remedy lands there for any key.
             raise SpawnResultModelError(
-                f"ctx.spawn_flow({_display_spawn_name(name)!r}): result= must be a "
+                f"ctx.spawn_flow({_display_spawn_name(name)}): result= must be a "
                 "subclass of pydantic BaseModel (not BaseModel itself); pass that "
                 f"class; got {got}"
             )
@@ -733,7 +746,7 @@ class CtxSpawnOps(_SpawnHost):
             result.model_json_schema()
         except Exception as exc:  # Why: pydantic runs author types' schema hooks here; any failure means the hold cannot use the class.
             raise SpawnResultModelError(
-                f"ctx.spawn_flow({_display_spawn_name(name)!r}): result= must be a "
+                f"ctx.spawn_flow({_display_spawn_name(name)}): result= must be a "
                 "model class pydantic can schema; pass that class; "
                 f"{result.__name__} failed ({type(exc).__name__})"
             ) from exc
@@ -743,18 +756,18 @@ class CtxSpawnOps(_SpawnHost):
             compiled_obj = get_compiled_workflow(name)
         except KeyError:
             raise ChildWorkflowUnknownError(
-                f"workflow {name!r} is not registered — the spawn resolves the "
-                "child from the compile registry (the registration door: "
+                f"workflow {_display_spawn_name(name)} is not registered — the spawn "
+                "resolves the child from the compile registry (the registration door: "
                 "app.get(name); the definitions must be imported in THIS process)"
             ) from None
         from taskq.workflows.api._app import CompiledWorkflow
 
         assert isinstance(compiled_obj, CompiledWorkflow), type(compiled_obj)
         if compiled_obj.terminal is None:
-            # the name is bounded so the diagnosis and the remedy stay inside
-            # the persisted message window for any registry key.
+            # the rendered name is bounded so the diagnosis and the remedy stay
+            # inside the persisted message window (`_progress`) for any key.
             raise ChildWorkflowNoTerminalError(
-                f"ctx.spawn_flow({_display_spawn_name(name)!r}): the named child "
+                f"ctx.spawn_flow({_display_spawn_name(name)}): the named child "
                 "workflow is registered but declares no terminal node — the join "
                 "could never read a result; return the child's step promise (or "
                 "build(...) it) instead of sink-ing it"

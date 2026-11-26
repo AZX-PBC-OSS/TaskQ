@@ -63,6 +63,7 @@ from taskq.workflows._policy import FiniteReservationCohort
 from taskq.workflows.api._app import CompiledWorkflow
 from taskq.workflows.api._runner_errors import WorkflowRootMissingError, WorkflowRunError
 from taskq.workflows.api._sql_runner import render_sql
+from taskq.workflows.definitions import DuplicateWorkflowError
 
 if TYPE_CHECKING:
     import asyncpg
@@ -287,11 +288,15 @@ def reset_app_registry_for_tests() -> None:
     residue. The WeakSet clear does not destroy any app object: an owner
     that still holds its app can re-derive everything from the object
     itself (``app.get`` recompiles idempotently; the D1 registry's
-    absorption guard owns the name collision).
+    absorption guard owns the name collision). The compiled cache clears
+    with it: a compiled graph is the projection's input, so a test's
+    compile residue must not answer the NEXT test's ``spawn_flow`` lookup
+    either.
     """
     global _projection_cache
     _projection_cache = None
     _apps.clear()
+    _compiled.clear()
 
 
 def iter_imported_apps() -> list[object]:
@@ -299,11 +304,56 @@ def iter_imported_apps() -> list[object]:
     return list(_apps)
 
 
+def _compiled_body_map(compiled: object) -> dict[str, object] | None:
+    """The compiled graph's step bodies by node key, or ``None`` when the
+    object is not a compiled graph (the compiled cache is typed ``object``).
+    This is the map the D1 registry's ``register()`` compares; the terminal
+    wiring is not on it."""
+    nodes = getattr(compiled, "nodes", None)
+    if not isinstance(nodes, dict):
+        return None
+    bodies: dict[str, object] = {}
+    for key, node in cast("dict[str, object]", nodes).items():
+        body = getattr(node, "body", None)
+        if body is not None:
+            bodies[key] = body
+    return bodies
+
+
 def record_compiled(name: str, compiled: object) -> None:
     """Record a compiled workflow under its registered name (the app's
     ``get`` calls this — the door's compiled lookup answers from here).
+
     Idempotent by the compile's own law: same module → same graph, and a
-    differing body map is refused by the D1 registry's register()."""
+    differing body map is refused by the D1 registry's register(). That
+    equality check cannot see a graph's terminal wiring (a ``WorkflowDef``
+    has no terminal), so the ONE variant it cannot refuse is guarded HERE:
+    a same-name re-record over an IDENTICAL body map whose terminal wiring
+    differs. Two apps declaring one name over equal bodies but different
+    terminals must fail closed, never silently flip the graph the
+    deterministic spawn verdict reads ("one name, one graph; a second
+    registration is a coding error, never a shadow").
+
+    A re-record whose body map differs is the registry's own case: a real
+    redeploy is a new process with no prior entry, and a same-process
+    graph swap (the versioning pins' seam) is not a shadow of one graph.
+
+    Raises :class:`DuplicateWorkflowError` — the projection's boot loop
+    records a skipped projection for it rather than crashing, the
+    registry's declared fail-closed face."""
+    existing = _compiled.get(name)
+    if existing is not None and existing is not compiled:
+        existing_bodies = _compiled_body_map(existing)
+        if (
+            existing_bodies is not None
+            and existing_bodies == _compiled_body_map(compiled)
+            and getattr(existing, "terminal", None) != getattr(compiled, "terminal", None)
+        ):
+            raise DuplicateWorkflowError(
+                f"workflow {name!r} is already compiled with a different terminal "
+                "wiring over the same body map in this process; one name, one graph "
+                "— a second registration is a coding error, never a shadow"
+            )
     _compiled[name] = compiled
 
 

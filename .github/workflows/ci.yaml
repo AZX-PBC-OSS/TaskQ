@@ -193,9 +193,8 @@ jobs:
           - { python-version: "3.13", scope: full }
     steps:
       # fetch-depth 0: same reason as the coverage job — history-sensitive
-      # guards (tests/test_breaking_change_markers.py) walk the branch's
-      # commits against the base ref, which a shallow PR checkout does not
-      # provide.
+      # guards walk the branch's commits against the base ref, which a
+      # shallow PR checkout does not provide.
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0
