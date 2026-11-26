@@ -29,7 +29,7 @@ from taskq.workflows._sql import WorkflowSql
 from taskq.workflows._types import EmitChild
 from taskq.workflows.api._ctx_timer import CtxTimerOps
 from taskq.workflows.api._ctx_wait import CtxWaitOps
-from taskq.workflows.api._runner_errors import WorkflowRunError
+from taskq.workflows.api._runner_errors import DuplicateSubstepError, WorkflowRunError
 from taskq.workflows.api._sql_runner import SOURCE_CURSOR_SQL_TEMPLATE, render_sql
 from taskq.workflows.context import WorkflowSteps
 
@@ -133,8 +133,8 @@ class StepContext(CtxSpawnOps, CtxWaitOps, CtxTimerOps):
     claim_epoch: int
     _map_index: int | None = None
     _is_loop: bool = False
-    #: The loop body's iteration (``None`` outside a loop body): an unkeyed
-    #: spawn's slot cursor and run key are scoped to it.
+    #: The loop body's iteration (``None`` outside a loop body): substep
+    #: records (#743) and unkeyed spawn slot cursors/run keys are scoped to it.
     _loop_iteration: int | None = None
     _ledger_id: JobId | None = None
     #: The registered workflow's name (D1 — the signal-model catalog's
@@ -171,6 +171,9 @@ class StepContext(CtxSpawnOps, CtxWaitOps, CtxTimerOps):
     claimed_at: datetime | None = None
     budget_remaining_ms: int | None = None
     _runtime: dict[str, int] = field(default_factory=lambda: dict[str, int]())  # pyright: ignore[reportUnknownVariableType]  # Why: pyright's inference for the slots+frozen dataclass's mutable default degrades; the annotation is the truth.
+    #: The scoped substep keys running in this execution (one context per
+    #: claim, per loop iteration): the same-name duplicate's guard.
+    _substeps_in_flight: set[str] = field(default_factory=lambda: set[str]())
     #: The per-attempt wait-call counter (the wait site's deterministic call
     #: identity — ``_ctx_wait.wait_signal`` mints ``call:{attempt}:{seq}``
     #: from it): the body replays the same call order within an attempt, so
@@ -356,9 +359,21 @@ class StepContext(CtxSpawnOps, CtxWaitOps, CtxTimerOps):
         await emitter.emit(pct, message, data)
 
     async def substep(self, name: str, fn: Any, *args: Any, idempotent: bool = True) -> Any:
-        """Run *fn* once per (flow, step key); replay returns the recorded
-        result (the re-execution doctrine's cheap side: pre-wait side
-        effects are substep-ledgered and replay cheap).
+        """Run *fn* once per (calling node execution, loop iteration,
+        name); replay returns the recorded result (the re-execution
+        doctrine's cheap side: pre-wait side effects are substep-ledgered
+        and replay cheap).
+
+        The same name in two nodes, two map children, two maps or two
+        loop iterations is a different record. The same name twice in
+        one execution replays a ``succeeded`` record; a re-call after a
+        failed one in the same attempt re-runs *fn*, and that run is not
+        recorded. A call made while one with the same name is still
+        running raises :class:`DuplicateSubstepError` before any SQL (the
+        guard does not cancel the running call). Uncaught,
+        it fails the node on its first attempt; in a loop body the loop
+        exhausts as a body failure whose message names the class.
+        ``idempotent=False`` calls write no row and are exempt.
 
         The connection is never yours, body: the claim and the terminal
         write each take their own
@@ -374,6 +389,26 @@ class StepContext(CtxSpawnOps, CtxWaitOps, CtxTimerOps):
         INNER ledgered effect). The substep is
         the step-ledger's own vocabulary (``wf_step_ledger`` rows are
         what make it exactly-once)."""
+        scope = (
+            str(self.job_id)
+            if self._loop_iteration is None
+            else f"{self.job_id}.iter{self._loop_iteration}"
+        )
+        key = f"{scope}/{name}"
+        # pre-#743 rows carried the bare name (remove this leg once no pre-#743
+        # live run can exist); the node's own claim rows and a loop's
+        # <key>.iter<n> rows (every n: a lapsed driver can see a later one) share
+        # that spelling, so they are never a legacy record; n is the driver's
+        # canonical ASCII integer, so a look-alike name keeps its legacy leg
+        iter_prefix = f"{self.node_key}.iter"
+        n = name[len(iter_prefix) :]
+        self_named = name == self.node_key or (
+            self._loop_iteration is not None
+            and name.startswith(iter_prefix)
+            and n.isascii()
+            and n.isdigit()
+            and (n == "0" or n[0] != "0")
+        )
         steps = WorkflowSteps(
             self._pool,
             self._wsql,
@@ -382,5 +417,20 @@ class StepContext(CtxSpawnOps, CtxWaitOps, CtxTimerOps):
             map_index=self._map_index,
             attempt=self._claim_attempt,
             claim_epoch=self.claim_epoch,
+            legacy_step_key=None if self_named else name,
+            legacy_iteration_key=(
+                None if self._loop_iteration is None else f"{iter_prefix}{self._loop_iteration}"
+            ),
         )
-        return await steps.step(name, fn, *args, idempotent=idempotent)
+        if not idempotent:
+            return await steps.step(key, fn, *args, idempotent=False)
+        if key in self._substeps_in_flight:  # before any SQL: the first claim is never re-stamped
+            raise DuplicateSubstepError(
+                f"ctx.substep({name!r}) is already running in this node execution; "
+                "concurrent substeps need distinct names"
+            )
+        self._substeps_in_flight.add(key)
+        try:
+            return await steps.step(key, fn, *args)
+        finally:
+            self._substeps_in_flight.discard(key)

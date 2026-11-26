@@ -64,6 +64,7 @@ from taskq.exceptions import RetryAfter, Snooze
 from taskq.obs._otel import set_otel_enabled
 from taskq.testing.otel import setup_tracer
 from taskq.workflows import (
+    DuplicateSubstepError,
     FlowRunner,
     GateDecl,
     Promise,
@@ -75,6 +76,7 @@ from taskq.workflows import (
     run,
     step,
 )
+from taskq.workflows._obs import record_step_laddered
 from taskq.workflows._worker_execution import (
     execute_flow_job,
     project_workflow_actor_configs,
@@ -343,6 +345,30 @@ async def test_a_failing_step_records_the_ladder_scrubbed(
     assert failed, "the failed run's terminal event"
     assert run_span.status is not None
     assert run_span.status.status_code == trace.StatusCode.ERROR
+
+
+def test_the_laddered_event_names_the_deterministic_leaf_class(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A deterministic refusal wrapped in an ``ExceptionGroup`` (the shape a
+    body's ``asyncio.TaskGroup`` produces) records the LEAF's class on
+    ``wf.laddered`` — the same class the node row carries — never the
+    group's own ``ExceptionGroup`` wrapper name (#743 W-1). The exception
+    event still renders the raised object, scrubbed."""
+    provider, exporter = setup_tracer(monkeypatch)
+    span = provider.get_tracer(__name__).start_span("laddered pin")
+    exc = ExceptionGroup(
+        "unhandled errors in a TaskGroup",
+        [DuplicateSubstepError("ctx.substep('enrich') is already running")],
+    )
+    record_step_laddered(span, exc, retried=False)
+    span.end()
+
+    laddered = exporter.events_on("laddered pin", "wf.laddered")
+    assert laddered, [ev.name for ev in exporter.spans[0].events]
+    attrs = laddered[0].attributes
+    assert attrs is not None
+    assert attrs.get("error_class") == "DuplicateSubstepError", attrs
 
 
 # ── 5. the deferral and the hold — events on the span ────────────────────

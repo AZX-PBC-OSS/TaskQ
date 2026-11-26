@@ -9,6 +9,7 @@ from __future__ import annotations
 from typing import Final, Literal, get_args
 
 __all__ = [
+    "DuplicateSubstepError",
     "RootMissingSeat",
     "VanishedNodeError",
     "WorkflowResultDetailUnavailableError",
@@ -87,6 +88,19 @@ class VanishedNodeError(WorkflowRunError):
     truth — never an eternal zombie (a ``running`` root over a
     forever-pending node, parked budget-free, surfaced only in a
     detector's log)."""
+
+
+class DuplicateSubstepError(WorkflowRunError):
+    """One node execution issued ``ctx.substep(name, ...)`` while a call
+    with the same name was still running in it (#743). Both calls would
+    claim one ledger row, and the second claim's re-stamp drops the first
+    call's record. Every retry re-runs the same body, so the refusal is
+    DETERMINISTIC: uncaught, the node fails on its first attempt with this
+    class on the record (a loop body exhausts the loop as a body failure,
+    the class named in its message). Concurrent substeps need distinct
+    names. Fix the collision rather than retrying the node: the running
+    call is not cancelled, so a retry can run its effect again while the
+    first call is still inside ``fn``."""
 
 
 class WorkflowResultDetailUnavailableError(WorkflowRunError):

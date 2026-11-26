@@ -427,6 +427,27 @@ arbiter physically blocks double-recording, and map children of one step
 key are DIFFERENT claims. `ctx.substep("name", fn)` is the user-facing
 shape: default idempotent ON, `idempotent=False` opts a step out.
 
+**A substep record belongs to the node execution that made it.** The
+owner is the calling node's job row and, inside a loop body, the loop
+iteration. The same name in two nodes, two map children, two maps or two
+iterations is a different record, so each runs its own `fn`. Within one
+execution, calling the same name again replays a `succeeded` record. A
+re-call after a failed one in the same attempt runs `fn` again, and that
+run is not recorded. A call made while one with the same name is still
+running (for example, both inside one `asyncio.gather`) raises
+`DuplicateSubstepError` before it claims anything, and the running call
+is left alone. Uncaught, the error fails the node on its first attempt;
+in a loop body the loop exhausts as a body failure whose message names
+it. Fix the collision instead of retrying the node: because the running
+call is not cancelled, a retry can run that effect a second time while
+the first call is still inside `fn`. `idempotent=False` calls write no
+row and are exempt. Give
+concurrent substeps distinct names. The
+row's `step_key` is `<job id>/<name>`, or `<job id>.iter<n>/<name>` in a
+loop body. Upgrading a fleet across this change needs a workflow-executor
+cutover: see
+[the upgrading entry](upgrading.md#ctxsubstep-names-are-scoped-to-the-calling-node).
+
 **The substep holds no connection across the body** (the measured tax,
 stated so nobody re-pays it): the claim and the
 terminal write are ~1 ms statements, each on its OWN pool acquisition;
@@ -816,7 +837,9 @@ arms off):
   idempotently on the composite arbiter, the undelivered flag flipped in
   the insert's transaction;
 * `wf_phantom_reap` — 'running' ledger rows on terminal flows fenced (the
-  rows-alone reconstruction reconciles).
+  rows-alone reconstruction reconciles). A `ctx.substep` row's fence is
+  provisional: a call still inside `fn` when it is reaped records its own
+  outcome over the fence when it returns.
 * `wf_nodeless_root_reap` — the orphan root's belt: a flow root with
   ZERO node rows (the create-atomicity's debris shape) is
   reaped `failed` past the grace — the derivation can never develop it.
@@ -3283,7 +3306,7 @@ Every workflow fact is a row in the same database; the CLI and the explorer are 
 Reconstructing a run's story from the surfaces (no app source, no logs):
 
 1. **The shape:** `taskq flows status <run_id>` — the nodes, the derived status, every stuck row's why + remedy.
-2. **The attempts:** each node's `attempt` vs `max_attempts` is the claim count the crash reclaim gates on, while the body-failure ladder counts the node's `failed` ledger rows ([retries.md §12](retries.md#12-crash-vs-shutdown-what-happens-to-the-attempt-count)); the LEDGER is the per-attempt record. The CLI's node read (and the explorer's node panel) renders the attempt ledger per node; in SQL: `SELECT step_key, attempt, status, error_class, created_at FROM taskq.wf_step_ledger WHERE flow_id = '<run_id>' ORDER BY created_at` — every attempt's outcome, in order, with the class of every death the runner recorded (the crash reclaim never writes the ledger: a lease-reclaimed crash is its `crashed` row in `taskq.job_attempts`).
+2. **The attempts:** each node's `attempt` vs `max_attempts` is the claim count the crash reclaim gates on, while the body-failure ladder counts the node's `failed` ledger rows ([retries.md §12](retries.md#12-crash-vs-shutdown-what-happens-to-the-attempt-count)); the LEDGER is the per-attempt record. The CLI's node read (and the explorer's node panel) renders the attempt ledger per node; in SQL: `SELECT step_key, attempt, status, error_class, created_at FROM taskq.wf_step_ledger WHERE flow_id = '<run_id>' ORDER BY created_at` — every attempt's outcome, in order, with the class of every death the runner recorded (the crash reclaim never writes the ledger: a lease-reclaimed crash is its `crashed` row in `taskq.job_attempts`). The same query returns `ctx.substep` records beside the node attempts. A row whose `step_key` begins with its own `job_id` (`<job id>/<name>`, or `<job id>.iter<n>/<name>` in a loop body) is a substep record of that node job; join `taskq.jobs` on `job_id` for the node's key. (A `/` alone does not mark one: a loop's own key may contain `/`.)
 3. **The vanilla events:** `taskq job events <job_id>` — the state changes (`lock_expired` reclaims carry the dead worker's id).
 4. **The cache hits:** a node row with `metadata.wf_cache_hit` (rendered by `taskq job show <job_id>` as `cache_hit:` and by the explorer's node panel) NEVER executed — the body ran in the receipt's `run_id`, and `wf_step_cache` holds the delivered result (`SELECT content_address, run_id, created_at FROM taskq.wf_step_cache WHERE content_address = '<address>'`). A bad cached result is evicted by deleting the address's row; the next run re-executes and re-fills it:
    `DELETE FROM taskq.wf_step_cache WHERE content_address = '<address>';`

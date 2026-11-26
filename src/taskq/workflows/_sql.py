@@ -85,6 +85,7 @@ from taskq.workflows._sql_ledger import (
     LEDGER_CLAIM_SQL,
     LEDGER_FENCE_BY_ID_SQL,
     LEDGER_MEMOIZED_SQL,
+    LEDGER_SUBSTEP_MEMOIZED_SQL,
     LEDGER_TERMINAL_BY_ID_SQL,
 )
 from taskq.workflows._sql_progress import (
@@ -233,6 +234,7 @@ class WorkflowSql:
     node_progress_retention: str
     ledger_claim: str
     ledger_memoized: str
+    ledger_substep_memoized: str
     ledger_terminal_by_id: str
     ledger_fence_by_id: str
     phantom_reap: str
@@ -330,6 +332,7 @@ class WorkflowSql:
             node_progress_retention=render(NODE_PROGRESS_RETENTION_SQL),
             ledger_claim=render(LEDGER_CLAIM_SQL),
             ledger_memoized=render(LEDGER_MEMOIZED_SQL),
+            ledger_substep_memoized=render(LEDGER_SUBSTEP_MEMOIZED_SQL),
             ledger_terminal_by_id=render(LEDGER_TERMINAL_BY_ID_SQL),
             ledger_fence_by_id=render(LEDGER_FENCE_BY_ID_SQL),
             phantom_reap=render(PHANTOM_REAP_SQL),

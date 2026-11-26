@@ -37,7 +37,8 @@ async def _scheduled_at(pool: asyncpg.Pool, schema: str, flow_id: str) -> dt.dat
     async def _armed() -> dt.datetime | None:
         raw = await pool.fetchval(
             f'SELECT result FROM "{schema}".wf_step_ledger'  # noqa: S608  # Why: the schema identifier only.
-            " WHERE step_key = 'arm-recon-timer' AND flow_id = $1 AND result IS NOT NULL"
+            " WHERE step_key = job_id::text || '/arm-recon-timer' AND flow_id = $1"
+            " AND result IS NOT NULL"
             " ORDER BY id LIMIT 1",
             flow_id,
         )

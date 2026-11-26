@@ -54,6 +54,20 @@ def test_map_index_schema_error_is_a_top_level_workflow_export() -> None:
     assert MapIndexSchemaError is types_module.MapIndexSchemaError
 
 
+def test_duplicate_substep_error_is_a_top_level_workflow_export() -> None:
+    """``DuplicateSubstepError`` is a top-level ``taskq.workflows`` export by
+    the same convention: both guides teach the class to the author who must
+    catch it, so the package surface must carry it. Importable from the root,
+    IDENTICAL to its defining-module class (a re-export, never a shadow), and
+    in ``__all__``."""
+    import taskq.workflows as wf
+    import taskq.workflows.api._runner_errors as runner_errors
+    from taskq.workflows import DuplicateSubstepError
+
+    assert "DuplicateSubstepError" in wf.__all__
+    assert DuplicateSubstepError is runner_errors.DuplicateSubstepError
+
+
 def test_spawn_key_reserved_error_is_a_top_level_workflow_export() -> None:
     """``SpawnKeyReservedError`` is a top-level ``taskq.workflows`` export by
     the sibling error classes' convention: the guide documents the bare-

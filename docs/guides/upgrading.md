@@ -483,6 +483,110 @@ never diverge.
 > else changes). To name the map's node, name the SOURCE
 > (`step(source_body, key=…)`) — the join's key follows.
 
+### `ctx.substep` names are scoped to the calling node
+
+> **Unreleased.** Breaking for workflows that reuse a `ctx.substep` name
+> in more than one node, map, or loop iteration, for SQL that reads
+> substep rows from `wf_step_ledger` by their bare name, and for any
+> deploy that runs old and new workflow executors at the same time.
+
+**The behaviour change.** A `ctx.substep` record now belongs to the node
+execution that made it: the calling node's job row and, inside a loop
+body, the loop iteration. Before, the record was keyed by the bare name
+across the whole run. A second node calling `ctx.substep("x")` replayed
+the first node's result and skipped its own side effect; a substep named
+after a node key returned that node's stored envelope; two concurrent
+nodes shared one row; and a loop's later iterations replayed iteration
+0's value, so the loop never advanced. Now each owner runs its own `fn`.
+Cross-node sharing was never documented. If code relied on it, move the
+shared effect into one node. Two concurrent calls with one name inside
+one body (for example, both in one `asyncio.gather`) used to run both
+`fn`s silently. Now the second raises `DuplicateSubstepError` (a
+`WorkflowRunError`) before it claims anything, and the guard leaves the
+first one running. Uncaught, the error fails the
+node on its first attempt without spending the retry budget; in a loop
+body the loop exhausts as a body failure whose message names it.
+Fix the collision rather than retrying the node: the running call is not
+cancelled, so an operator retry can run its effect a second time while
+the first call is still inside `fn`.
+`idempotent=False` calls write no row and are exempt.
+
+**The row shape.** A substep row's `step_key` is now `<job id>/<name>`,
+or `<job id>.iter<n>/<name>` in a loop body. SQL that selected substep
+rows with `step_key = '<name>'` must select
+`step_key = job_id::text || '/<name>'` instead, or
+`step_key = job_id::text || '.iter<n>/<name>'` for loop iteration `<n>`.
+To match the name in every post-upgrade shape, loops included, select
+`starts_with(step_key, job_id::text) AND substr(step_key, strpos(step_key, '/') + 1) = '<name>'`.
+Node rows keep the node key. Rows written before the upgrade keep the
+bare name, so a query that must span the drain window selects the
+complete parenthesized predicate
+`((starts_with(step_key, job_id::text) AND substr(step_key, strpos(step_key, '/') + 1) = '<name>') OR step_key = '<name>')`;
+the post-upgrade predicate alone can never match a bare row because it
+tests the row against its own `job_id`.
+
+**Runs in flight across the upgrade.** A substep the old code recorded
+under the bare name is still replayed by its own node job (the read is
+owner-checked, so another node's bare row is never adopted). Inside a
+loop, a bare row is replayed only by the iteration that recorded it, and
+later iterations run their own `fn`. Each such replay logs a
+`workflow-substep-legacy-replay` warning with the run, the job and the
+bare key. Only pre-upgrade code writes bare rows, so the warnings stop
+once no pre-upgrade run is in flight. One for a run started after the
+upgrade means an old executor ran part of that run. Four pre-upgrade
+shapes cannot be recovered as written:
+
+- A substep named after its own node. The old code wrote it onto the
+  node's own claim row, and such a node was already wedged. After the
+  upgrade its reclaim re-runs the substep once.
+- One row that two concurrent nodes shared. The node that owns the row
+  replays the value it holds, and the other node's retry re-runs its
+  side effect once.
+- A bare row that one node wrote under another node's key, when that
+  other node had not run yet. The other node's claim still lands on that
+  row, as before the upgrade, so the run keeps the old behaviour for that
+  one row.
+- A substep in a loop body named like one of that loop's iteration keys:
+  `<loop>.iter<n>`, with `<n>` written the way the driver writes it
+  (ASCII digits, no leading zero). Its bare row is spelled like the
+  loop's own iteration rows, so it is never read as a substep record,
+  and the iteration re-runs the substep once.
+
+**The executor cutover (required).** This change has no migration, so
+nothing forces the cutover. Do not run old and new workflow executors on
+the same workflow queues at the same time: drain and stop the old
+executors, then start the new ones. That holds in the pre-POST window of
+the `01.00.42_02` `map_index` widening too, which otherwise allows a mixed
+old/new wave. In a mixed window an old executor
+that retries, reclaims or resumes a node misses the scoped record and
+re-runs the side effect, and it can still adopt another node's bare row.
+Both failures are silent: no error and no log line. (The
+`workflow-substep-legacy-replay` warning fires only when a new executor
+later replays a bare row; it does not see either failure.)
+A new executor can re-run a side effect in that window too. If an old
+executor's call is still inside `fn` when a new executor's later attempt
+runs the same substep and fails, the read prefers that later attempt's
+scoped `failed` row to the bare `succeeded` row the old call writes when
+it returns. The next attempt then runs `fn` again, repeating an effect
+the old call already completed.
+The drain is the only fence. This change does not raise the workflow
+execution-schema level, so the capability gate does not keep old
+executors out. That gate fails a claim with `WF001` when the worker is
+below the run's `required_worker_schema`, but any such stamp also makes
+the in-process `FlowRunner` refuse the run, and `ctx.substep` use is not
+declared per workflow. Using the gate here would mean stamping every run
+and refusing every direct `taskq.workflows.run()` or
+`FlowRunner.drive()` call.
+
+**Rollback is not safe for live runs.** A pre-upgrade binary runs
+workflow rows, and every live node it retries, reclaims or resumes
+re-runs, once, each substep the new code recorded. Draining first does
+not help runs parked on a hold or a timer. Either keep the workflow
+queues quarantined (no old binary subscribed to them, as in
+[the quarantine step](#rolling-taskq-py-back-with-live-workflows-the-quarantine-step))
+until the fleet rolls forward again, or accept one re-run per recorded
+substep.
+
 ### Queue and actor names are bounded at 255 characters
 
 > **Unreleased.** Breaking for anyone enqueueing to a queue name longer
@@ -3463,7 +3567,9 @@ the step that can still fix it:
    safe against every running worker.
 4. **Roll the workers.** The mixed fleet is safe in this window: old
    workers read the new row shape unchanged; new workers read the old
-   rows unchanged.
+   rows unchanged. One exception: workflow executors across the
+   `ctx.substep` scope change must not overlap; see
+   [its cutover rule](#ctxsubstep-names-are-scoped-to-the-calling-node).
 5. **The post phase, once, by hand**: `taskq migrate up --phase post` —
    after the LAST worker is up. Never a bare `taskq migrate up` ahead of
    the roll: the post phase lands immediately and old workers lose the
