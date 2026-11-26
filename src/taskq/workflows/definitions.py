@@ -21,7 +21,8 @@ from typing import Any, Final
 
 from taskq.backend._protocol import JobId
 from taskq.constants import SMALLINT_MAX
-from taskq.workflows._types import ForkSpec
+from taskq.workflows._policy import declared_retry_kind
+from taskq.workflows._types import FiniteRetryKind, ForkSpec
 
 __all__ = [
     "FAILURE_POLICIES",
@@ -67,7 +68,7 @@ class WorkflowDef:
     actor: str = "workflow"
     queue: str = "default"
     max_attempts: int = 3
-    retry_kind: str = "transient"
+    retry_kind: FiniteRetryKind = "transient"
     capture_policy: str = "errors-only"
     redact: Callable[[str], str] | None = None
     #: The loop nodes' declared ``on_exhausted`` policies, keyed by loop
@@ -82,6 +83,11 @@ class WorkflowDef:
     #: read time (the flow root's stamped workflow name → this
     #: registry), the same doctrine the fired join's body uses.
     aggregates: dict[str, AggregateFn] = field(default_factory=lambda: dict[str, AggregateFn]())
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self, "retry_kind", declared_retry_kind(self.retry_kind, what="WorkflowDef.retry_kind")
+        )
 
 
 class WorkflowRegistry:

@@ -20,7 +20,7 @@ from taskq._ids import new_uuid
 from taskq.backend._protocol import ConnLike, JobId
 from taskq.constants import SMALLINT_MAX
 from taskq.obs import get_logger
-from taskq.workflows._policy import canonical_retry_kind, row_retry_curve
+from taskq.workflows._policy import declared_retry_kind, row_retry_curve
 from taskq.workflows._sql import WorkflowSql
 from taskq.workflows._types import (
     MAP_INDEX_CEILING,
@@ -100,7 +100,11 @@ async def insert_fork(
             [c.queue for c in chunk],
             [_jsonb(c.payload) for c in chunk],
             [c.resolved_max_attempts or fork.max_attempts for c in chunk],
-            [c.resolved_retry_kind or canonical_retry_kind(fork.retry_kind) for c in chunk],
+            [
+                c.resolved_retry_kind
+                or declared_retry_kind(fork.retry_kind, what="fork children's retry_kind")
+                for c in chunk
+            ],
             [parent_id] * len(chunk),
             [c.map_index for c in chunk],
             [c.step_key for c in chunk],
@@ -276,7 +280,7 @@ async def insert_fork(
                 fork.join.queue,
                 _jsonb(fork.join.payload),
                 fork.max_attempts,
-                canonical_retry_kind(fork.retry_kind),
+                declared_retry_kind(fork.retry_kind, what="fork join retry_kind"),
                 parent_id,
                 fork.join.step_key,
                 len(children),

@@ -80,7 +80,7 @@ from taskq.workflows._obs import (
     step_span_attributes,
     step_span_name,
 )
-from taskq.workflows._policy import RetrySpec, canonical_retry_kind, row_retry_curve
+from taskq.workflows._policy import RetrySpec, declared_retry_kind, row_retry_curve
 from taskq.workflows._progress import (
     KIND_NODE_STARTED,
     KIND_NODE_TERMINAL,
@@ -251,7 +251,7 @@ def _node_retry_spec(node: Any) -> RetrySpec | None:
     resolved = getattr(node, "execution_policy", None)
     if resolved is not None and resolved.retry is not None:
         return resolved.retry
-    kind = canonical_retry_kind(node.retry_kind or "transient")
+    kind = declared_retry_kind(node.retry_kind or "transient")
     if node.max_attempts == 3 and kind == "transient":
         return None
     return RetrySpec(policy=RetryPolicy(max_attempts=node.max_attempts, kind=kind))

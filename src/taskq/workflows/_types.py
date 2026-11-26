@@ -26,6 +26,17 @@ if TYPE_CHECKING:
     from taskq.workflows._policy import RetrySpec
 
 
+#: The finite retry vocabulary a new workflow declaration may name. The
+#: vanilla ``RetryKind`` also admits ``"indefinite"`` for previously
+#: persisted rows and non-workflow actors; a workflow row carries no
+#: ``schedule_to_close`` for that kind to stop at, so the authoring surface
+#: names the finite set once here rather than re-spelling it at each door.
+type FiniteRetryKind = Literal["transient", "non_retryable", "permanent"]
+#: The stored form: the legacy ``"permanent"`` alias is normalized at the
+#: declaration door, so nothing written to a row carries it.
+type StoredFiniteRetryKind = Literal["transient", "non_retryable"]
+
+
 def duration_seconds(value: timedelta | float | int | None) -> float | None:
     """one normalizer for the second-denominated terms: a
     :class:`datetime.timedelta` or a bare number of seconds — the seconds
@@ -51,11 +62,13 @@ __all__ = [
     "FailureInfo",
     "FailurePolicy",
     "FinalizeResult",
+    "FiniteRetryKind",
     "FiredJoin",
     "ForkSpec",
     "JoinSpec",
     "MapIndexSchemaError",
     "NodeSpec",
+    "StoredFiniteRetryKind",
     "_consumer_binding",
     "_consumer_bindings",
     "_failure_info_from_json",
@@ -380,8 +393,14 @@ class ChildSpec:
         return self.retry.policy.max_attempts if self.retry is not None else None
 
     @property
-    def resolved_retry_kind(self) -> RetryKind | None:
-        return self.retry.policy.kind if self.retry is not None else None
+    def resolved_retry_kind(self) -> StoredFiniteRetryKind | None:
+        # RetrySpec.__post_init__ refuses "indefinite", so a constructed
+        # spec's policy kind always lands in the stored finite vocabulary.
+        return (
+            cast("StoredFiniteRetryKind", self.retry.policy.kind)
+            if self.retry is not None
+            else None
+        )
 
     def __post_init__(self) -> None:
         if self.map_index is not None:
@@ -473,7 +492,7 @@ class ForkSpec:
     join: JoinSpec | None = None
     trace_id: str | None = None
     max_attempts: int = 3
-    retry_kind: RetryKind | Literal["permanent"] = "transient"
+    retry_kind: FiniteRetryKind = "transient"
     #: the fork's JOIN is the source's own cohort (the placement fields say
     #: so), so its row lands at the source's resolution of the precedence law —
     #: the arms' overrides apply to the arm children, never the join. ``None``
@@ -483,6 +502,13 @@ class ForkSpec:
     #: source's resolution (the arms' declarations govern the arm children,
     #: never the join). ``None`` = nothing declared — the column NULL.
     start_to_close: timedelta | None = None
+
+    def __post_init__(self) -> None:
+        from taskq.workflows._policy import declared_retry_kind
+
+        object.__setattr__(
+            self, "retry_kind", declared_retry_kind(self.retry_kind, what="ForkSpec.retry_kind")
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -513,7 +539,7 @@ class NodeSpec:
     consumers: tuple[ConsumerBinding, ...] = ()
     trace_id: str | None = None
     max_attempts: int = 3
-    retry_kind: RetryKind | Literal["permanent"] = "transient"
+    retry_kind: FiniteRetryKind = "transient"
     idempotency_scope: str = ""
     idempotency_key: str | None = None
     #: the ``jobs.priority`` column value the insert stamps — the resolved
@@ -538,7 +564,7 @@ class NodeSpec:
         return self.retry.policy if self.retry is not None else None
 
     def __post_init__(self) -> None:
-        from taskq.workflows._policy import canonical_retry_kind
+        from taskq.workflows._policy import declared_retry_kind
 
         if self.map_index is not None:
             validate_map_index_identity(self.map_index)
@@ -550,13 +576,15 @@ class NodeSpec:
                 raise ValueError("NodeSpec max_attempts contradicts its resolved retry policy")
             if (
                 self.retry_kind != "transient"
-                and canonical_retry_kind(self.retry_kind) != policy.kind
+                and declared_retry_kind(self.retry_kind, what="NodeSpec.retry_kind") != policy.kind
             ):
                 raise ValueError("NodeSpec retry_kind contradicts its resolved retry policy")
             object.__setattr__(self, "max_attempts", policy.max_attempts)
             object.__setattr__(self, "retry_kind", policy.kind)
         else:
-            object.__setattr__(self, "retry_kind", canonical_retry_kind(self.retry_kind))
+            object.__setattr__(
+                self, "retry_kind", declared_retry_kind(self.retry_kind, what="NodeSpec.retry_kind")
+            )
 
 
 @dataclass(frozen=True, slots=True)

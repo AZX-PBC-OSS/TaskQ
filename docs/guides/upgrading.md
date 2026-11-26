@@ -472,6 +472,43 @@ never diverge.
 
 ## Breaking API changes
 
+### New workflow declarations refuse `retry_kind="indefinite"`
+
+> **Unreleased.** Breaking for anyone declaring an indefinite workflow
+> actor or step: on previous releases `@app.actor(retry_kind="indefinite")`,
+> `step(..., retry_kind="indefinite")`, `chain_fork(..., retry_kind=…)` and
+> `RetrySpec(exceptions={…: "indefinite"})` accepted the word; now each
+> raises `WorkflowPolicyError` (`E21-execution-policy`) at decoration,
+> compile, construction or call time. Switch to `"transient"` with a finite
+> `max_attempts` budget, or to `"non_retryable"` (legacy spelling
+> `"permanent"`).
+
+The same refusal closes the internal row-authoring doors:
+`ForkSpec`/`NodeSpec(retry_kind=…)` and `WorkflowDef(retry_kind=…)` refuse
+`"indefinite"` at construction, and the coroutines
+`emit_batch(..., retry_kind=…)`, `drain_outbox(..., default_retry_kind=…)`
+and `insert_flow_run(..., entry.retry_kind=…)` refuse it at call time,
+before any pool acquisition or write. None of those six is exported from
+`taskq.workflows`.
+
+A workflow row never sets `schedule_to_close`, so an `indefinite` workflow
+row has no crash ceiling under the reclaim sweep: it is re-pended forever
+once a worker dies mid-attempt. `RetrySpec` already refused the kind; the
+remaining declaration and row-authoring doors did not, so a declared
+indefinite step either looped or raised only later, mid-run, where a `map_source`
+or `route` consumer is built. **Already-persisted legacy workflow rows and
+vanilla non-workflow `indefinite` actors keep their vocabulary** in the
+reclaim SQL, the deferral gate and the ladder's row reads.
+
+A legacy `indefinite` workflow row can only exist on a deployment that
+tracked unreleased `main`: no tagged release contains the workflow engine.
+Such a row has no crash ceiling — the reclaim sweep re-pends it on every
+dead worker, and it carries no `schedule_to_close` to end it — while its
+body-failure ladder still stops at the `max_attempts`-th failure. No
+engine-side action changes the kind: `taskq flows retry` re-arms the row's
+status and never writes `retry_kind`, so cancelling the run is the only
+remedy.
+
 ### `map_source` no longer takes `key=`
 
 > **Unreleased.** Breaking for anyone passing `key=` to

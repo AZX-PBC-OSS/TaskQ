@@ -54,6 +54,7 @@ from taskq._json import loads as _json_loads
 from taskq.backend._protocol import ConnLike, JobId
 from taskq.backend.statemachine import TERMINAL_STATUSES
 from taskq.workflows._capability import validate_required_worker_schema
+from taskq.workflows._policy import declared_retry_kind
 from taskq.workflows._sql import WorkflowSql
 
 if TYPE_CHECKING:
@@ -360,6 +361,7 @@ async def insert_flow_run(
     """
     if required_worker_schema is not None:
         validate_required_worker_schema(required_worker_schema)
+    retry_kind = declared_retry_kind(entry.retry_kind, what="flow retry_kind")
     flow_id = new_uuid()
     # the root's metadata names the workflow whose registered definition
     # carries the run's step bodies — the sweep's fire arm resolves a healed
@@ -378,7 +380,7 @@ async def insert_flow_run(
         entry.queue,
         entry.payload if isinstance(entry.payload, str) else dumps_jsonb_str(entry.payload or {}),
         entry.max_attempts,
-        entry.retry_kind,
+        retry_kind,
         entry.trace_id,
         dumps_jsonb_str(root_metadata),
         run_idempotency_scope(entry.name),
