@@ -609,20 +609,37 @@ async def test_the_re_wait_while_a_hold_stands_raises_node_held(
     flow_id = (await runner.create_flow()).flow_id
     await runner.drive(flow_id, until="held")
 
-    # the re-wait from a new body execution's ctx: the standing hold is raised,
-    # not re-minted.
+    # the re-wait from a new body execution's ctx: the reclaimed running row
+    # re-enters onto the standing hold (reasserting the park at its own
+    # claim_epoch) and raises NodeHeldError with the standing hold's id,
+    # without minting a second hold row.
     node_id = await module_pg_pool.fetchval(
         f'SELECT id FROM "{schema}".jobs '
         "WHERE (metadata->>'flow_id')::uuid = $1 AND step_key = 'review'",
         flow_id,
     )
-    ctx = _make_wait_ctx(module_pg_pool, schema, flow_id, node_id, "review")
+    await module_pg_pool.execute(
+        f'UPDATE "{schema}".jobs '
+        "SET status = 'running', claim_epoch = 2, "
+        "lock_expires_at = now() + interval '60 seconds' "
+        "WHERE id = $1",
+        node_id,
+    )
+    ctx = _make_wait_ctx(module_pg_pool, schema, flow_id, node_id, "review", claim_epoch=2)
     with pytest.raises(NodeHeldError) as ei:
         await ctx.wait_signal((Approval,), timeout_s=120.0, reason="the re-wait")
     assert ei.value.hold_id, "the raised error does not name the standing hold"
 
 
-def _make_wait_ctx(pool: Any, schema: str, flow_id: Any, node_id: Any, node_key: str) -> Any:
+def _make_wait_ctx(
+    pool: Any,
+    schema: str,
+    flow_id: Any,
+    node_id: Any,
+    node_key: str,
+    *,
+    claim_epoch: int = 1,
+) -> Any:
     """A wait-ops ctx bound to a REAL node row (the re-wait's shape)."""
     from taskq.backend._protocol import JobId
     from taskq.workflows._sql import WorkflowSql
@@ -633,7 +650,7 @@ def _make_wait_ctx(pool: Any, schema: str, flow_id: Any, node_id: Any, node_key:
         job_id=JobId(str(node_id)),
         node_key=node_key,
         attempt=1,
-        claim_epoch=1,
+        claim_epoch=claim_epoch,
         input={"doc_id": "d"},
         _pool=pool,
         _wsql=WorkflowSql.build(schema),

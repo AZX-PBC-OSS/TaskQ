@@ -29,6 +29,7 @@ if TYPE_CHECKING:
 
 __all__ = [
     "CtxWaitOps",
+    "HoldMintFencedError",
     "LoopWaitShapeError",
     "SignalUnavailableError",
     "WaitHost",
@@ -169,6 +170,35 @@ class NodeHeldError(Exception):
         super().__init__(f"node held on {signal_names} (hold {hold_id})")
         self.hold_id = hold_id
         self.signal_names = signal_names
+
+
+class HoldMintFencedError(Exception):
+    """The hold mint's (or a re-entry park's) control-flow unwinding
+    (INTERNAL): the park CAS — ``AND status = 'running' AND claim_epoch = $4
+    AND cancel_phase = 0 AND NOT metadata ? 'cancel_phase'`` — matched no
+    row, so this execution no longer owns the node: the lease lapsed and a
+    successor claimed the row, a concurrent resume moved it, it already
+    rests in the held representation, or a cancel marked/terminalised it.
+    A cooperative cancel leaves ``status`` at ``'running'`` and stamps
+    ``metadata.cancel_phase`` (and, normally, the ``cancel_phase`` column);
+    the fence refuses that row by its mark, so a cancelled run never parks a
+    live hold through this door. The signal row is never written (the mint's
+    transaction rolls back), so nothing announces a hold no node stands on.
+
+    ``NodeHeldError``'s sibling, deliberately not its subclass: being held
+    is a representation the row carries, while this is the claim that wrote
+    nothing — reporting it as held would record a resume and a
+    ``ConsumedOutcome`` for a row this execution does not own. Neither is it
+    a ``WorkflowRunError``: the worker translates that family into a
+    body-unresolvable parking, which a stale claim must never reach."""
+
+    def __init__(self, *, node_id: JobId, claim_epoch: int) -> None:
+        super().__init__(
+            f"the hold mint's park matched no running row at claim_epoch="
+            f"{claim_epoch} (node {node_id})"
+        )
+        self.node_id = node_id
+        self.claim_epoch = claim_epoch
 
 
 class SignalUnavailableError(RuntimeError):
@@ -570,8 +600,10 @@ class CtxWaitOps(WaitHost):
             if held_row is not None:
                 # this claim re-entered onto the standing hold: park the row
                 # onto it (the stamp names the row that stands, which may be
-                # one of the names rather than the joined one).
-                await reassert_hold(
+                # one of the names rather than the joined one). A missed park
+                # wrote nothing — the row belongs to a newer claim — so the
+                # unwind is the fresh mint's own fence label, never "held".
+                parked = await reassert_hold(
                     conn,
                     schema=self._wsql.schema,
                     node_id=self.job_id,
@@ -580,6 +612,8 @@ class CtxWaitOps(WaitHost):
                     expires_at=held_row["expires_at"],
                     claim_epoch=self.claim_epoch,
                 )
+                if not parked:
+                    raise HoldMintFencedError(node_id=self.job_id, claim_epoch=self.claim_epoch)
                 raise NodeHeldError(hold_id=str(held_row["id"]), signal_names=names)
                 # the sweep marked this wait site's hold 'abandoned' and no held
             # row stands — the wait site returns the union's ``Expired`` member
@@ -667,6 +701,7 @@ class CtxWaitOps(WaitHost):
                 context={"reason": reason, "tool": tool, "args": args},
                 redact=self._redact,
                 map_index=self._map_index,
+                claim_epoch=self.claim_epoch,
             )
         raise NodeHeldError(hold_id=str(hold_id), signal_names=names)
 

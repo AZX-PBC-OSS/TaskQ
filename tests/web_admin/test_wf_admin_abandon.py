@@ -241,6 +241,14 @@ async def test_route_refuses_a_timer_hold_and_the_hold_survives(
         "(metadata->>'flow_id')::uuid = $1",
         flow_id,
     )
+    assert node_id is not None
+    # the mint's park fences on the executing claim's epoch: grant it on the
+    # run's OWN node row (a re-claim in place — a duplicate step row is a
+    # shape no flow produces).
+    await clean_pg_conn.execute(
+        f"UPDATE \"{schema}\".jobs SET status = 'running', claim_epoch = 1 WHERE id = $1",
+        node_id,
+    )
     async with module_pg_pool.acquire() as conn:
         timer_hold_id = await register_timer_hold(
             conn,
@@ -253,6 +261,7 @@ async def test_route_refuses_a_timer_hold_and_the_hold_survives(
             absolute=datetime.now(UTC) + timedelta(hours=1),
             relative=None,
             payload_schema={"TimerWake": TimerWake.model_json_schema()},
+            claim_epoch=1,
         )
     app = _make_admin_app(module_pg_pool, schema)
     async with httpx.AsyncClient(

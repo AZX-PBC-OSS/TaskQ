@@ -610,6 +610,9 @@ def test_the_intercepts_lazy_seam_resolves_and_maps_the_outcomes() -> None:
 
     from taskq.worker.run import _FLOW_OUTCOME_TO_CONSUMED
 
-    # Every label the door can return maps (the vocabulary has no gap).
+    # Every label the door can return maps, except the two that intentionally
+    # record NO consumed outcome: "fenced" (a stale claim that wrote nothing)
+    # and "deferred" (a rescheduled attempt).
     for label in ("succeeded", "laddered", "held"):
         assert label in _FLOW_OUTCOME_TO_CONSUMED, label
+    assert "fenced" not in _FLOW_OUTCOME_TO_CONSUMED

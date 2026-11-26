@@ -12,24 +12,24 @@ also runs, the race the docstring accepts strands the row with no arm to clear
 it.
 
 The state is built through the engine's own surfaces: a real ``ctx.wait_signal``
-whose mint lands after a lease reclaim re-pended the row (so the park matches
-nothing and the standing hold is unstamped — the reachable path to the re-entry
-arm), then the in-process claim CAS the dev drive itself runs, then a real
-``HitlClient.resolve`` inside the read-then-park window, then ``reassert_hold``
-at the granted epoch — the same call ``CtxWaitOps.wait_signal``'s re-entry arm
-makes. The end state is byte for byte the one
+whose mint commits on its own running claim, then the park's stamp undone (the
+re-held row is the input shape the re-entry arm reads — the same residue
+``tests/test_wf_claim_epoch_default_reentry.py`` stages), then the in-process
+claim CAS the dev drive itself runs, then a real ``HitlClient.resolve`` inside
+the read-then-park window, then ``reassert_hold`` at the granted epoch — the
+same call ``CtxWaitOps.wait_signal``'s re-entry arm makes. The end state is
+byte for byte the one
 ``tests/test_wf_untimed_join_fleet_control.py::test_a_delivery_inside_the_reentry_window_is_repaired_by_the_reconcile``
 asserts (``pending`` + the stamp + a ``delivered`` signal), so nothing here is
-an input a real interleaving cannot produce. The only non-production write is
-the lease's expiry instant (the dev claim CAS hardcodes a 90 s lease; a lease
-lapse is a GC pause or a partition, not a code path).
+an input a real interleaving cannot produce. The two non-production writes are
+the park's stamp being undone and the due instant (the dev claim CAS hardcodes
+a 90 s lease; a lease lapse is a GC pause or a partition, not a code path).
 """
 
 from __future__ import annotations
 
 import asyncio
 import json
-from datetime import timedelta
 from typing import Any
 
 import asyncpg
@@ -38,7 +38,6 @@ from pydantic import BaseModel
 
 from taskq._ids import new_uuid
 from taskq.backend._protocol import JobId
-from taskq.backend._sweeps import sweep_expired_locks
 from taskq.exceptions import SignalTimeoutError
 from taskq.migrate import apply_pending
 from taskq.workflows import Expired, FlowRunner, Promise, StepContext, WorkflowApp, build, step
@@ -63,7 +62,7 @@ def _compile(suffix: str, stalled: asyncio.Event, release: asyncio.Event) -> Any
         async def wrap(ctx: StepContext) -> str:
             if ctx.attempt == 1:
                 stalled.set()
-                await release.wait()  # the stalled body: the lease lapses here
+                await release.wait()  # the stalled body: paused before its first wait
             answer = await ctx.wait_signal(_Approval, timeout_s=_TIMED_S)
             if isinstance(answer, Expired):
                 raise SignalTimeoutError("the probe's wait expired")
@@ -105,13 +104,6 @@ async def _accepted_race(
     stand = asyncio.create_task(driver.tick(flow_id))
     await asyncio.wait_for(stalled.wait(), timeout=10.0)
     held_row = await _wrap(conn, schema, flow_id)
-    # the lease lapses under the stalled body; the reclaim re-pends the row, so
-    # the body's mint (below) parks nothing and leaves an unstamped hold.
-    await conn.execute(
-        f"UPDATE \"{schema}\".jobs SET lock_expires_at = now() - interval '1 second' WHERE id = $1",
-        held_row["id"],
-    )
-    assert await sweep_expired_locks(conn, timedelta(0), timedelta(0), schema=schema) == 1
     release.set()
     await asyncio.wait_for(stand, timeout=10.0)
     standing = await conn.fetchrow(
@@ -120,14 +112,19 @@ async def _accepted_race(
         flow_id,
     )
     assert standing is not None, "the released body minted no standing hold"
+    # the body's mint parks the row onto its own hold; the re-entry arm's input
+    # shape is that park's stamp undone — the round-1 write below is the only
+    # non-production one.
+    await conn.execute(
+        f'UPDATE "{schema}".jobs '
+        "SET metadata = metadata - 'hold' - 'held_signal', scheduled_at = now() "
+        "WHERE id = $1",
+        held_row["id"],
+    )
     repended = await _wrap(conn, schema, flow_id)
     assert repended["status"] == "pending" and "hold" not in _meta(repended["metadata"]), (
-        "the stalled body's mint parked the row (it should have matched nothing): "
+        "the stalled body's mint left no stamp-less standing hold: "
         f"status={repended['status']!r} metadata={_meta(repended['metadata'])!r}"
-    )
-    # skip the reclaim backoff (the time travel only)
-    await conn.execute(
-        f'UPDATE "{schema}".jobs SET scheduled_at = now() WHERE id = $1', repended["id"]
     )
 
     # the claim the re-entered wait runs under — the in-process claim CAS the

@@ -23,10 +23,10 @@ door (``build_step_context`` -> ``ctx.wait_signal`` -> ``_hitl.reassert_hold``)
 and asserts on the row the door writes, so the symptom is the production one
 rather than a mock's.
 
-The state staged below is the *reachable* re-entry state (the one the shipped
-control ``tests/test_wf_untimed_join_fleet_control.py`` builds through a lease
-lapse): a node row claimed at epoch N with a standing ``held`` signal whose
-stamp the previous claim never wrote.
+The state staged below is the residue a pre-fix mint could leave behind — a
+standing ``held`` signal row whose stamp the previous claim never wrote, a
+shape no current mint produces but a real database can still hold: a node row
+claimed at epoch N beneath that standing hold.
 """
 
 # ruff: noqa: S608  # Why: the f-strings interpolate only throwaway schema identifiers; every value is $-bound.
@@ -130,9 +130,10 @@ def _ctx(
 async def _mint_one_standing_hold(
     pool: asyncpg.Pool, wsql: WorkflowSql, flow_id: JobId, node_id: JobId
 ) -> str:
-    """Stage the reachable re-entry state: a standing ``held`` signal on the
-    node, with the node row ``running`` and unstamped (what a lease reclaim
-    between the mint's signal INSERT and a later claim leaves behind).
+    """Stage the re-entry arm's input shape: a standing ``held`` signal on the
+    node, with the node row ``running`` and unstamped — what a mint leaves
+    behind when its park does not survive to the next claim (the rows the
+    pre-fence mints already wrote).
 
     The mint runs through the real door at the granted epoch (so the hold row
     is production's), then the row is restored to the running shape the

@@ -995,6 +995,26 @@ async def seed_running_node(
     return JobId(node_id)
 
 
+async def seed_running_claim(
+    conn: asyncpg.Connection,
+    schema: str,
+    flow_id: JobId,
+    *,
+    step_key: str,
+    claim_epoch: int = 1,
+) -> JobId:
+    """A running node at the epoch a real claim grants (at least 1): the
+    hold mint's park admits only the claim holding the row at its own epoch,
+    and :func:`seed_running_node` writes the finalize pin's epoch 0."""
+    node_id = await seed_running_node(conn, schema, flow_id, step_key=step_key)
+    await conn.execute(
+        f'UPDATE "{schema}".jobs SET claim_epoch = $2 WHERE id = $1',
+        node_id,
+        claim_epoch,
+    )
+    return node_id
+
+
 async def claim_view(
     conn: asyncpg.Connection, schema: str, node_id: JobId
 ) -> tuple[JobId, int, int]:

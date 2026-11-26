@@ -145,7 +145,12 @@ async def _capped_registry(
 
 
 def _flow_job(
-    pin: str, flow_id: JobId, node_id: JobId, payload: object, attempt: int = 1
+    pin: str,
+    flow_id: JobId,
+    node_id: JobId,
+    payload: object,
+    attempt: int = 1,
+    claim_epoch: int = 1,
 ) -> JobRow:
     return JobRow(
         id=node_id,
@@ -167,6 +172,7 @@ def _flow_job(
         scheduled_at=_START,
         metadata={"flow_id": str(flow_id)},
         trace_id=None,
+        claim_epoch=claim_epoch,
     )
 
 

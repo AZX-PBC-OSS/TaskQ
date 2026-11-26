@@ -410,6 +410,9 @@ async def _drive_hold(
             },
             timeout_s=timedelta(seconds=60),
             map_index=None,
+            # the driving claim's own epoch (the seeded target row is running at 2)
+            # — the mint's park fences on it.
+            claim_epoch=2,
         )
 
 

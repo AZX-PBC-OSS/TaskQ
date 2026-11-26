@@ -274,14 +274,14 @@ async def test_a_reentered_join_on_its_own_standing_hold_parks_the_row(
     wf_sql: WorkflowSql,
     pg_dsn: str,
 ) -> None:
-    """The re-entry path that survives a fence fix: a body's lease lapses
-    between its spawn and its wait (a stalled worker), Sweep 1 re-pends the
-    row, and the stalled body's wait then mints its hold: the signal row is
-    'held' but the node update matched nothing (the row was no longer
-    running), so the row carries no stamp and the next claim legitimately
-    runs the body again. That re-entered wait finds its own standing hold.
-    It must leave the row in the held representation (pending, unlocked,
-    stamped with that hold), never 'running' with nothing executing it."""
+    """The re-entry path that survives a fence fix: attempt 1 mints its hold,
+    and the node is then put in the re-entry arm's input shape — the ``held``
+    signal row standing, the park's stamp undone, the row pending (what a mint
+    leaves when its park does not survive to the next claim). The next claim
+    legitimately runs the body again, and that re-entered wait finds its own
+    standing hold. It must leave the row in the held representation (pending,
+    unlocked, stamped with that hold), never 'running' with nothing executing
+    it."""
     suffix = new_uuid().hex[:12]
     child_name = f"i748_child_{suffix}"
     spawned = asyncio.Event()
@@ -291,7 +291,7 @@ async def test_a_reentered_join_on_its_own_standing_hold_parks_the_row(
         handle = await ctx.spawn_flow(child_name, result=_Leaf)
         if ctx.attempt == 1:
             spawned.set()
-            await release.wait()  # the stalled worker: the lease lapses here
+            await release.wait()  # the stalled worker: paused before its first wait
         await handle.wait()
         return 0
 
@@ -303,22 +303,27 @@ async def test_a_reentered_join_on_its_own_standing_hold_parks_the_row(
         "child": FlowRunner(child_c, wf_pool, wf_schema, worker_id=worker_id),
     }
 
-    first = await _claim(wf_conn, wf_schema, worker_id, limit=1, lock_lease=timedelta(seconds=1))
+    first = await _claim(wf_conn, wf_schema, worker_id, limit=1, lock_lease=timedelta(seconds=30))
     assert [r["step_key"] for r in first] == ["wrap"]
     stalled = asyncio.create_task(_run(runners, first[0]))
     await asyncio.wait_for(spawned.wait(), timeout=10.0)
-    await asyncio.sleep(1.2)
-    assert await sweep_expired_locks(wf_conn, timedelta(0), timedelta(0), schema=wf_schema) == 1
     release.set()
     assert await asyncio.wait_for(stalled, timeout=10.0) == "held"
     standing = await _held_signals(wf_conn, wf_schema, flow_id)
     repended = await _wrap(wf_conn, wf_schema, flow_id)
     assert len(standing) == 1 and repended["status"] == "pending"
-    assert "hold" not in _meta(repended["metadata"])
-    # skip the reclaim backoff (the time travel only; every write below is production's)
+    assert _meta(repended["metadata"]).get("hold") == str(standing[0])
+    # the reclaim's residue: the park's stamp is undone (the signal row stands),
+    # and the reclaim backoff skipped (the time travel only — every write below
+    # is production's).
     await wf_conn.execute(
-        f'UPDATE "{wf_schema}".jobs SET scheduled_at = now() WHERE id = $1', repended["id"]
+        f'UPDATE "{wf_schema}".jobs '
+        "SET metadata = metadata - 'hold' - 'held_signal', scheduled_at = now() "
+        "WHERE id = $1",
+        repended["id"],
     )
+    repended = await _wrap(wf_conn, wf_schema, flow_id)
+    assert "hold" not in _meta(repended["metadata"])
 
     again = await _claim(wf_conn, wf_schema, worker_id, limit=10)
     wraps = [r for r in again if r["step_key"] == "wrap"]
@@ -499,7 +504,7 @@ def _compile_loop(suffix: str, body: Any) -> Any:
     return app.get(f"i748_loop_{suffix}")
 
 
-async def _lapse_into_unstamped_hold(
+async def _stage_unstamped_standing_hold(
     conn: asyncpg.Connection,
     schema: str,
     runners: dict[str, FlowRunner],
@@ -508,16 +513,19 @@ async def _lapse_into_unstamped_hold(
     stalled: asyncio.Event,
     release: asyncio.Event,
 ) -> asyncpg.Record:
-    """Test 2's recipe: the attempt-1 body stalls before its wait, its lease
-    lapses, Sweep 1 re-pends the row, and the released body's wait mints a
-    'held' signal row whose node update matched nothing. Returns the standing
-    hold (id, signal_name, expires_at); the row is pending, unstamped, due."""
-    first = await _claim(conn, schema, worker_id, limit=1, lock_lease=timedelta(seconds=1))
+    """Test 2's recipe: attempt 1 claims the row and mints its hold cleanly (the
+    park lands on the claim's own running row); the node is then put in the
+    re-entry arm's input shape — pending, unstamped, due — with the ``held``
+    signal row still standing. Returns the standing hold (id, signal_name,
+    expires_at); the row is pending, unstamped, due.
+
+    The mint CANNOT be staged through a lapsed-lease miss any more: a fresh
+    mint whose park matches nothing rolls back (there is no orphaned hold), so
+    the stamp-less standing hold is produced by undoing only the park."""
+    first = await _claim(conn, schema, worker_id, limit=1, lock_lease=timedelta(seconds=30))
     assert [r["step_key"] for r in first] == ["wrap"]
     task = asyncio.create_task(_run(runners, first[0]))
     await asyncio.wait_for(stalled.wait(), timeout=10.0)
-    await asyncio.sleep(1.2)
-    assert await sweep_expired_locks(conn, timedelta(0), timedelta(0), schema=schema) == 1
     release.set()
     assert await asyncio.wait_for(task, timeout=10.0) in ("held", "loop")
     standing = await conn.fetch(
@@ -527,6 +535,15 @@ async def _lapse_into_unstamped_hold(
     )
     repended = await _wrap(conn, schema, flow_id)
     assert len(standing) == 1 and repended["status"] == "pending"
+    # the reclaim's shape: the park's stamp undone, the loop's pause released
+    # (the row the successor claim re-parks is the ordinary pending one).
+    await conn.execute(
+        f'UPDATE "{schema}".jobs '
+        "SET metadata = metadata - 'hold' - 'held_signal', budget_paused = false "
+        "WHERE id = $1",
+        repended["id"],
+    )
+    repended = await _wrap(conn, schema, flow_id)
     assert "hold" not in _meta(repended["metadata"])
     # skip the reclaim backoff (the time travel only)
     await conn.execute(
@@ -556,7 +573,7 @@ async def test_a_reentered_wait_of_every_kind_re_parks_onto_its_standing_hold(
     async def stall(ctx: StepContext) -> None:
         if ctx.attempt == 1:
             stalled.set()
-            await release.wait()  # the stalled worker: the lease lapses here
+            await release.wait()  # the stalled worker: paused before its first wait
 
     async def wrap(ctx: StepContext) -> int:
         if kind == "join":
@@ -591,7 +608,7 @@ async def test_a_reentered_wait_of_every_kind_re_parks_onto_its_standing_hold(
         "parent": FlowRunner(parent_c, wf_pool, wf_schema, worker_id=worker_id),
         "child": FlowRunner(child_c, wf_pool, wf_schema, worker_id=worker_id),
     }
-    standing = await _lapse_into_unstamped_hold(
+    standing = await _stage_unstamped_standing_hold(
         wf_conn, wf_schema, runners, worker_id, flow_id, stalled, release
     )
 
@@ -639,10 +656,12 @@ async def test_a_stale_body_s_reentry_never_parks_a_newer_claim_s_row(
     wf_pool: asyncpg.Pool,
     pg_dsn: str,
 ) -> None:
-    """The fencing-token rule on the re-park: X (attempt 1) stalls and mints a
+    """The fencing-token rule on the re-park: X (attempt 1) mints a
     stamp-less standing hold; Y (attempt 2) stalls before its wait and loses
     its lease; Z (attempt 3) claims the row. Y's re-entered wait finds the
-    standing hold but must not park Z's running row; Z's own re-entry does."""
+    standing hold but its park misses Z's running row, so Y unwinds
+    ``"fenced"`` (never ``"held"`` — nothing was parked); Z's own re-entry
+    parks the row."""
     suffix = new_uuid().hex[:12]
     child_name = f"i748_child_{suffix}"
     gates = {a: asyncio.Event() for a in (1, 2, 3)}
@@ -674,8 +693,14 @@ async def test_a_stale_body_s_reentry_never_parks_a_newer_claim_s_row(
             f'UPDATE "{wf_schema}".jobs SET scheduled_at = now() WHERE id = $1', row["id"]
         )
 
-    async def claim_wrap() -> dict[str, Any]:
-        got = await _claim(wf_conn, wf_schema, worker_id, limit=10, lock_lease=timedelta(seconds=1))
+    async def claim_wrap(lease: float = 1.0) -> dict[str, Any]:
+        got = await _claim(
+            wf_conn,
+            wf_schema,
+            worker_id,
+            limit=10,
+            lock_lease=timedelta(seconds=lease),
+        )
         wraps = [r for r in got if r["step_key"] == "wrap"]
         assert len(wraps) == 1, got
         return wraps[0]
@@ -687,13 +712,22 @@ async def test_a_stale_body_s_reentry_never_parks_a_newer_claim_s_row(
         return tasks[-1]
 
     try:
-        x = spawn(_run(runners, await claim_wrap()))
+        # X mints its hold cleanly on its own running claim; the stamp-less
+        # standing hold is then the reclaim's own residue (only the park is
+        # undone — the signal row stays).
+        x = spawn(_run(runners, await claim_wrap(lease=30.0)))
         await asyncio.wait_for(at_gate[1].wait(), timeout=10.0)
-        await lapse()
         gates[1].set()
         assert await asyncio.wait_for(x, timeout=10.0) == "held"
         standing = await _held_signals(wf_conn, wf_schema, flow_id)
         assert len(standing) == 1
+        x_row = await _wrap(wf_conn, wf_schema, flow_id)
+        await wf_conn.execute(
+            f'UPDATE "{wf_schema}".jobs '
+            "SET metadata = metadata - 'hold' - 'held_signal', scheduled_at = now() "
+            "WHERE id = $1",
+            x_row["id"],
+        )
 
         y_row = await claim_wrap()
         y = spawn(_run(runners, y_row))
@@ -705,7 +739,7 @@ async def test_a_stale_body_s_reentry_never_parks_a_newer_claim_s_row(
         await asyncio.wait_for(at_gate[3].wait(), timeout=10.0)
 
         gates[2].set()  # release the STALE body
-        assert await asyncio.wait_for(y, timeout=10.0) == "held"
+        assert await asyncio.wait_for(y, timeout=10.0) == "fenced"
         mid = await _wrap(wf_conn, wf_schema, flow_id)
         assert (mid["status"], mid["locked_by_worker"], _meta(mid["metadata"]).get("hold")) == (
             "running",
@@ -759,7 +793,7 @@ async def test_an_in_process_reentry_re_parks_onto_its_standing_hold(
         "parent": FlowRunner(parent_c, wf_pool, wf_schema, worker_id=worker_id),
         "child": FlowRunner(child_c, wf_pool, wf_schema, worker_id=worker_id),
     }
-    standing = await _lapse_into_unstamped_hold(
+    standing = await _stage_unstamped_standing_hold(
         wf_conn, wf_schema, runners, worker_id, flow_id, stalled, release
     )
 
@@ -885,19 +919,19 @@ async def test_a_delivery_inside_the_reentry_window_is_repaired_by_the_reconcile
         "parent": FlowRunner(parent_c, wf_pool, wf_schema, worker_id=worker_id),
         "child": FlowRunner(child_c, wf_pool, wf_schema, worker_id=worker_id),
     }
-    standing = await _lapse_into_unstamped_hold(
+    standing = await _stage_unstamped_standing_hold(
         wf_conn, wf_schema, runners, worker_id, flow_id, stalled, release
     )
 
     real_reassert = hitl.reassert_hold
     raced: list[str] = []
 
-    async def deliver_first(conn: Any, **kw: Any) -> None:
+    async def deliver_first(conn: Any, **kw: Any) -> bool:
         result = await hitl.HitlClient(wf_pool, schema=wf_schema).resolve(
             kw["hold_id"], {"verdict": "approve"}, principal="pin"
         )
         raced.append(result.status)
-        await real_reassert(conn, **kw)
+        return await real_reassert(conn, **kw)
 
     monkeypatch.setattr(hitl, "reassert_hold", deliver_first)
     again = await _claim(wf_conn, wf_schema, worker_id, limit=10)
