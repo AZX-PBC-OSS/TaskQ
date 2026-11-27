@@ -1324,10 +1324,13 @@ async def isolate_self(
                 # watermark protocol reads).
                 event_job_ids: list[JobId] = []
                 event_details: list[object] = []
-                # The re-pend's exclusion set, captured as late as the
-                # statement boundary allows: after the actor join above,
-                # with no await between this capture and the SELECT below
-                # that binds it. held_claims() covers both maps, the
+                # The re-pend's exclusion set, captured at the TOP of the
+                # transaction below: entering ``async with`` awaits the
+                # ``BEGIN`` round trip, so a capture taken before it would
+                # leave that round trip as a window between the snapshot
+                # and the SELECT that binds it. Inside, the capture and the
+                # fetch are adjacent with no await between them.
+                # held_claims() covers both maps, the
                 # registered consumers (executing now) and the claim
                 # intents (taken off local_queue, not yet registered), each
                 # paired with the claim epoch this process holds it at.
@@ -1356,13 +1359,13 @@ async def isolate_self(
                 # committed but not yet marked in either map) is closed by
                 # the producer_stop_event set at entry, not by this
                 # capture: after it, a taken row is never dispatched.
-                excluded_claims: list[tuple[JobId, int]] = [
-                    *deps.active_jobs.held_claims(),
-                    *deps.active_jobs.queued_claims(),
-                ]
-                excluded_ids: list[JobId] = [job_id for job_id, _epoch in excluded_claims]
-                excluded_epochs: list[int] = [epoch for _job_id, epoch in excluded_claims]
                 async with conn.transaction():
+                    excluded_claims: list[tuple[JobId, int]] = [
+                        *deps.active_jobs.held_claims(),
+                        *deps.active_jobs.queued_claims(),
+                    ]
+                    excluded_ids: list[JobId] = [job_id for job_id, _epoch in excluded_claims]
+                    excluded_epochs: list[int] = [epoch for _job_id, epoch in excluded_claims]
                     rows = await conn.fetch(  # pyright: ignore[reportUnknownVariableType]  # Why: conn type suppressed above due to asyncpg-stubs limitation on connect().
                         select_running_jobs_sql,
                         worker_id,

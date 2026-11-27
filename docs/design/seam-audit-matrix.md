@@ -19,12 +19,17 @@ known.
 
 ### 1.1 `ActiveJobRegistry` mutation keys (`worker/cancel.py`)
 
-Shared by: `_consumer.py` (register, the unconditional-finally deregister),
-`worker/run.py` (stub consumer register/deregister; producer
-`mark_enqueued`/`mark_claimed`/`resolve_claim`), `heartbeat.py`
-(`held_ids`/`queued_ids` for the reconcile, `held_claims`/`queued_claims` for
-the isolate re-pend), `shutdown.py` (`held_claims` for the hand-back),
-`cancel.py` (the drain's deregister).
+Shared by: `_consumer.py` (register, the unconditional-finally deregister,
+`get` on the disown path), `worker/run.py` (`producer_loop`:
+`mark_enqueued` plus the `count`/`intent_count` slot arithmetic;
+`consumer_loop_stub`: `mark_claimed`/`resolve_claim` plus its own
+`register`/`deregister`; `di_consumer_loop`: `mark_claimed`/`resolve_claim`;
+`_dispatch_flow_job`: `register`/`deregister`),
+`heartbeat.py` (`held_ids`/`queued_ids` for the reconcile, and
+`held_claims`/`queued_claims` for the isolate re-pend, plus `all`),
+`shutdown.py` (`held_claims` for the hand-back, plus `all`/`count` across the
+phases), `cancel.py` (`_CancelController`'s `held_ids`/`queued_ids`/`get`/`all`
+reads, and the drain's deregister).
 
 | seam / caller | interleaving | invariant | pin |
 |---|---|---|---|

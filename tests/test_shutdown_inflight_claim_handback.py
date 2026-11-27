@@ -1,4 +1,4 @@
-"""SIGTERM must not leave rows claimed by an in-flight dispatch round behind.
+"""SIGTERM during an in-flight claim round must leave no job locked to the pod.
 
 The DRAINING phase sets the producer's stop flag and then issues one
 hand-back statement that re-pends every row this worker holds. The producer
@@ -7,20 +7,32 @@ keeps going, commits, and buffers rows that the single hand-back pass has
 already looked past.
 
 Those rows are locked to a process that is on its way out. They are not in
-the in-flight registry, so the CANCELLING, FORCING and RELEASING phases
-never see them either, and the orchestration reports a clean exit with them
-still marked running. For a Kubernetes rolling deploy that is up to one
-concurrency window of work per pod that stops moving the moment the pod goes
-away, invisible in the queue's own accounting until a lock lease expires far
-later - and the reclaim that eventually frees it counts the wait as a
-crashed attempt against a job that never ran.
+the in-flight registry (no consumer ever took them), so the CANCELLING,
+FORCING and RELEASING phases never see them either, and the orchestration
+reports a clean exit with them still marked running. For a Kubernetes
+rolling deploy that is up to one concurrency window of work per pod that
+stops moving the moment the pod goes away, invisible in the queue's own
+accounting until a lock lease expires far later - and the reclaim that
+eventually frees it counts the wait as a crashed attempt against a job that
+never ran.
+
+Scope: this module proves the in-flight dispatch round during the SIGTERM
+drain with no active consumer registration - the round is gated inside
+``dispatch_batch``, so the DRAINING pass provably runs while the claim is
+still uncommitted, and the producer's exit hand-back is the only writer
+left. The harder conjunction (a stale registered entry for the same row
+plus a same-worker re-claim racing the deregister) is
+``tests/test_rt_shutdown_reclaim_handback_race.py``'s, not this module's:
+nothing here registers a consumer entry.
 """
 
 import asyncio
+import contextlib
 import json
 import logging
 from datetime import UTC, datetime, timedelta
-from typing import cast
+from typing import Any, cast
+from uuid import UUID
 
 import pytest
 
@@ -37,6 +49,34 @@ from taskq.worker.shutdown import ShutdownPhase, orchestrate_shutdown
 pytestmark = pytest.mark.integration
 
 _BACKLOG = 20
+
+
+class _GatedFirstDispatch:
+    """Backend proxy that parks the producer's claim round until released.
+
+    ``dispatch_batch`` sets ``in_flight`` and waits, so a test can run the
+    whole shutdown while the claim is provably uncommitted - the ordering a
+    bare ``await asyncio.sleep(0)`` only hopes to reproduce.
+    """
+
+    def __init__(self, inner: PostgresBackend) -> None:
+        self._inner = inner
+        self.in_flight = asyncio.Event()
+        self.allow_commit = asyncio.Event()
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._inner, name)
+
+    async def dispatch_batch(
+        self,
+        worker_id: UUID,
+        queues: list[str],
+        limit: int,
+        lock_lease: timedelta,
+    ) -> list[JobRow]:
+        self.in_flight.set()
+        await self.allow_commit.wait()
+        return await self._inner.dispatch_batch(worker_id, queues, limit, lock_lease)
 
 
 def _event_payload(record: logging.LogRecord) -> dict[str, object] | None:
@@ -76,13 +116,23 @@ def _assert_a_claim_round_actually_happened(caplog: pytest.LogCaptureFixture) ->
     dispatch error was logged, and a hand-back pass actually re-pended
     claimed rows.
 
-    Why the hand-back record and not the local queue: a claim round still
-    in flight when the stop lands is handed straight back by the producer's
+    Two independent failures are kept apart here, because they need
+    different repairs:
+
+    1. ``caplog`` captured no parseable structured payload at all - the log
+       format or handler chain changed under us. Reported as such; it must
+       not read as a producer bug.
+    2. The payloads were readable but no ``drain-local-queue-completed``
+       with ``rows_re_pended > 0`` is present - the candidate producer bug
+       (or the scenario never happened).
+
+    Why the hand-back record and not the local queue: a claim round in
+    flight when the stop lands is handed straight back by the producer's
     exit pass, so those rows never enter ``local_queue``. The
     ``drain-local-queue-completed`` record with ``rows_re_pended > 0`` is
-    the shape that fires whichever pass wins the race (the orchestrator's
-    DRAINING pass or the producer's exit pass), so an empty queue cannot
-    make the premise vacuous.
+    the shape the exit pass emits (the gate in each test holds the round
+    uncommitted until the DRAINING pass has completed), so an empty queue
+    cannot make the premise vacuous.
     """
     dispatch_errors = [
         record for record in caplog.records if "dispatch-batch-error" in record.getMessage()
@@ -92,11 +142,18 @@ def _assert_a_claim_round_actually_happened(caplog: pytest.LogCaptureFixture) ->
         "below are vacuous - nothing was ever claimed, so nothing could be "
         f"left locked: {[r.getMessage() for r in dispatch_errors]}"
     )
-    hand_backs: list[dict[str, object]] = []
-    for record in caplog.records:
-        payload = _event_payload(record)
-        if payload is not None and payload.get("event") == "drain-local-queue-completed":
-            hand_backs.append(payload)
+    payloads = [
+        payload for record in caplog.records if (payload := _event_payload(record)) is not None
+    ]
+    assert payloads, (
+        "caplog captured no parseable structured payload: the log format or "
+        "handler chain changed, so this premise cannot be evaluated. This is "
+        "a logging-shape failure, not evidence about the producer - fix the "
+        f"pipeline before reading it as one. Records: {[r.getMessage() for r in caplog.records]!r}"
+    )
+    hand_backs = [
+        payload for payload in payloads if payload.get("event") == "drain-local-queue-completed"
+    ]
     assert hand_backs, (
         "the producer never handed a claimed row back - with a backlog "
         "deeper than one claim round, a working dispatch leaves rows claimed "
@@ -105,7 +162,7 @@ def _assert_a_claim_round_actually_happened(caplog: pytest.LogCaptureFixture) ->
     re_pended = sum(int(payload.get("rows_re_pended", 0) or 0) for payload in hand_backs)
     assert re_pended > 0, (
         "no hand-back pass re-pended a row: the scenario this test pins "
-        "(SIGTERM with a claim in hand) never happened, and the stranded-row "
+        "(SIGTERM with a claim in flight) never happened, and the stranded-row "
         f"assertion below would be vacuous. Hand-back records: {hand_backs!r}"
     )
 
@@ -140,10 +197,11 @@ async def test_sigterm_during_a_claim_round_leaves_no_job_locked_to_the_dead_pod
     """A shutdown that begins mid-claim must still release everything it holds.
 
     The worker's producer is running against a backlog deeper than one claim
-    round, exactly as a pod does under load. SIGTERM arrives once the
-    producer has entered a round: the single yield below hands control to the
-    producer, which is then parked inside its claim when the orchestration
-    begins.
+    round, exactly as a pod does under load. The gated backend parks the
+    producer's ``dispatch_batch`` before it commits, so SIGTERM provably
+    arrives with that round in flight: the orchestration runs to completion
+    (DRAINING included) while the claim is still uncommitted, and only then
+    is the round released to commit.
 
     When the orchestration reports its clean exit, every phase has run and
     the worker is gone. Nothing may still be marked running and locked to it.
@@ -171,26 +229,45 @@ async def test_sigterm_during_a_claim_round_leaves_no_job_locked_to_the_dead_pod
     # this pins the routing rather than depending on an earlier test having
     # configured it (the tests/test_dispatch_pg.py precedent).
     setup_logging(level="INFO", log_format="json")
+    gated = _GatedFirstDispatch(backend)
     producer = asyncio.create_task(
         producer_loop(
             deps,
             local_queue,
             shutdown_event,
             deps.producer_stop_event,
-            backend=backend,
+            backend=gated,
             worker_id=worker_id,
         )
     )
-    # One yield, not a timed wait: it hands the loop to the producer, which
-    # runs until it parks on its claim. The signal then lands with that round
-    # in flight - the state a pod is in when a deploy rolls it under load.
-    await asyncio.sleep(0)
+    shutdown_task: asyncio.Task[int] | None = None
+    try:
+        # The round is inside its claim and has not committed anything yet.
+        await asyncio.wait_for(gated.in_flight.wait(), timeout=5.0)
 
-    with caplog.at_level(logging.INFO):
-        exit_code = await orchestrate_shutdown(
-            deps, deps.settings, worker_id, shutdown_event, None, backend=backend
-        )
-        await producer
+        with caplog.at_level(logging.INFO):
+            shutdown_task = asyncio.create_task(
+                orchestrate_shutdown(
+                    deps, deps.settings, worker_id, shutdown_event, None, backend=backend
+                )
+            )
+            # The orchestration completes while the round is still parked, so
+            # its DRAINING pass provably looks at a claim that has not landed.
+            await asyncio.wait_for(shutdown_event.wait(), timeout=10.0)
+            assert not producer.done(), (
+                "the claim round completed before the drain finished, so the "
+                "in-flight premise was never established"
+            )
+            gated.allow_commit.set()
+            exit_code = await asyncio.wait_for(shutdown_task, timeout=10.0)
+            await asyncio.wait_for(producer, timeout=10.0)
+    finally:
+        gated.allow_commit.set()
+        for task in (producer, shutdown_task):
+            if task is not None and not task.done():
+                task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await task
 
     assert exit_code == 0, (
         f"the orchestration must report a clean shutdown; got exit code {exit_code}"
@@ -240,22 +317,43 @@ async def test_work_claimed_during_shutdown_returns_to_the_fleet(
     deps.shutdown_started_at = None
 
     setup_logging(level="INFO", log_format="json")
+    gated = _GatedFirstDispatch(backend)
     producer = asyncio.create_task(
         producer_loop(
             deps,
             local_queue,
             shutdown_event,
             deps.producer_stop_event,
-            backend=backend,
+            backend=gated,
             worker_id=draining,
         )
     )
-    await asyncio.sleep(0)
-    with caplog.at_level(logging.INFO):
-        await orchestrate_shutdown(
-            deps, deps.settings, draining, shutdown_event, None, backend=backend
-        )
-        await producer
+    shutdown_task: asyncio.Task[int] | None = None
+    try:
+        await asyncio.wait_for(gated.in_flight.wait(), timeout=5.0)
+        with caplog.at_level(logging.INFO):
+            shutdown_task = asyncio.create_task(
+                orchestrate_shutdown(
+                    deps, deps.settings, draining, shutdown_event, None, backend=backend
+                )
+            )
+            # The whole orchestration runs while the claim is uncommitted; the
+            # exiting producer's hand-back is the pass under test.
+            await asyncio.wait_for(shutdown_event.wait(), timeout=10.0)
+            assert not producer.done(), (
+                "the claim round completed before the drain finished, so the "
+                "in-flight premise was never established"
+            )
+            gated.allow_commit.set()
+            await asyncio.wait_for(shutdown_task, timeout=10.0)
+            await asyncio.wait_for(producer, timeout=10.0)
+    finally:
+        gated.allow_commit.set()
+        for task in (producer, shutdown_task):
+            if task is not None and not task.done():
+                task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await task
 
     # The premise, asserted before the fleet-side claim below: the departing
     # pod must actually have held work. A producer whose dispatch errored

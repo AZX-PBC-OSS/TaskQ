@@ -313,6 +313,10 @@ async def producer_loop(
     # below: a producer that never claimed cannot hold a locked row, so
     # its exit owes the fleet no write (the common idle-shutdown shape).
     made_a_claim = False
+    # The size of the one claim round the post-stop break skips (0 when no
+    # round committed after the stop). The exit hand-back's record carries
+    # it so the rows the producer alone was responsible for are legible.
+    post_stop_skipped_rows = 0
     # The unexpected-error backstop, the same one every leader
     # maintenance loop carries (see taskq.worker._transient): a
     # non-transient dispatch failure (a revoked grant, a code bug, a
@@ -505,6 +509,12 @@ async def producer_loop(
                     # external stop with no orchestration) runs no exit
                     # hand-back and its consumer loops may still execute a
                     # queued row, so those claims must be enqueued.
+                    post_stop_skipped_rows = len(jobs)
+                    _producer_log.info(
+                        "producer-post-stop-round-skipped",
+                        worker_id=str(worker_id),
+                        rows_skipped=post_stop_skipped_rows,
+                    )
                     break
                 for job in jobs:
                     # Fence the claim before the first await: the put is
@@ -617,13 +627,33 @@ async def producer_loop(
     # sweep remains the backstop). A bare shutdown_event exit (the
     # external-stop path, no orchestration) keeps the lease-reclaim shape
     # it has always had.
+    #
+    # Contained the way the DRAINING phase's identical call is: the helper
+    # swallows only TRANSIENT_PG_ERRORS, so a non-transient error (a data
+    # error, a dropped table, the schema-identifier contract) would
+    # otherwise escape this loop into _guarded, which counts a sibling
+    # crash, sets shutdown_event and re-raises - aborting the worker's
+    # TaskGroup and cancelling the shutdown orchestrator's remaining
+    # phases. The failure gets its own record (with the class and the rows
+    # at stake) and the loop still exits through its bookkeeping.
     if producer_stop_event.is_set() and made_a_claim:
-        handed_back = await drain_local_queue_to_pending(deps, worker_id)
-        if handed_back:
+        try:
+            handed_back = await drain_local_queue_to_pending(
+                deps, worker_id, call_site="producer_exit"
+            )
             _producer_log.info(
                 "producer-exit-handback",
                 worker_id=str(worker_id),
                 rows_re_pended=handed_back,
+                rows_skipped=post_stop_skipped_rows,
+            )
+        except Exception as exc:
+            _producer_log.error(
+                "producer-exit-handback-failed",
+                worker_id=str(worker_id),
+                error_class=type(exc).__name__,
+                error=str(exc),
+                rows_skipped=post_stop_skipped_rows,
             )
 
     reason = "producer_stop_event" if producer_stop_event.is_set() else "shutdown_event"
@@ -1247,9 +1277,10 @@ async def consumer_loop_stub(
 ) -> None:
     """Pull one job per iteration, register, sleep sentinel, write terminal status.
 
-    Outer loop: ``while not shutdown_event.is_set()``.
-    Races ``local_queue.get()`` against ``shutdown_event.wait()``; on shutdown
-    win the queue waiter is cancelled and the stub returns cleanly.
+    Outer loop: ``while not (shutdown_event.is_set() or deps.producer_stop_event.is_set())``.
+    Races ``local_queue.get()`` against ``shutdown_event.wait()`` and
+    ``deps.producer_stop_event.wait()``; on a stop win the queue waiter is
+    cancelled and the stub returns cleanly.
 
     On job get the stub registers in ``deps.active_jobs``, awaits a cancellable
     sentinel, writes terminal state via ``backend`` (shielded), and deregisters
@@ -1432,9 +1463,10 @@ async def di_consumer_loop(
 ) -> None:
     """Pull one job per iteration and dispatch via dispatch_one_job.
 
-    Outer loop: ``while not shutdown_event.is_set()``.
-    Races ``local_queue.get()`` against ``shutdown_event.wait()``; on shutdown
-    win the queue waiter is cancelled and the loop returns cleanly.
+    Outer loop: ``while not (shutdown_event.is_set() or deps.producer_stop_event.is_set())``.
+    Races ``local_queue.get()`` against ``shutdown_event.wait()`` and
+    ``deps.producer_stop_event.wait()``; on a stop win the queue waiter is
+    cancelled and the loop returns cleanly.
 
     Each job is dispatched through dispatch_one_job which composes
     build_actor_scope + consume_one_job, providing DI-aware actor

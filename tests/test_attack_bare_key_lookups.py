@@ -10,6 +10,7 @@ remover holds the exact entry it installed, the fence
 """
 
 import asyncio
+import contextlib
 from dataclasses import replace
 from datetime import UTC, datetime
 from typing import Any
@@ -265,10 +266,13 @@ async def test_register_absorbs_the_intent_for_the_same_claim() -> None:
     registry = ActiveJobRegistry()
     job_id = new_job_id()
 
-    registry.mark_claimed(job_id, 1)  # token dropped: register's absorb covers it
+    # One named epoch binds the take and the context that must absorb it, so
+    # the fixture cannot drift into a misleading red on `register`.
+    claim_epoch = 1
+    registry.mark_claimed(job_id, claim_epoch)  # token dropped: register's absorb covers it
     task = asyncio.current_task()
     assert task is not None
-    await registry.register(job_id, task, _stub_ctx(job_id))
+    await registry.register(job_id, task, _stub_ctx(job_id, claim_epoch=claim_epoch))
     # The registration now covers the key; the intent map itself is empty
     # (held_ids() still carries the id, via the registration's own entry).
     assert not registry._claim_intents, (  # pyright: ignore[reportPrivateUsage]  # Why: the pin asserts the intent map itself; held_ids() conflates it with the registrations that absorbed them.
@@ -278,7 +282,7 @@ async def test_register_absorbs_the_intent_for_the_same_claim() -> None:
     assert job_id not in registry.held_ids()
 
 
-def _stub_ctx(job_id: Any) -> JobContext[BaseModel]:
+def _stub_ctx(job_id: Any, *, claim_epoch: int = 1) -> JobContext[BaseModel]:
     from taskq.testing.jobs import make_job_row  # local: keeps the builder import next to its use
 
     row = make_job_row()
@@ -287,12 +291,120 @@ def _stub_ctx(job_id: Any) -> JobContext[BaseModel]:
         actor=row.actor,
         queue=row.queue,
         attempt=row.attempt,
-        claim_epoch=1,
+        claim_epoch=claim_epoch,
         worker_id=_WORKER_ID,
         payload=EmptyPayload(),
         jobs=_FakeEnqueuer(),
         log=__import__("structlog").get_logger("test"),
     )
+
+
+def _parked_task() -> asyncio.Task[object]:
+    """A never-completing task standing in for an in-flight consumer."""
+    return asyncio.get_running_loop().create_task(asyncio.sleep(9999))
+
+
+# ── the registry's hold arithmetic and reader parity ─────────────────────
+
+
+def test_a_stale_take_leaves_one_row_in_the_queued_and_the_intent_maps() -> None:
+    """A delayed stale take does not remove the newer queued entry.
+
+    ``mark_claimed`` deletes the queued entry only when its epoch is not
+    newer than the take's, so the older take's intent stands beside the
+    newer parked claim. The row is then in both maps, which is why
+    ``count() + intent_count()`` is only an upper bound on the hold.
+    """
+    registry = ActiveJobRegistry()
+    job_id = new_job_id()
+
+    registry.mark_enqueued(job_id, 2)
+    stale_token = registry.mark_claimed(job_id, 1)
+
+    try:
+        assert registry.queued_ids() == [job_id], (
+            "the stale take removed the newer queued claim's coverage"
+        )
+        assert registry.held_claims() == [(job_id, 1)], (
+            "the stale take's intent must be visible to the hand-back exclusion"
+        )
+        assert registry.count() + registry.intent_count() == 1, (
+            "one row is named by _queued and _claim_intents at once: the old "
+            "'disjoint from the queued ids' claim is false for this reachable "
+            "state (the sum stays 1 because _queued is not one of its terms)"
+        )
+    finally:
+        registry.resolve_claim(job_id, stale_token)
+
+
+async def test_a_stale_registration_leaves_one_row_in_the_entry_and_intent_maps() -> None:
+    """A stale registration installs beside a newer standing intent.
+
+    The newer take's intent (epoch 2) stands; a delayed registration from
+    the older generation (epoch 1) finds no entry for the key and installs
+    itself, and the intent is not absorbed because the epochs differ. One
+    row is then named by both maps: ``count() + intent_count()`` counts it
+    twice, the conservative over-count ``intent_count()`` documents.
+    """
+    registry = ActiveJobRegistry()
+    job_id = new_job_id()
+    registry.mark_claimed(job_id, 2)
+
+    task = _parked_task()
+    try:
+        entry = await registry.register(job_id, task, _stub_ctx(job_id, claim_epoch=1))
+
+        assert registry.get(job_id) is entry
+        assert registry.held_claims() == [(job_id, 1), (job_id, 2)], (
+            "the newer intent must survive the stale registration, and both "
+            "pairs must stay visible so neither masks the other"
+        )
+        assert registry.count() == 1, "one registered entry"
+        assert registry.intent_count() == 1, "one standing intent"
+        assert registry.count() + registry.intent_count() == 2, (
+            "one row is counted twice; the sum is a conservative upper bound "
+            "on the in-process hold, not an exact disjoint sum"
+        )
+    finally:
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+
+
+async def test_held_ids_is_the_projection_of_held_claims() -> None:
+    """The bare-id reader names exactly the pair reader's rows, in order.
+
+    Both readers derive the exclusion coverage of the hand-back passes. A
+    map added to one and not the other would silently narrow an exclusion,
+    so ``held_ids()`` is defined as the projection of ``held_claims()``.
+    """
+    registry = ActiveJobRegistry()
+    registered_id = new_job_id()
+    stale_intent_id = new_job_id()
+    task = _parked_task()
+    try:
+        await registry.register(registered_id, task, _stub_ctx(registered_id, claim_epoch=1))
+        registry.mark_claimed(stale_intent_id, 3)
+
+        assert registry.held_claims() == [(registered_id, 1), (stale_intent_id, 3)]
+        assert registry.held_ids() == [job_id for job_id, _epoch in registry.held_claims()], (
+            "held_ids() and held_claims() must name the same rows in the same order"
+        )
+    finally:
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+
+
+def test_queued_ids_is_the_projection_of_queued_claims() -> None:
+    """The queued pair reader and its bare-id projection name the same rows."""
+    registry = ActiveJobRegistry()
+    job_id = new_job_id()
+
+    registry.mark_enqueued(job_id, 7)
+
+    assert registry.queued_claims() == [(job_id, 7)]
+    assert registry.queued_ids() == [job_id for job_id, _epoch in registry.queued_claims()]
 
 
 class _FakeEnqueuer:  # structurally a SubJobEnqueuer stand-in; register never uses it

@@ -490,13 +490,19 @@ async def test_state2_claim_intent_fences_the_row_out_of_every_hand_back(
     other = await _new_worker(deps, schema)
     assert await backend.dispatch_batch(other, ["default"], 5, _LOCK_LEASE) == []
 
-    # The token is identity-scoped (the issue-461 class): a stale
-    # generation's resolve removes nothing, the live intent survives.
-    stale_token = deps.active_jobs.mark_claimed(job_id, 1)
-    deps.active_jobs.resolve_claim(job_id, token)
-    drained = await drain_local_queue_to_pending(deps, worker_id)
-    assert drained == 0, "a stale token's resolve must not release the live claim's intent"
-    deps.active_jobs.resolve_claim(job_id, stale_token)
+    # The token is identity-scoped (the issue-461 class): the newer
+    # generation's take (epoch 2) replaces the older generation's intent,
+    # so the older generation's delayed resolve (its epoch-1 token)
+    # removes nothing and the live intent survives. This arm is
+    # registry-side (the row's DB claim stays at epoch 1), so it pins the
+    # token identity; the drain-exclusion half above pins the SQL.
+    live_token = deps.active_jobs.mark_claimed(job_id, 2)
+    deps.active_jobs.resolve_claim(job_id, token)  # the stale generation's exit
+    assert deps.active_jobs.held_claims() == [(job_id, 2)], (
+        "the stale generation's resolve erased the live claim's intent; the "
+        "hand-back passes would re-pend a row the live claim is about to run"
+    )
+    deps.active_jobs.resolve_claim(job_id, live_token)
 
     # The window resolved without a run: the next hand-back pass re-pends
     # the row whole - refunded, exactly once.

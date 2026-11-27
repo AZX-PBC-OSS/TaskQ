@@ -193,8 +193,10 @@ async def test_empty_round_wakes_on_slot_release_before_the_poll_interval() -> N
 
 async def test_availability_counts_claim_intents() -> None:
     """count() misses the take-to-register window; intent_count() is the
-    third term of the producer's slot arithmetic, disjoint from both the
-    queued rows and the registered entries, and register absorbs it."""
+    third term of the producer's slot arithmetic, a conservative upper
+    bound on the in-process hold (a stale queued entry or registration can
+    make one row count twice), and register absorbs the intent for the
+    claim it registers."""
     registry = ActiveJobRegistry()
     job_id = new_uuid()
     registry.mark_enqueued(job_id, 1)

@@ -788,3 +788,86 @@ async def test_drain_combines_claim_and_disowned_exclusions(
         holder_task.cancel()
         with pytest.raises(asyncio.CancelledError):
             await holder_task
+
+
+@pytest.mark.parametrize(
+    ("held", "disowned", "expected_repended"),
+    [
+        (0, 0, 3),
+        (1, 0, 2),
+        (0, 1, 2),
+        (1, 1, 1),
+    ],
+    ids=["neither", "held-only", "disowned-only", "held-and-disowned"],
+)
+async def test_drain_repends_exactly_the_rows_its_exclusions_do_not_name(
+    clean_jobs_app: JobsApp,
+    held: int,
+    disowned: int,
+    expected_repended: int,
+) -> None:
+    """Every reachable exclusion shape re-pends exactly the rows it spares.
+
+    ``drain_local_queue_to_pending`` appends its two optional conjuncts in
+    sequence: the held-claim pair (``$2``/``$3``) only when the registry is
+    non-empty, and the disowned array numbered from the running
+    ``len(params)``. Four renderings are reachable - neither conjunct, held
+    only, disowned only, both - and each must agree with its bound arguments.
+
+    The disowned array is the operand this matrix exists for. A bound
+    argument count that disagrees with the statement raises
+    ``asyncpg.InterfaceError``, a member of ``TRANSIENT_PG_ERRORS``, so the
+    helper logs the failure at error level (``statement_contract_error=True``)
+    and returns 0: "the statement never ran" and "nothing to hand back" are
+    indistinguishable from the row state alone.
+    The unheld, non-disowned control row proves the statement ran and
+    refunded exactly its own claim, while the excluded rows keep their
+    claim.
+    """
+    deps = clean_jobs_app.deps
+    backend = clean_jobs_app.backend
+    schema = deps.settings.schema_name
+    worker_id = new_uuid()
+    async with deps.worker_pool.acquire() as conn:
+        await create_worker(conn, schema, worker_id)
+
+    ids = [await _enqueue_one(backend) for _ in range(3)]
+    claims = await backend.dispatch_batch(worker_id, ["default"], 3, timedelta(seconds=60))
+    assert {job.id for job in claims} == set(ids)
+    by_id = {job.id: job for job in claims}
+
+    holder_task: asyncio.Task[object] = asyncio.create_task(asyncio.sleep(60))
+    entries: list[_ActiveJob] = []
+    try:
+        for job_id in ids[:held]:
+            entries.append(
+                await deps.active_jobs.register(
+                    job_id,
+                    holder_task,
+                    _dummy_ctx(by_id[job_id], worker_id, backend),
+                )
+            )
+        for job_id in ids[held : held + disowned]:
+            deps.disowned_jobs.add(job_id)
+
+        handed_back = await drain_local_queue_to_pending(deps, worker_id)
+
+        assert handed_back == expected_repended, (
+            f"held={held} disowned={disowned} re-pended {handed_back} rows, expected "
+            f"{expected_repended}: a bound argument that disagrees with the statement "
+            "raises InterfaceError, which this helper swallows into a 0 rowcount"
+        )
+        for job_id in ids:
+            row = await backend.get(job_id)
+            assert row is not None
+            should_be_repended = ids.index(job_id) >= held + disowned
+            assert (row.status == "pending") is should_be_repended, (
+                f"job {job_id} ended status={row.status!r}, "
+                f"locked_by_worker={row.locked_by_worker!r}"
+            )
+    finally:
+        for entry, job_id in zip(entries, ids, strict=False):
+            await deps.active_jobs.deregister(job_id, entry)
+        holder_task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await holder_task

@@ -894,12 +894,30 @@ class ActiveJobRegistry:
     ``await register`` / ``await deregister`` while the heartbeat or consumer is
     also running.
 
-    Public surface per :
-      - ``register(job_id, task, ctx) -> _ActiveJob`` (async)
-      - ``deregister(job_id, entry) -> None`` (async, identity-scoped)
-      - ``get(job_id) -> _ActiveJob | None`` (sync)
-      - ``all() -> list[_ActiveJob]`` (sync snapshot copy)
-      - ``count() -> int`` (sync)
+    Public surface:
+      - ``mark_enqueued(job_id, claim_epoch) -> None`` (sync): the producer's
+        claim handed to ``local_queue``.
+      - ``queued_ids() -> list[JobId]`` (sync snapshot): the bare-id
+        projection of ``queued_claims()``.
+      - ``queued_claims() -> list[tuple[JobId, int]]`` (sync snapshot): the
+        parked rows with the claim epoch they were parked at.
+      - ``mark_claimed(job_id, claim_epoch) -> ClaimIntent`` (sync): a queue
+        take's identity; the coverage moves queued to intent.
+      - ``resolve_claim(job_id, token) -> None`` (sync, identity-scoped): drop
+        only the caller's own take.
+      - ``held_ids() -> list[JobId]`` (sync snapshot): the bare-id projection
+        of ``held_claims()``.
+      - ``held_claims() -> list[tuple[JobId, int]]`` (sync snapshot): every
+        registered entry and standing intent with its claim epoch; the
+        exclusion identity the hand-back passes bind.
+      - ``register(job_id, task, ctx) -> _ActiveJob`` (async): install an
+        in-flight entry, absorbing only an intent at the same claim epoch.
+      - ``deregister(job_id, entry) -> None`` (async, identity-scoped):
+        remove only the caller's own registration.
+      - ``get(job_id) -> _ActiveJob | None`` (sync).
+      - ``all() -> list[_ActiveJob]`` (sync snapshot copy).
+      - ``count() -> int`` (sync): registered entries only.
+      - ``intent_count() -> int`` (sync): standing claim intents only.
     """
 
     def __init__(self) -> None:
@@ -999,7 +1017,7 @@ class ActiveJobRegistry:
             del self._claim_intents[job_id]
 
     def held_ids(self) -> list[JobId]:
-        """Snapshot of every row this process may still execute: registered and intent.
+        """Snapshot of every held row's bare id: the projection of ``held_claims()``.
 
         Deliberately not the queued ids (``queued_ids()``): a row parked
         in local_queue at a DRAINING exit must be re-pended by the exit
@@ -1010,9 +1028,11 @@ class ActiveJobRegistry:
         exclusion names the claim identity rather than the row; this
         bare-id reader stays for the callers that only need to know
         whether a row is held at all (the cancel controller's unheld
-        walk, the heartbeat's lost-claim probe).
+        walk, the heartbeat's lost-claim probe). It derives from
+        ``held_claims()`` so the two readers cannot disagree about
+        coverage or order: one source of truth for the exclusion set.
         """
-        return list(self._by_id) + list(self._claim_intents)
+        return [job_id for job_id, _epoch in self.held_claims()]
 
     def held_claims(self) -> list[tuple[JobId, int]]:
         """Snapshot of every held row with the claim epoch this process holds it at.
@@ -1025,11 +1045,11 @@ class ActiveJobRegistry:
         hand-back, and the worker then exits leaving that claim running
         and locked to it.
 
-        Same coverage and order as ``held_ids()``: registered entries
-        first (each at its context's epoch), then standing claim
-        intents. Both maps can hold the same ``job_id`` at different
-        epochs while a stale attempt unwinds, and both pairs are
-        returned so neither masks the other.
+        This reader is the source of truth: ``held_ids()`` is its bare-id
+        projection. Registered entries come first (each at its context's
+        epoch), then standing claim intents. Both maps can hold the same
+        ``job_id`` at different epochs while a stale attempt unwinds, and
+        both pairs are returned so neither masks the other.
         """
         return [(job_id, entry.ctx.claim_epoch) for job_id, entry in self._by_id.items()] + [
             (job_id, intent.claim_epoch) for job_id, intent in self._claim_intents.items()
@@ -1123,10 +1143,23 @@ class ActiveJobRegistry:
         invisible to ``count()``, and that window is where a denied
         admission's bounded local retry now waits, so a producer sizing a
         claim by registered jobs alone can double-claim every slot its
-        consumers are already holding. The intents are disjoint from both
-        the queued ids (``mark_claimed`` moves the row out of ``_queued``)
-        and the registered entries (``register`` absorbs the intent), so
-        ``count() + intent_count()`` is the exact in-process hold.
+        consumers are already holding.
+
+        ``count() + intent_count()`` is a CONSERVATIVE UPPER BOUND on the
+        in-process hold, not an exact sum. Both memberships are
+        conditional under the epoch guards: ``mark_claimed`` removes a
+        queued entry only when its epoch is not newer than the take's, so
+        a delayed stale take can coexist with a newer queued entry
+        (double-counting one row across the producer's three-term slot
+        expression ``local_queue.qsize() + count() + intent_count()``);
+        and ``register`` absorbs only an intent at its own claim epoch, so
+        a delayed stale registration can coexist with a newer standing
+        intent while the stale attempt unwinds (double-counting one row
+        in ``count() + intent_count()`` directly). The direction is safe:
+        the one production reader (``producer_loop``'s available-slot
+        arithmetic) subtracts the sum, so an over-count only shrinks the
+        next claim round, and it self-clears when the stale attempt's
+        ``deregister`` / ``resolve_claim`` runs.
         """
         return len(self._claim_intents)
 
