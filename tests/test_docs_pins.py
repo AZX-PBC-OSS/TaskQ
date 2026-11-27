@@ -803,3 +803,121 @@ def test_docs14_the_upgrading_guide_publishes_the_terminal_less_spawn_refusal() 
     assert "step promise" in entry, (
         "the entry does not name the remedy (return the child's step promise)"
     )
+
+
+# ── the deps factory's lifecycle and telemetry documentation ───────────
+
+
+def test_deps_reload_docs_state_the_bounded_drain_escape_hatch() -> None:
+    """A bounded drain is not an unconditional clean-completion promise.
+
+    The runtime force-releases a superseded instance when the bound expires,
+    and a stuck body or its finalize can then fail through ordinary recovery.
+    Both authoring surfaces must state that escape hatch and the direct
+    rotation report's ``drained=False`` face rather than teaching that every
+    body keeps its resource until it finishes.
+    """
+    for doc in (_GUIDE, _API_REF):
+        body = " ".join(doc.read_text(encoding="utf-8").split())
+        assert "clean-completion protection ends at the drain bound" in body, (
+            f"{doc.relative_to(_REPO)} omits the drain timeout's force-proceed contract"
+        )
+        assert "`drained=False`" in body, (
+            f"{doc.relative_to(_REPO)} omits the direct rotation's timeout result"
+        )
+        assert "ordinary durable job-failure recovery" in body, (
+            f"{doc.relative_to(_REPO)} omits the stuck claim's failure disposition"
+        )
+
+    guide = " ".join(_GUIDE.read_text(encoding="utf-8").split())
+    assert "zero `Event loop is closed` / `pool is closed` errors by construction" not in guide, (
+        "the guide promises zero pool-closed errors even after the documented drain "
+        "bound can force-release a live body's resource"
+    )
+    assert "cancelled rotation" in guide and "another bounded release" in guide, (
+        "the shutdown-budget model omits the pending generation a cancelled rotation "
+        "can add to the close tail"
+    )
+    assert "on a generation-changing reload" in guide, (
+        "the choice table implies an unchanged-generation reload releases the live instance"
+    )
+
+
+def test_deps_direct_reload_refusal_counts_factory_bound_children() -> None:
+    """A static parent can rotate a factory-bound child it created.
+
+    ``FlowRunner.reload_deps`` walks the runner and its drive-created children;
+    the refusal applies only when that whole ownership tree has no factory, not
+    whenever the root runner has no binding of its own.
+    """
+    for doc in (_GUIDE, _API_REF):
+        body = " ".join(doc.read_text(encoding="utf-8").split())
+        assert "neither the runner nor any drive-created child has a factory binding" in body, (
+            f"{doc.relative_to(_REPO)} falsely refuses a static parent with a factory-bound child"
+        )
+        assert "worker-owned" in body, (
+            f"{doc.relative_to(_REPO)} omits the worker-owned resolution refusal"
+        )
+
+
+def test_deps_telemetry_docs_split_counter_attributes_and_worker_scope() -> None:
+    """Only the teardown counter has an ``outcome`` attribute.
+
+    Resolution and rotation telemetry is emitted by the worker-hosted owner;
+    the direct resolver does not emit these worker lifecycle events. The docs
+    must keep that scope and the two counters' distinct attribute sets exact.
+    """
+    for doc in (_GUIDE, _API_REF):
+        body = " ".join(doc.read_text(encoding="utf-8").split())
+        assert "On the worker-hosted door, the structured log events" in body, (
+            f"{doc.relative_to(_REPO)} implies the direct door emits worker telemetry"
+        )
+        assert "`taskq.workflows.deps_resolved` carries `workflow` and `generation`" in body, (
+            f"{doc.relative_to(_REPO)} gives the resolution counter an outcome attribute"
+        )
+        assert "`taskq.workflows.deps_torn_down` adds `outcome`" in body, (
+            f"{doc.relative_to(_REPO)} omits the teardown counter's distinct outcome attribute"
+        )
+        assert "never a metric dimension" in body
+
+
+def test_deps_api_reference_labels_binding_kwargs_and_dynamic_refusal_precisely() -> None:
+    """The reference lists deps-binding kwargs, not each constructor's full
+    signature, and distinguishes declaration checks from the context-manager
+    product shape that can only be refused after the factory returns."""
+    body = " ".join(_API_REF.read_text(encoding="utf-8").split())
+    assert "their deps-binding kwargs" in body
+    assert "their FULL kwarg sets" not in body
+    assert "Declaration-site refusals (`ValueError`)" in body
+    assert "The resolve-time refusal" in body
+    assert "key=None, run_key=None" in body, (
+        "the packaged run signature omits its public run_key alias"
+    )
+    assert "create_flow(*, input=None, key=None, run_key=None" in body, (
+        "the runner signature omits the canonical key argument beside its alias"
+    )
+
+
+def test_deps_close_docs_scope_ordering_and_direct_failure_behavior() -> None:
+    """Pool ordering covers instances already resolved when close begins,
+    and direct disposal re-raises after attempting every owner rather than
+    logging and suppressing the way worker teardown does."""
+    for doc in (_GUIDE, _API_REF):
+        body = " ".join(doc.read_text(encoding="utf-8").split())
+        assert "every already-resolved factory-created deps instance" in body, (
+            f"{doc.relative_to(_REPO)} promises pool ordering for a factory "
+            "that has not finished resolving"
+        )
+        assert "a failure propagates after every owner has been attempted" in body, (
+            f"{doc.relative_to(_REPO)} hides the direct door's teardown failure"
+        )
+        assert "first failure is re-raised" not in body, (
+            f"{doc.relative_to(_REPO)} promises an exception ordering the "
+            "runner's exit stack does not guarantee"
+        )
+
+    guide = " ".join(_GUIDE.read_text(encoding="utf-8").split())
+    assert "owner-initiated teardown attempt" in guide, (
+        "the guide applies the close bound to a late factory acquisition's "
+        "release, which is not the owner-initiated bounded close"
+    )

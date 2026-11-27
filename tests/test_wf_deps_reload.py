@@ -816,6 +816,41 @@ def test_a_generation_source_that_raises_keeps_serving_and_is_reported() -> None
     asyncio.run(_scenario())
 
 
+def test_an_unsupported_generation_value_keeps_serving_and_is_reported() -> None:
+    """A settings source that answers ``None`` instead of a generation is a
+    reachable configuration mistake. Rotation reports the type error without
+    raising or rotating, and the current instance remains usable."""
+    binding = DepsFactory(
+        _make_probe,
+        generation=lambda: cast(
+            "int | str", None
+        ),  # Why: exercise runtime validation of a settings value that bypassed the declared callable type.
+    )
+    worker_id = new_uuid()
+
+    async def _scenario() -> None:
+        resolution = scope.prepare_worker_deps(
+            binding, workflow="wf-invalid-generation", worker_id=worker_id
+        )
+        instance = await _resolved(resolution)
+
+        with structlog.testing.capture_logs() as logs:
+            report = await resolution.rotate(drain_timeout=1.0)
+
+        assert not report.rotated and report.drained
+        assert isinstance(report.error, TypeError)
+        assert "int or a str" in str(report.error)
+        assert await _resolved(resolution) is instance
+        failure = next(e for e in logs if e["event"] == "workflow-deps-rotate-failed")
+        assert failure["error_class"] == "TypeError"
+        assert failure["generation"] == 0
+
+        await scope.teardown_worker_deps(worker_id)
+        assert _RELEASES == [0], "only the live instance releases, at shutdown"
+
+    asyncio.run(_scenario())
+
+
 # ── the direct door (real PG) ────────────────────────────────────────────
 
 

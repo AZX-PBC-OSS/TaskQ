@@ -305,7 +305,7 @@ compile's version of over-rejection.**
 | `E9-ctx-annotation` | error | a body whose `ctx` annotation is not `StepContext` (or a subclass) — the annotation is verification, not documentation; the fabricated stand-in is refused at compile |
 | `E10-arity` | error | a body's params (beyond `ctx`) not matching the wired sources' count — the wiring's own promise, refused at compile, never a mid-flow ladder discovery |
 | `E11-loop-promise-carry` | error | a promise handle wired as the loop's `initial=` — the initial carry is a VALUE, never a handle (the handle cannot ride the row; wire the parent's result through a first step's return, or read it in the body) |
-| `E12-deps-contract` | error | a body declaring the deps shape (one param beyond `ctx` + the wired sources — the DI capability's opt-in) where the app binds NO deps (`WorkflowApp(deps=…)` never ran), or whose declared deps type the bound instance does not satisfy — the message names the fix: bind ONE instance at the door, or drop the parameter (it is never a fourth data source) |
+| `E12-deps-contract` | error | a body declaring the deps shape (one param beyond `ctx` + the wired sources — the DI capability's opt-in) where the app binds NO deps (`WorkflowApp(deps=…)` never ran), or whose declared deps type the bound instance does not satisfy — under a `deps_factory=` binding the check reads the factory's PRODUCT TYPE from its return annotation WITHOUT invoking it (`() -> T`, `() -> Awaitable[T]`, `-> AsyncContextManager[T]` / `-> AsyncIterator[T]` / `-> AsyncGenerator[T, None]`, a class factory, a concrete async-CM class via its `__aenter__` result); unverifiable products (`Any`, `object`, unannotated, a union, a non-runtime-checkable protocol) SKIP the check — the zero-false-positive doctrine — the message names the fix (and, on the factory arm, both type names): bind ONE instance at the door, or drop the parameter (it is never a fourth data source) |
 | `E13-gate-door` | error | a node's `gates=` carrying the channel's BOUND-DOOR object (`app.channel().gate(Model)`'s `TypedGate` — the runtime delivery handle) where the DECLARATION (`GateDecl(name=…, payload_models=…, timeout_s=…)`) belongs — the declaration is what the compile's hold nodes, the timeout warning and the delivery runtime read |
 | `E14-gate-wiring` | error | the gate seat and the bodies' waits, walked against each other (E2's analog for the hold wiring), BOTH provable directions: a DECLARED gate whose body carries no `wait_signal` reference at all (the hold seat with no waiter), and a body's `wait_signal` with NO declared gate (the hold the compile's surfaces cannot see — the Mermaid hold nodes, W1's read, the admin's resolve/deliver doors). The conditional-interior wait is not statically provable — the loop-kind mis-index face is W5's |
 | `E15-route-totality` | error | THE TOTALITY FENCE AT THE GRAPH LEVEL: the typed route's arms walked against the source's declared union, BOTH provable directions — the arms' keys must cover the union's members EXACTLY (a MISSING member would route NOTHING — the silent drop the route exists to refuse: the skipped-both-arms run that terminalized succeeded-having-routed-nothing; an UNKNOWN member would never fire), and every arm body declares its arm's MODEL on the item param (the decode's target — a duck-typed arm (`dict`/unannotated/`Any`) consumes the element UNVALIDATED; the declared model must be the EXACT union member — a superclass passes the old issubclass fence and the runtime decode drops the subclass's own fields (`extra='ignore'`, the silent data loss); an unrelated model is the wiring promising data the arm cannot accept). The wiring verbs refuse the same breaches at the wiring site; this rule re-proves the fence from the compiled graph itself (public, mutable data — E3's precedent). The runtime door for the body that LIED about its union is `RouterNotTotal` |
@@ -374,8 +374,8 @@ execution refuses them.
 `FlowRunner(compiled, pool, schema)` — the API's reference worker and
 the test/demo driver:
 
-- `create_flow(*, input=None, run_key=None, root_metadata_extra=None,
-  priority=None) → RunClaim` — the run carries
+- `create_flow(*, input=None, key=None, run_key=None,
+  root_metadata_extra=None, priority=None) → RunClaim` — the run carries
   its INPUT on the root row (cut #7: cross-flow data never dies in a
   Python closure); bodies read `ctx.input`. `root_metadata_extra=` is
   extra keys stamped onto the root row's metadata in the SAME create
@@ -412,15 +412,22 @@ the test/demo driver:
 The packaged verbs (re-exported at `taskq.workflows`' top level — the
 ID-ADDRESSED doors that need no `FlowRunner` in hand):
 
-- `run(flow, pool, schema, *, input=None, key=None, until="terminal",
-  max_ticks=5000, execute=True, deps=None, priority=None) →
+- `run(flow, pool, schema, *, input=None, key=None, run_key=None,
+  until="terminal", max_ticks=5000, execute=True, deps=None,
+  deps_factory=None, deps_teardown=None, priority=None) →
   WorkflowRunResult` — the ONE-CALL door: create the run (*key* is the
-  run key), drive it to `until`, and return the claim + the drive's
-  outcome + the decoded result. `execute=True` (the default) runs the
+  run key; `run_key=` rides as the alias), drive it to `until`, and return
+  the claim + the drive's outcome + the decoded result. `execute=True`
+  (the default) runs the
   bodies in THIS process (the dev loop); `execute=False` is the
   orchestration-only pass — the fleet's workers execute the rows.
   `deps=` overrides the DI binding for this call (the app's bound
-  instance is the default); `priority=` is the per-call claim-order
+  instance is the default); `deps_factory=` (with its optional
+  `deps_teardown=`) is the same seam's lazy arm — the factory runs on
+  this call's event loop at the first body execution and releases when
+  the call returns, on the success and the failure path alike; `deps=`
+  and `deps_factory=` together are refused (the deps seam section
+  below). `priority=` is the per-call claim-order
   override (the `create_flow` face above).
 - `retry_workflow_node(pool, *, schema, flow_id, node_key, reason=None,
   principal=None) → int` — the ID-ADDRESSED manual resume (the
@@ -449,3 +456,106 @@ The dispatch contract: bodies resolve from the REGISTERED DEFINITION
 finalize is the engine's two-tx shape; a body exception ladders
 (attempt failures emit NO terminal — P3 rule 7) with `retry_kind`
 routing (`"permanent"` takes no ladder) and per-node `max_attempts`.
+
+## The deps seam (`deps=` / `deps_factory=`)
+
+The body's dependency door (the DI capability): declare a deps type per app,
+bodies opt in with a last `deps:`-annotated parameter, and the door binds ONE
+instance. The authoring guidance — when to pick each face, the shapes, the
+lifecycle order, the scope — is the
+[workflows guide's deps seam section](../guides/workflows.md#the-deps-seam-the-bodys-dependency-door-the-di-capability);
+this page is the contracts.
+
+The declaration surfaces and their deps-binding kwargs:
+
+- `WorkflowApp(deps=None, deps_factory=None, deps_teardown=None,
+  deps_generation=None)` — the app's ONE binding, carried by the compile into
+  every door (the worker-hosted execution door and the packaged `run(...)`
+  read it from the compiled object).
+- `FlowRunner(compiled, pool, schema, *, worker_id=None, deps=None,
+  deps_factory=None, deps_teardown=None, deps_generation=None,
+  default_start_to_close=None)` — the direct door: an explicit `deps=` /
+  `deps_factory=` OVERRIDES the compiled binding (the E12 validation re-runs
+  against the effective binding); passing both is refused.
+- `run(flow, pool, schema, *, …, deps=None, deps_factory=None,
+  deps_teardown=None)` — the packaged one-call door (the runner face above;
+  the instance releases when the call returns).
+
+Declaration-site refusals (`ValueError`): `deps=` and `deps_factory=`
+together; `deps_teardown=` or `deps_generation=` without a `deps_factory=`;
+an async context-manager (or async generator) factory paired with
+`deps_teardown=`. Non-callable factory, teardown, or generation arguments
+are `TypeError` at the same boundary. The resolve-time refusal covers the
+shape the declaration cannot see: a plain factory that produces an async
+context manager while `deps_teardown=` is also given. At rotation, a
+generation source that answers any other type produces a `TypeError`
+through the rotation's error channel, and the current instance keeps
+serving.
+
+The factory shapes and the ONE teardown-owner precedence (at most one
+teardown attempt per resolved instance):
+
+1. async context manager / async generator factory (including a plain
+   factory whose product IS an async context manager) — its `__aexit__` /
+   finalisation is the sole owner;
+2. plain sync/async factory + `deps_teardown=callback` — the callback is the
+   sole owner even when the product exposes `aclose()`;
+3. plain factory with no callback — the product's `aclose()` when it has
+   one, otherwise no teardown.
+
+The factory is invoked LAZILY — never at declaration, compile, or validation
+time — on the running event loop at the first body execution that declares
+the deps shape, serialized by an `asyncio.Lock` (concurrent first claims run
+it exactly once). A failing factory caches nothing: the exception propagates
+to that body and the next claim retries.
+
+The scope: the worker-hosted door resolves the app's factory once per
+(declared binding, worker identity, event loop) — every workflow of the app
+on that worker shares the instance, workgroup children (separate loops) and
+co-resident workers each resolve their own, and one worker's teardown never
+reaches another's. The direct door is per-runner (each drive-created child
+runner owns its own).
+
+The lifecycle order on the worker (graceful shutdown and the crash unwind
+where the exit stack runs): TaskGroup drain → every already-resolved
+factory-created deps instance released exactly once, each with its own
+bounded attempt → the PG role pools close. Every reload (SIGHUP /
+`request_reload()` / scheduled) runs the deps hand-off BEFORE any pool
+swap: the generation is re-read,
+in-flight bodies drain bounded, the superseded instance releases once, and
+— when the generation advanced — the cached runners are evicted. A hard-
+killed worker (SIGKILL/OOM) runs no teardown.
+
+The drain bound is not an unlimited clean-completion promise:
+clean-completion protection ends at the drain bound. A changed generation's
+superseded instance is released anyway; old-pool closure also proceeds
+after its own bounded claim drain, and a body or finalize still running
+after that point can fail and follows ordinary durable job-failure recovery.
+Its later unwind runs no second teardown, and the worker emits
+`workflow-deps-drain-timeout`.
+
+Direct-door disposal and rotation: `FlowRunner` is an async context manager
+(`async with FlowRunner(…)` / `await runner.aclose()` — releases the
+resolution it minted plus every child runner, each owner attempted even when
+an earlier one fails; a failure propagates after every owner has been
+attempted), and `await runner.reload_deps(drain_timeout=…)`
+rotates the binding to its current generation (`DepsRotation`, exported at
+`taskq.workflows`: `rotated`, `generation`, `previous_generation`,
+`had_instance`, `drained`, `error`). It returns `drained=False` when the
+bound expired before releasing the superseded instance anyway; a body still
+using that instance can then fail and follows ordinary durable job-failure
+recovery. A generation-source or superseded-release failure is returned in
+`error`, not raised. The call is refused only when neither the runner nor any
+drive-created child has a factory binding, or when the runner's resolution
+is worker-owned.
+
+Telemetry: On the worker-hosted door, the structured log events
+`workflow-deps-resolved`, `workflow-deps-torn-down`,
+`workflow-deps-rotated`, `workflow-deps-drain-timeout`,
+`workflow-deps-resolve-failed`, `workflow-deps-teardown-timeout`,
+`workflow-deps-teardown-error`, and `workflow-deps-rotate-failed` carry
+`workflow`, `worker_id` and `generation`.
+`taskq.workflows.deps_resolved` carries `workflow` and `generation`;
+`taskq.workflows.deps_torn_down` adds `outcome` (`ok` / `failed`) —
+`worker_id` stays off the metrics, never a metric dimension (the cardinality
+contract).

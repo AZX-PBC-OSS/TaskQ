@@ -1328,7 +1328,7 @@ the run input?") is answered by which channel a param rides:
 | --- | --- | --- | --- |
 | **the context** | the FIRST parameter, always `ctx: StepContext` | the RUN's machinery: `ctx.input` (the run's input — the SAME dict for every node of the run), `ctx.progress()`, `ctx.substep`, the emit batch face | fixed — never wired |
 | **the wired payload** | the params AFTER `ctx`, in the wired order | the node's OWN data: each wired source's DECODED result (a producer's model, the map's item, the join's collected list), then the seed payload's plain args (the body call convention: `(ctx, wired_source_1, …, wired_source_n, plain_args…)`) | the wiring verbs' arguments (E10 owns the arity) |
-| **the deps** | the LAST parameter (opt-in) | the app's bound `Deps` instance — clients, store handles; the SAME instance at every node | `deps: MyDeps` annotation + `WorkflowApp(deps=…)` (E12 owns the contract) |
+| **the deps** | the LAST parameter (opt-in) | the app's bound `Deps` instance — clients, store handles; the SAME instance at every node (per worker, per event loop, under a `deps_factory=` binding — below) | `deps: MyDeps` annotation + `WorkflowApp(deps=…)` or `WorkflowApp(deps_factory=…)` (E12 owns the contract) |
 
 The two dict-shaped channels are the common confusion: `ctx.input` is
 the RUN's input (every node sees it — use it for run-wide facts: the
@@ -1377,8 +1377,10 @@ discipline E10 owns, extended honestly — one param beyond `ctx` + the
 wired sources IS the deps shape):
 
 * a body declaring the deps shape where the app binds **no** deps is
-  refused at `app.get(...)` — the message names the fix (bind `deps=` on
-  the app, or drop the parameter: it is never a fourth data source);
+  refused at `app.get(...)` — the message names the fix (bind ONE
+  instance at the door: `deps=`, or `deps_factory=` for a resource
+  created lazily on the running loop — below; or drop the parameter: it
+  is never a fourth data source);
 * a body whose deps annotation the bound instance does not **satisfy**
   is refused — both type names in the message;
 * a true arity mismatch (two params beyond the wiring) stays **E10**'s.
@@ -1386,16 +1388,241 @@ wired sources IS the deps shape):
 The bound instance is THE instance — the step bodies, the map's item
 children, the loop driver's bodies, and the hold-wake's re-execution all
 receive the same object (bound once at the door, never re-minted per
-claim). The runner never inspects it (`object` through the runner); the
+claim — a `deps_factory=` binding mints it lazily on the running loop
+instead, and re-mints it only when its generation rotates: below). The
+runner never inspects it (`object` through the runner); the
 TYPING is proven at the decoration — E12's runtime check of the body's
 declared type against the binding. Every door binds the same way:
 `WorkflowApp(deps=…)` (the compile carries the binding — the packaged
 `run(flow, pool, schema)` and the worker-hosted execution door read it
 from the compiled object), or `FlowRunner(…, deps=…)` / `run(…, deps=…)`
 (the direct doors — the runner's binding wins, and the validation
-re-runs against the effective binding). The InMemoryBackend has NO
-workflow execution surface (the named landmine): the seam's test face is
+re-runs against the effective binding); `deps_factory=` declares at the
+SAME three doors. The InMemoryBackend has NO workflow
+execution surface (the named landmine): the seam's test face is
 the real `FlowRunner` against the pg fixtures.
+
+### The two faces: static `deps=` vs the lazy `deps_factory=`
+
+The seam binds ONE deps instance; there are two faces for producing it, and
+the choice is about WHEN the instance may exist and WHO releases it:
+
+| | `WorkflowApp(deps=…)` — the static arm | `WorkflowApp(deps_factory=…)` — the lazy arm |
+| --- | --- | --- |
+| when the instance exists | at the declaration site — before any event loop, for the life of the process | lazily, on the RUNNING loop, at the first body execution that declares the deps shape |
+| right for | loop-agnostic, cheap, stateless deps (a config object, a pure client wrapper) | loop-bound resources (an `asyncpg` pool, a loop-bound HTTP client) and anything needing an ASYNC release |
+| teardown | none owned by the seam — release it where it was created | exactly ONE owner per instance (the precedence below), released on shutdown, on a generation-changing reload, and on close |
+
+THE MUTUAL EXCLUSION: `deps=` and `deps_factory=` are refused TOGETHER at
+every declaration door (`WorkflowApp`, `FlowRunner`, `run(...)`) — the
+`ValueError` names the law ("the deps seam binds ONE instance"). The same
+construction-time check refuses `deps_teardown=` or `deps_generation=`
+beside a static `deps=`: a teardown callback and a generation source release
+and rotate a FACTORY-created instance — a static one is released where it
+was created, not by the seam.
+
+An explicit `deps=` / `deps_factory=` on a direct door (`FlowRunner(…)`,
+`run(…)`) OVERRIDES the compile's binding without tripping the refusal —
+the validation re-runs against the EFFECTIVE binding, so E12 reads what the
+bodies will actually receive.
+
+### The factory shapes and the ONE teardown owner
+
+The factory declaration has no resource side effects — the factory is never
+invoked at declaration, compile, or validation time (E12 reads its return
+ANNOTATION only). The accepted shapes, each shape's ONE teardown owner
+named; every resolved instance has EXACTLY ONE teardown owner and undergoes
+at most one teardown attempt:
+
+```python no-exec — not executed: excerpt — the deps_factory= shapes, each shape's ONE teardown owner named (the runnable proof: tests/test_wf_deps_factory.py — every shape resolved once, released once, against the pg fixtures)
+from contextlib import asynccontextmanager
+
+from taskq.workflows import WorkflowApp
+
+
+class Deps:
+    def __init__(self) -> None:
+        self.pool = None
+
+    async def aclose(self) -> None: ...
+
+
+def sync_factory() -> Deps:  # shape 3: the product's aclose() is the teardown
+    return Deps()
+
+
+async def async_factory() -> Deps:  # shape 3, awaited on the running loop
+    return Deps()
+
+
+@asynccontextmanager
+async def managed_deps():  # shape 1: the exit below IS the teardown —
+    resource = Deps()      # pairing this shape with deps_teardown= is REFUSED
+    yield resource
+    await resource.aclose()
+
+
+async def generator_deps():  # a bare async generator function: the same
+    resource = Deps()        # shape — its finalisation is the sole owner
+    yield resource
+
+
+app = WorkflowApp(deps_factory=managed_deps)  # ONE declaration, lazy arm
+```
+
+The precedence, in order:
+
+1. **The context-manager factory** — an `@asynccontextmanager` wrapper, a
+   bare async generator function, or a plain factory whose product IS an
+   async context manager: its `__aexit__` / finalisation closes what it
+   yielded. Pairing this shape with `deps_teardown=` is REFUSED — dual
+   ownership is the bug the precedence exists to prevent (caught at the
+   declaration when the factory is statically an async generator function;
+   at resolve time when a plain factory produces a context manager).
+2. **The explicit callback** — a plain sync/async factory plus
+   `deps_teardown=callback` (the callback receives the instance; sync or
+   async). The callback is the sole owner EVEN WHEN the produced object also
+   exposes `aclose()` — explicit beats implicit.
+3. **The product's `aclose()`** — a plain factory with no callback releases
+   through the produced object's `aclose()` when it has one, and owns
+   nothing otherwise.
+
+A factory that raises resolves nothing: the exception propagates to that
+body unchanged, NOTHING is cached, and the next claim retries the factory —
+no half-state survives a failed initialization. An owner-initiated teardown
+attempt is BOUNDED (the worker's close budget per binding). On the worker,
+a failing release is logged with its cause and never skips the remaining
+owners.
+
+### E12 with a factory — the product-type contract
+
+E12 never invokes the factory. The PRODUCT TYPE is read from the factory's
+return annotation, unwrapping every shipped shape: `() -> T`, an async
+callable's `() -> Awaitable[T]`, `-> AsyncContextManager[T]`,
+`-> AsyncIterator[T]` / `-> AsyncGenerator[T, None]`, a class factory (the
+class itself), and a concrete async-CM class (its `__aenter__` result names
+the product). A body whose declared deps type the product does not satisfy
+is refused at `app.get(...)` / compile with BOTH type names. The
+zero-false-positive doctrine is unchanged: an absent annotation, `Any`,
+`object`, a union, or a non-runtime-checkable protocol SKIPS the check — a
+guess is never rejected. The arity law is unchanged (E10 owns a true
+two-params-beyond-the-wiring mismatch).
+
+### The scope — one instance per worker, per event loop
+
+The worker-hosted door resolves the app's factory ONCE PER (declared
+binding, worker identity, event loop): the first deps-declaring body on that
+loop mints the instance under an `asyncio.Lock` — concurrent first claims
+serialize, so the factory runs exactly once however many bodies, runs and
+workflows of the app execute — and every later body of the app on that
+worker receives THE SAME object. A second worker, a workgroup child (its own
+loop, its own pool), or a second loop in the same process resolves its OWN
+distinct instance: instances never cross a loop boundary, a child starting
+later never inherits an earlier child's instance, and one worker's shutdown
+never releases a co-resident worker's entry. The direct door is per-runner:
+one resolution per `FlowRunner`, and each child runner a drive creates owns
+its own.
+
+### The lifecycle order — exactly where the release runs
+
+SETUP: after the worker's event loop and PG pools exist (that is the
+factory's reason to exist), at the first deps-declaring body's execution —
+never at boot, never at import.
+
+TEARDOWN — on the graceful-shutdown unwind AND the sibling-crash unwind
+(wherever the worker's exit stack still runs), in exact order:
+
+1. the worker's TaskGroup DRAINS — in-flight claims finish;
+2. every already-resolved factory-created deps instance releases, exactly
+   once, each with its own bounded attempt;
+3. THEN the worker's PG role pools close (the deps release is pushed onto
+   the bootstrap's exit stack before `open_worker_deps`' own unwinds).
+
+The ordering keeps an already-resolved instance's release ahead of pool
+close; a release that outlives its bound is cancelled and reported rather
+than holding pool teardown open indefinitely. THE SHUTDOWN-BUDGET MODEL:
+each distinct `WorkflowApp(deps_factory=…)` binding adds one sequential
+bounded release to the tail before the pools close; when the modelled tail
+exceeds `TASKQ_TERMINATION_GRACE_PERIOD`, startup warns
+`workflow-deps-shutdown-budget-exceeds-termination-grace` naming the binding
+count and the required grace (the configuration guide's termination-grace
+row carries the arithmetic). A cancelled rotation can leave a superseded
+generation pending beside the current one, adding another bounded release
+per affected binding beyond that startup model. A HARD-KILLED worker
+(SIGKILL, OOM) runs no teardown — its loop is never unwound and the process
+exit is the release, the same bound every other worker-scoped resource has.
+
+### Reload and generation invalidation
+
+A factory bound to changing configuration (a settings reload, a rotated
+downstream client) declares a generation source — `deps_generation=`, a
+callable answering an `int` or `str` that CHANGES when the factory's inputs
+do. Any other answered type is reported as a `TypeError` at reload; the
+current instance keeps serving. The binding starts at generation `0`;
+without a source it never rotates, and its instance lives for the owner's
+lifetime.
+
+On the worker, EVERY reload (SIGHUP, `request_reload()`, the scheduled
+reload) runs the deps hand-off at the top — BEFORE any pool is swapped:
+
+1. each app binding's current generation is re-read (a source that raises
+   is reported and the binding keeps serving its current instance — a
+   broken settings read must not wedge the reload or the worker);
+2. the superseded generation's in-flight bodies DRAIN, bounded: a body
+   already running keeps its own resource while it finishes within the
+   drain bound, while a claim arriving mid-rotation gets the NEW instance —
+   the swap happens FIRST, then the drain;
+3. the superseded instance releases EXACTLY ONCE, and — when the generation
+   advanced — the worker's cached runners are evicted, so the next claim
+   rebuilds one over the new generation.
+
+The bound is an escape hatch, not an unlimited clean-completion promise:
+clean-completion protection ends at the drain bound. A changed generation's
+superseded instance is then released anyway, exactly once; on an unchanged
+generation the live instance stays, but the old-pool close still proceeds
+after its own bounded claim drain. A body or finalize still running after
+that point can fail against released deps or a closed pool and follows
+ordinary durable job-failure recovery; its later unwind runs no second
+teardown. The worker reports the expiry as `workflow-deps-drain-timeout`.
+
+A reload whose generation did not change still drains the live generation —
+it is the settle point before the caller swaps whatever those claims were
+admitted with. The direct door rotates explicitly:
+`await runner.reload_deps(drain_timeout=…)`. It applies the same force-
+proceed law, returning `drained=False` after it releases a superseded
+instance whose body outlived the bound; that body's later failure follows
+ordinary durable job-failure recovery. A generation-source or superseded-
+release failure is returned in `error`, not raised. The call is refused only
+when neither the runner nor any drive-created child has a factory binding,
+or when the runner's resolution is worker-owned. `run(…)`'s factory lives
+for the one call, so that door takes no `deps_generation=` — there is
+nothing to rotate.
+
+### The direct door's disposal
+
+`FlowRunner` is an async context manager: `async with FlowRunner(…) as
+runner:` or an explicit `await runner.aclose()` — the runner releases the
+deps resolution it minted (one teardown attempt, a no-op when nothing
+resolved) plus every child runner its drive created, each owner attempted
+even when an earlier one fails; a failure propagates after every owner has
+been attempted. The packaged `run(...)` does this for the caller: the
+factory-created instance releases on the success AND the failure
+path of the call. A resolution the runner does NOT own (the worker's shared,
+worker-scoped one) is never closed by a runner — its owner releases it at
+worker shutdown.
+
+### Observability — proving one-instance-per-worker
+
+On the worker-hosted door, the structured log events
+`workflow-deps-resolved`, `workflow-deps-torn-down`,
+`workflow-deps-rotated`, `workflow-deps-drain-timeout`,
+`workflow-deps-resolve-failed`, `workflow-deps-teardown-timeout`,
+`workflow-deps-teardown-error`, and `workflow-deps-rotate-failed` carry
+`workflow`, `worker_id` and `generation`.
+`taskq.workflows.deps_resolved` carries `workflow` and `generation`;
+`taskq.workflows.deps_torn_down` adds `outcome` (`ok` / `failed`).
+`worker_id` is an identity, never a metric dimension (the metric cardinality
+contract), so per-worker attribution is the log line's job.
 
 ## The pin inventory
 
