@@ -171,10 +171,33 @@ def _bucket(
     return "now"
 
 
-def _bucket_ms(duration_ms: int | None) -> Any:
-    """Quantize an attempt duration to whole seconds (absorbs PG latency)."""
+def _bucket_ms(
+    duration_ms: int | None,
+    *,
+    started_at: datetime | None = None,
+    span_start: datetime | None = None,
+    span_ms: int = 0,
+) -> Any:
+    """Quantize an attempt duration to whole seconds, absorbing scenario wall latency.
+
+    Like :func:`_bucket`, wall-clock elapsed time inside the scenario's own
+    execution span is runner latency, not a backend behavioral difference: on
+    the frozen memory mirror an un-advanced claim-then-reclaim measures 0 ms,
+    while on PG under coverage tracing or co-tenant runner load the same
+    scenario can take 1.5-2+ seconds between actions. When the attempt started
+    inside the scenario span and its recorded duration fits within that span
+    (plus the same 500 ms slack :func:`_bucket` carries), normalize it to 0;
+    planted historical durations and genuine duration-calculation divergences
+    outside the scenario span keep their exact rounded seconds.
+    """
     if duration_ms is None:
         return None
+    if (
+        span_start is not None
+        and (started_at is None or started_at >= span_start - timedelta(seconds=0.5))
+        and 0 <= duration_ms <= span_ms + 500
+    ):
+        return 0
     return round(duration_ms / 1000)
 
 
@@ -926,6 +949,9 @@ class DiffSide:
         # snapshot's now; write-plus-duration fields (the lease, the result
         # expiry) bucket against their own row stamp; durations project to
         # seconds.
+        span_ms = (
+            max(0, int((now - span_start).total_seconds() * 1000)) if span_start is not None else 0
+        )
         return {
             "present": True,
             "id": token,
@@ -1026,7 +1052,12 @@ class DiffSide:
                     "error_class": a.error_class,
                     "error_message": a.error_message,
                     "worker": self.worker_token(a.worker_id),
-                    "duration_s": _bucket_ms(a.duration_ms),
+                    "duration_s": _bucket_ms(
+                        a.duration_ms,
+                        started_at=a.started_at,
+                        span_start=span_start,
+                        span_ms=span_ms,
+                    ),
                     "finished": a.finished_at is not None,
                 }
                 for a in attempts
@@ -1423,3 +1454,41 @@ async def test_job_observable_projects_every_jobrow_field() -> None:
     assert obs["claim_epoch"] == 7
     assert obs["assignment_routed"] is True
     assert obs["parent_id"] == fanout_parent
+
+
+def test_bucket_ms_absorbs_in_span_runner_latency_and_preserves_planted_durations() -> None:
+    """Attempt durations that span only scenario wall time normalize to 0, while
+    planted historical durations and out-of-span values keep their rounded seconds."""
+    span_start = datetime(2026, 1, 1, 0, 0, 0, tzinfo=UTC)
+    assert _bucket_ms(None, started_at=span_start, span_start=span_start, span_ms=2000) is None
+    # A 1.8s attempt started inside a 2.0s scenario wall span is runner latency.
+    assert (
+        _bucket_ms(
+            1800,
+            started_at=span_start + timedelta(milliseconds=100),
+            span_start=span_start,
+            span_ms=2000,
+        )
+        == 0
+    )
+    # A planted attempt started 60s before the scenario keeps its 60s duration.
+    assert (
+        _bucket_ms(
+            60_000,
+            started_at=span_start - timedelta(seconds=60),
+            span_start=span_start,
+            span_ms=2000,
+        )
+        == 60
+    )
+    # An attempt started inside a 200ms scenario whose duration_ms is 5000ms
+    # exceeds span_ms + 500ms slack and is NOT absorbed.
+    assert (
+        _bucket_ms(
+            5000,
+            started_at=span_start,
+            span_start=span_start,
+            span_ms=200,
+        )
+        == 5
+    )

@@ -69,6 +69,7 @@ async def test_fan_out_tx_band_1000_children(
     fork_ledger, fork_claimed_at = await seed_ledger_claim(
         wf_conn, wf_schema, flow_id=flow_id, job_id=fork_parent, step_key="a", attempt=1, epoch=0
     )
+    fork_worker_id = (await claim_view(wf_conn, wf_schema, fork_parent))[0]
     start = time.perf_counter_ns()
     result = await finalize_node(
         module_pg_pool,
@@ -76,7 +77,7 @@ async def test_fan_out_tx_band_1000_children(
         flow_id=flow_id,
         job_id=fork_parent,
         step_key="a",
-        worker_id=(await claim_view(wf_conn, wf_schema, fork_parent))[0],
+        worker_id=fork_worker_id,
         attempt=1,
         claim_epoch=0,
         outcome="succeeded",
@@ -118,39 +119,64 @@ async def test_join_fire_latency_band(
 ) -> None:
     """The join-fire latency band: last-parent-finalize → the joined row
     dispatchable (deps_pending = 0), measured on the finalize call (tx1 +
-    tx2 — the fire is inside tx2)."""
-    flow_id = await seed_flow(wf_conn, wf_schema)
-    join_id = await seed_join(wf_conn, wf_schema, flow_id, deps=1)
-    parent = await seed_running_node(wf_conn, wf_schema, flow_id)
-    await seed_edge(wf_conn, wf_schema, join_id, parent, flow_id)
+    tx2 — the fire is inside tx2).
 
-    parent_ledger, parent_claimed_at = await seed_ledger_claim(
-        wf_conn, wf_schema, flow_id=flow_id, job_id=parent, step_key="a", attempt=1, epoch=0
-    )
-    start = time.perf_counter_ns()
-    result = await finalize_node(
-        module_pg_pool,
-        wf_sql,
-        flow_id=flow_id,
-        job_id=parent,
-        step_key="a",
-        worker_id=(await claim_view(wf_conn, wf_schema, parent))[0],
-        attempt=1,
-        claim_epoch=0,
-        outcome="succeeded",
-        ledger_id=parent_ledger,
-        ledger_claimed_at=parent_claimed_at,
-    )
-    elapsed_ms = (time.perf_counter_ns() - start) / 1e6
-    assert result.applied
-    state = await node_state(wf_conn, wf_schema, join_id)
-    assert state["deps_pending"] == 0 and await fire_count(wf_conn, wf_schema, join_id) == 1
+    Runs one discarded warm-up finalize so asyncpg statement preparation and
+    planner caches are warm, then measures 5 fresh join-fires (with fixture
+    setup outside the timer) and asserts the median stays inside the 50 ms
+    band.
+    """
+
+    async def _run_one_join_fire() -> float:
+        flow_id = await seed_flow(wf_conn, wf_schema)
+        join_id = await seed_join(wf_conn, wf_schema, flow_id, deps=1)
+        parent = await seed_running_node(wf_conn, wf_schema, flow_id)
+        await seed_edge(wf_conn, wf_schema, join_id, parent, flow_id)
+
+        parent_ledger, parent_claimed_at = await seed_ledger_claim(
+            wf_conn, wf_schema, flow_id=flow_id, job_id=parent, step_key="a", attempt=1, epoch=0
+        )
+        worker_id = (await claim_view(wf_conn, wf_schema, parent))[0]
+        start = time.perf_counter_ns()
+        result = await finalize_node(
+            module_pg_pool,
+            wf_sql,
+            flow_id=flow_id,
+            job_id=parent,
+            step_key="a",
+            worker_id=worker_id,
+            attempt=1,
+            claim_epoch=0,
+            outcome="succeeded",
+            ledger_id=parent_ledger,
+            ledger_claimed_at=parent_claimed_at,
+        )
+        elapsed_ms = (time.perf_counter_ns() - start) / 1e6
+        assert result.applied
+        state = await node_state(wf_conn, wf_schema, join_id)
+        assert state["deps_pending"] == 0 and await fire_count(wf_conn, wf_schema, join_id) == 1
+        return elapsed_ms
+
+    # Warm up prepared statements / plan caches on the shared pool.
+    await _run_one_join_fire()
+
+    samples_ms = [await _run_one_join_fire() for _ in range(5)]
+    median_ms = sorted(samples_ms)[len(samples_ms) // 2]
     # run-scoped + head-stamped, never the in-place rewrite.
     write_band_artifact(
         "join-fire-latency.json",
-        {"pin": "join-fire-latency", "elapsed_ms": elapsed_ms, "band_ms": 50},
+        {
+            "pin": "join-fire-latency",
+            "elapsed_ms": median_ms,
+            "samples_ms": samples_ms,
+            "band_ms": 50,
+            "method": "median of 5 warm finalize_node tx1+tx2 calls (1 warmup discarded)",
+        },
     )
-    assert elapsed_ms < 50, f"join-fire latency {elapsed_ms:.1f} ms exceeds the band"
+    assert median_ms < 50, (
+        f"join-fire median latency {median_ms:.1f} ms (samples={[round(s, 1) for s in samples_ms]}) "
+        "exceeds the band"
+    )
 
 
 # ── the enqueue-latency band's pins 4/5: the enqueue + dispatch-claim noise bands ─────────────
