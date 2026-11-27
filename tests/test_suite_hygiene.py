@@ -1609,12 +1609,16 @@ async def test_watchdog_trip_does_not_kill_the_test_process(
         )
         watchdog.start()
         try:
-            # The deterministic injection: a 0.8s loop stall, 2.6x the
-            # budget - what CI co-tenancy produces by descheduling the
-            # process. Without the seam this force-exits the process
-            # (exit code 2, zero output); with it the trip is recorded
-            # and the test keeps running.
-            _time.sleep(0.8)  # noqa: ASYNC251  # Why: the blocking call is the injection - a deliberate loop stall the detector must catch.
+            # The deterministic injection: block the event loop synchronously
+            # until the watchdog's terminal tier trips (with a 5s safety ceiling
+            # rather than a fixed sleep, so CI co-tenancy during tier-1's
+            # faulthandler dump + next poll wakeup cannot finish the sleep and
+            # call watchdog.stop() before tier 2 fires). Without the seam this
+            # force-exits the process (exit code 2, zero output); with it the
+            # trip is recorded and the test keeps running.
+            deadline = _time.monotonic() + 5.0
+            while not intercepted_force_exits and _time.monotonic() < deadline:
+                _time.sleep(0.05)  # noqa: ASYNC251  # Why: the blocking call is the injection - synchronous sleep keeps the event loop stalled until the detector trips.
         finally:
             watchdog.stop()
 
