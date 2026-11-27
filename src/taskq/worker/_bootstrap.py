@@ -2599,6 +2599,22 @@ async def _main(
                 # never resolved one pays a single no-op call.
                 stack.push_async_callback(_wf_execution.teardown_worker_workflow_state, worker_id)
 
+                # The reload counterpart: registering on the deps shell makes
+                # every SIGHUP / request_reload() / scheduled reload rotate the
+                # workflow deps' generation BEFORE the reload swaps the role
+                # pools, so a superseded instance is released while the pool it
+                # was built against is still open. The module reference is
+                # captured here (the lazy import boundary is unchanged) so the
+                # hook itself imports nothing at reload time.
+                wf_execution_mod = _wf_execution
+
+                async def _reload_workflow_deps(drain_timeout: float) -> None:
+                    await wf_execution_mod.reload_worker_workflow_state(
+                        worker_id, drain_timeout=drain_timeout
+                    )
+
+                deps.reload_drain = _reload_workflow_deps
+
             if deps.settings.health_enabled:
                 health_server = HealthServer()
                 try:
@@ -3237,6 +3253,10 @@ async def _reload_coordinator_loop(
       (``deps.shutdown_phase`` is not NONE): churning pools on a draining
       worker is wasteful, and the leader watchdog could re-acquire
       leadership mid-shutdown.
+    * A registered ``deps.reload_drain`` (the workflow deps' generation
+      rotation) runs inside ``reload_credentials`` before any pool is swapped,
+      so a superseded factory-created instance is released while the old pools
+      are still open.
     * When the reload swapped the worker pool and the worker (not the
       user) registered ``asyncpg.Pool`` in DI, the LOOP-scope cache is
       refreshed so actors injected with ``db: asyncpg.Pool`` resolve the

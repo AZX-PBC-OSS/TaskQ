@@ -19,11 +19,13 @@ This module is the scope that makes that true inside a long-running worker:
   still open while the factory-created resource releases.
 
 The entry carries the factory GENERATION (``INITIAL_DEPS_GENERATION`` at first
-use; reload rotation advances it in the reload work) so resolution and teardown
-telemetry name the generation that minted the instance without the schema
-changing when rotation arrives.
+use): every resolve/teardown log event and counter names it, and the entry's
+:meth:`WorkerDepsResolution.rotate` advances it when a reload asks — the
+superseded generation's in-flight holds are drained first (bounded), then its
+instance released exactly once, before the caller's old PG pools close.
 
 TELEMETRY. ``workflow-deps-resolved`` / ``workflow-deps-torn-down`` /
+``workflow-deps-rotated`` / ``workflow-deps-drain-timeout`` /
 ``workflow-deps-resolve-failed`` / ``workflow-deps-teardown-*`` log events carry
 ``workflow``, ``worker_id`` and ``generation``; the two counters
 (``taskq.workflows.deps_resolved`` / ``taskq.workflows.deps_torn_down``) carry
@@ -40,7 +42,9 @@ the same bound every other worker-scoped resource has.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import weakref
+from collections.abc import AsyncGenerator
 from typing import Final, cast
 from uuid import UUID
 
@@ -54,22 +58,25 @@ from taskq.obs import (
     safe_exception_message,
     safe_type_name,
 )
-from taskq.workflows.api._deps_factory import DepsFactory, DepsResolver
+from taskq.workflows.api._deps_factory import (
+    INITIAL_DEPS_GENERATION,
+    DepsFactory,
+    DepsRelease,
+    DepsResolver,
+    DepsRotation,
+    Generation,
+)
 
 __all__ = [
     "INITIAL_DEPS_GENERATION",
     "WorkerDepsResolution",
     "prepare_worker_deps",
     "reset_worker_deps_for_tests",
+    "rotate_worker_deps",
     "teardown_worker_deps",
 ]
 
 logger: structlog.stdlib.BoundLogger = get_logger(__name__)
-
-#: The generation a binding resolves at its first use. A reload that rotates
-#: the factory advances it; the value rides the entry, the log events and the
-#: counters so the schema is stable across that change.
-INITIAL_DEPS_GENERATION: Final[int] = 0
 
 #: One teardown's bound: the worker's bounded-close budget (a close the backend
 #: never completes must not wedge the worker's exit stack, exactly like the
@@ -82,10 +89,12 @@ class WorkerDepsResolution:
     worker-hosted runners drive.
 
     It owns the telemetry around a shared :class:`DepsResolver` and nothing
-    else: the single-initialization lock, the instance and the one teardown
-    attempt stay the resolver's. Concurrent first claims from different bodies
-    and different workflows of the same app serialize on that lock, so the
-    factory runs once and every body receives the same instance.
+    else: the single-initialization lock, the instance, the in-flight holds and
+    the one teardown attempt per generation stay the resolver's. Concurrent
+    first claims from different bodies and different workflows of the same app
+    serialize on that lock, so the factory runs once and every body receives
+    the same instance; a reload's rotation swaps the generation and releases
+    the superseded instance once its bodies have left.
     """
 
     def __init__(
@@ -94,7 +103,6 @@ class WorkerDepsResolution:
         *,
         workflow: str,
         worker_id: UUID,
-        generation: int,
     ) -> None:
         self._resolver = DepsResolver(binding)
         #: the first claim's workflow until the first actual resolution
@@ -102,19 +110,24 @@ class WorkerDepsResolution:
         #: instance serves every workflow, so that trigger labels both halves.
         self._workflow = workflow
         self._worker_id = worker_id
-        self._generation = generation
-        self._resolved = False
+        #: the generation whose resolution this entry has already reported
+        #: (``None`` before the first). A rotation of a reported generation
+        #: clears it, so the rotated-in instance reports its own first use.
+        self._reported: Generation | None = None
+        self._closed = False
 
     @property
     def binding(self) -> DepsFactory:
         return self._resolver.binding
 
     @property
-    def generation(self) -> int:
-        return self._generation
+    def generation(self) -> Generation:
+        return self._resolver.generation
 
-    async def get(self, *, workflow: str | None = None) -> object:
-        """The instance the first declaring body resolves, reused thereafter.
+    @contextlib.asynccontextmanager
+    async def body(self, *, workflow: str | None = None) -> AsyncGenerator[object, None]:
+        """The instance the first declaring body resolves, LEASED for that
+        body invocation and reused by every later one.
 
         *workflow* is the runner's resolving workflow. The registry entry may
         have been created by an earlier no-deps claim of another workflow in
@@ -123,82 +136,232 @@ class WorkerDepsResolution:
         A failed initialization propagates unchanged (the runner's ladder owns
         the attempt's disposition) after one structured error event carrying
         the cause; nothing is cached, so the next claim retries the factory.
+
+        The lease is what a reload's drain counts: the instance is not released
+        while a body that received it is still running. Resolution and lease
+        are one step, so a rotation landing mid-claim either waits for this
+        body or answers the claim from the new generation.
         """
         resolving_workflow = self._workflow if workflow is None else workflow
-        try:
-            instance = await self._resolver.get()
-        except Exception as exc:
-            logger.error(
-                "workflow-deps-resolve-failed",
-                workflow=resolving_workflow,
-                worker_id=str(self._worker_id),
-                generation=self.generation,
-                error_class=safe_type_name(exc),
-                error=safe_exception_message(exc),
-                exc_info=exc,
-            )
-            raise
-        if not self._resolved:
-            # No await between the test and the set: on one loop the first
-            # successful resolution is the only one that reports.
-            self._resolved = True
-            self._workflow = resolving_workflow
-            logger.info(
-                "workflow-deps-resolved",
-                workflow=self._workflow,
-                worker_id=str(self._worker_id),
-                generation=self.generation,
-            )
-            record_workflow_deps_resolved(self._workflow, self.generation)
-        return instance
+        async with contextlib.AsyncExitStack() as lease:
+            try:
+                instance = await lease.enter_async_context(self._resolver.body())
+            except Exception as exc:
+                self._log_resolve_failed(resolving_workflow, exc)
+                raise
+            self._report_resolved(resolving_workflow)
+            yield instance
 
-    async def aclose(self) -> None:
-        """Release the instance this resolution minted: one attempt, bounded,
-        never raising (the worker's exit stack keeps unwinding).
+    @contextlib.asynccontextmanager
+    async def hold(self) -> AsyncGenerator[None, None]:
+        """Hold this worker-scoped resolution's current generation for one
+        claim's lifetime (see :meth:`DepsResolver.hold`). No telemetry: the
+        claim is not a resolution, and a drain that had to wait for it says so
+        on the drain-timeout event."""
+        async with self._resolver.hold():
+            yield
 
-        The bound covers BOTH waits — the resolution's own lock (a body still
-        inside a hung factory holds it) and the release itself — so a stuck
-        factory cannot wedge shutdown. A resolution that never resolved
-        releases nothing and reports no teardown; it is still closed so a late
-        body cannot resolve against torn-down worker state. A failure is
-        logged with its cause and the counter records the failed outcome, and
-        the remaining resolutions and the role pools still close.
+    async def rotate(self, *, drain_timeout: float) -> DepsRotation:
+        """Settle the binding's live claims and advance to its current
+        generation, releasing the superseded instance once they have left.
+
+        Called by the worker's reload hand-off (``rotate_worker_deps``) before
+        ``reload_credentials`` swaps a single pool: an unchanged generation
+        still drains the live one (``rotated=False``) because this is the
+        reload's settle point, not only a generation change. Reports the
+        transition and every failure it owns: a generation source that raised
+        (the binding keeps serving its current instance — a broken settings read
+        must not wedge the reload or the worker), a drain bound that expired
+        (the stuck claim's clean-completion protection ends there), a release
+        that timed out, and a release that raised. The worker POOL a claim
+        executes on is the reload gate's lifetime, not this call's.
         """
         try:
-            await asyncio.wait_for(self._resolver.aclose(), timeout=_TEARDOWN_TIMEOUT_SECS)
-        except TimeoutError:
-            logger.warning(
-                "workflow-deps-teardown-timeout",
-                workflow=self._workflow,
-                worker_id=str(self._worker_id),
-                generation=self.generation,
-                close_timeout=_TEARDOWN_TIMEOUT_SECS,
+            report = await self._resolver.rotate(
+                drain_timeout=drain_timeout, release_timeout=_TEARDOWN_TIMEOUT_SECS
             )
-            if self._resolved:
-                record_workflow_deps_torn_down(self._workflow, self.generation, failed=True)
-            return
         except Exception as exc:
-            logger.error(
-                "workflow-deps-teardown-error",
+            report = DepsRotation(
+                rotated=False,
+                generation=self.generation,
+                previous_generation=self.generation,
+                had_instance=self._reported == self.generation,
+                drained=True,
+                error=exc,
+            )
+        if self._closed:
+            # Shutdown owns the lifecycle report for every entry it is
+            # releasing. The rotation still returns what it committed, but
+            # must not report that same physical release a second time.
+            return report
+        if not report.rotated:
+            if report.error is not None:
+                # The generation could not be read: nothing rotated, the
+                # current instance keeps serving, and the next reload retries.
+                # Reported rather than raised so a sibling binding still rotates.
+                logger.error(
+                    "workflow-deps-rotate-failed",
+                    workflow=self._workflow,
+                    worker_id=str(self._worker_id),
+                    generation=self.generation,
+                    error_class=safe_type_name(report.error),
+                    error=safe_exception_message(report.error),
+                    exc_info=report.error,
+                )
+            elif not report.drained:
+                # A reload whose generation did not change still asks in-flight
+                # claims to settle before its caller swaps the pools they hold;
+                # the bound expiring is the same force-proceed contract.
+                logger.warning(
+                    "workflow-deps-drain-timeout",
+                    workflow=self._workflow,
+                    worker_id=str(self._worker_id),
+                    generation=report.generation,
+                    drain_timeout=drain_timeout,
+                )
+            return report
+        if self._reported == report.previous_generation:
+            # The rotated-out generation was the one reported; the new one
+            # reports its own first resolution. (A body that already resolved
+            # the new generation during the drain has set ``_reported`` to it,
+            # and keeps that one report.)
+            self._reported = None
+        if not report.drained:
+            logger.warning(
+                "workflow-deps-drain-timeout",
                 workflow=self._workflow,
                 worker_id=str(self._worker_id),
-                generation=self.generation,
-                error_class=safe_type_name(exc),
-                error=safe_exception_message(exc),
-                exc_info=exc,
+                generation=report.previous_generation,
+                drain_timeout=drain_timeout,
             )
-            if self._resolved:
-                record_workflow_deps_torn_down(self._workflow, self.generation, failed=True)
+        if report.had_instance:
+            self._report_teardown(report)
+        logger.info(
+            "workflow-deps-rotated",
+            workflow=self._workflow,
+            worker_id=str(self._worker_id),
+            generation=report.generation,
+            previous_generation=report.previous_generation,
+            drained=report.drained,
+        )
+        return report
+
+    async def aclose(self) -> None:
+        """Release every instance this resolution still holds — the current
+        generation plus any superseded generation a cancelled rotation left —
+        each with its own bounded attempt and its own lifecycle report.
+
+        The bound covers BOTH waits per generation — that generation's lock (a
+        body still inside a hung factory holds it) and the release itself — so
+        a stuck factory cannot wedge shutdown. A generation that never
+        resolved released nothing: it is still closed so a late body cannot
+        resolve against torn-down worker state, and it reports no teardown. A
+        failure is logged with its cause and counted against the generation it
+        happened on, and the remaining generations and the role pools still
+        close.
+        """
+        self._closed = True
+        for release in await self._resolver.close_generations(
+            release_timeout=_TEARDOWN_TIMEOUT_SECS
+        ):
+            self._report_release(release)
+
+    def _report_release(self, release: DepsRelease) -> None:
+        """One generation's teardown attempt: clean, timed out, or failed —
+        named by the generation that minted the instance."""
+        generation = release.generation
+        if release.error is not None:
+            if isinstance(release.error, TimeoutError):
+                logger.warning(
+                    "workflow-deps-teardown-timeout",
+                    workflow=self._workflow,
+                    worker_id=str(self._worker_id),
+                    generation=generation,
+                    close_timeout=_TEARDOWN_TIMEOUT_SECS,
+                )
+            else:
+                logger.error(
+                    "workflow-deps-teardown-error",
+                    workflow=self._workflow,
+                    worker_id=str(self._worker_id),
+                    generation=generation,
+                    error_class=safe_type_name(release.error),
+                    error=safe_exception_message(release.error),
+                    exc_info=release.error,
+                )
+            if release.had_instance:
+                record_workflow_deps_torn_down(self._workflow, generation, failed=True)
             return
-        if not self._resolved:
+        if not release.had_instance:
             return  # nothing was ever minted here, so there is no release to report
         logger.info(
             "workflow-deps-torn-down",
             workflow=self._workflow,
             worker_id=str(self._worker_id),
-            generation=self.generation,
+            generation=generation,
         )
-        record_workflow_deps_torn_down(self._workflow, self.generation, failed=False)
+        record_workflow_deps_torn_down(self._workflow, generation, failed=False)
+
+    def _report_resolved(self, workflow: str) -> None:
+        """Report a generation's first resolution (and adopt its workflow
+        label). One event per generation: a rotated-in instance reports itself
+        on its own first use."""
+        generation = self._resolver.generation
+        if self._reported == generation:
+            return
+        self._reported = generation
+        self._workflow = workflow
+        logger.info(
+            "workflow-deps-resolved",
+            workflow=workflow,
+            worker_id=str(self._worker_id),
+            generation=generation,
+        )
+        record_workflow_deps_resolved(workflow, generation)
+
+    def _log_resolve_failed(self, workflow: str, exc: BaseException) -> None:
+        logger.error(
+            "workflow-deps-resolve-failed",
+            workflow=workflow,
+            worker_id=str(self._worker_id),
+            generation=self.generation,
+            error_class=safe_type_name(exc),
+            error=safe_exception_message(exc),
+            exc_info=exc,
+        )
+
+    def _report_teardown(self, report: DepsRotation) -> None:
+        """Report the superseded generation's release: clean, timed out, or
+        failed with its cause."""
+        error = report.error
+        if error is None:
+            logger.info(
+                "workflow-deps-torn-down",
+                workflow=self._workflow,
+                worker_id=str(self._worker_id),
+                generation=report.previous_generation,
+            )
+            record_workflow_deps_torn_down(self._workflow, report.previous_generation, failed=False)
+            return
+        if isinstance(error, TimeoutError):
+            logger.warning(
+                "workflow-deps-teardown-timeout",
+                workflow=self._workflow,
+                worker_id=str(self._worker_id),
+                generation=report.previous_generation,
+                close_timeout=_TEARDOWN_TIMEOUT_SECS,
+            )
+        else:
+            logger.error(
+                "workflow-deps-teardown-error",
+                workflow=self._workflow,
+                worker_id=str(self._worker_id),
+                generation=report.previous_generation,
+                error_class=safe_type_name(error),
+                error=safe_exception_message(error),
+                exc_info=error,
+            )
+        record_workflow_deps_torn_down(self._workflow, report.previous_generation, failed=True)
 
 
 type _Key = tuple[UUID, int]
@@ -258,10 +421,31 @@ def prepare_worker_deps(
         binding,
         workflow=workflow,
         worker_id=worker_id,
-        generation=INITIAL_DEPS_GENERATION,
     )
     bucket[key] = resolution
     return resolution
+
+
+async def rotate_worker_deps(worker_id: UUID, *, drain_timeout: float) -> list[DepsRotation]:
+    """Settle and rotate every resolution *worker_id* holds on the RUNNING
+    loop to its binding's current generation, releasing each superseded
+    instance once its in-flight holds left.
+
+    Called by the worker's reload hand-off
+    (``taskq.workflows._worker_execution.reload_worker_workflow_state``) BEFORE
+    the reload swaps the worker's PG pools, so a superseded deps instance is
+    always released while the old pools are still open. A binding whose
+    generation did not change still drains its live claims (`rotated=False`);
+    a co-resident worker's resolutions are untouched.
+    """
+    loop = asyncio.get_running_loop()
+    bucket = _bucket(loop)
+    if bucket is None:
+        return []
+    reports: list[DepsRotation] = []
+    for key in [key for key in bucket if key[0] == worker_id]:
+        reports.append(await bucket[key].rotate(drain_timeout=drain_timeout))
+    return reports
 
 
 async def teardown_worker_deps(worker_id: UUID) -> None:

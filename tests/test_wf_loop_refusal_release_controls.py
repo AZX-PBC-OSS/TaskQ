@@ -52,6 +52,7 @@ from taskq.actor import actor
 from taskq.backend._protocol import JobId, JobRow
 from taskq.context import JobContext
 from taskq.testing.fixtures import ModulePgSchema
+from taskq.worker.deps import ReloadGate
 from taskq.workflows import (
     Done,
     FlowRunner,
@@ -349,6 +350,7 @@ async def _drive_through_consumer_loop(
         drain_failures=0,
         redis_client=None,
         progress_buffers={},
+        reload_gate=ReloadGate(),
     )
 
     witness = JobRow(

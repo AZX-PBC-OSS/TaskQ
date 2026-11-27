@@ -64,6 +64,7 @@ from taskq.workflows._policy import FiniteReservationCohort
 from taskq.workflows._worker_deps import (
     prepare_worker_deps,
     reset_worker_deps_for_tests,
+    rotate_worker_deps,
     teardown_worker_deps,
 )
 from taskq.workflows.api._app import CompiledWorkflow
@@ -100,6 +101,7 @@ __all__ = [
     "project_workflow_actor_configs",
     "record_compiled",
     "register_app",
+    "reload_worker_workflow_state",
     "reset_app_registry_for_tests",
     "teardown_worker_workflow_state",
     "workflow_deps_factory_count",
@@ -1233,6 +1235,33 @@ def _forget_worker_runners(worker_id: UUID) -> None:
     if not bucket:
         delattr(loop, _RUNNER_BUCKET_ATTR)
         _runner_loops.discard(loop)
+
+
+async def reload_worker_workflow_state(worker_id: UUID, *, drain_timeout: float) -> None:
+    """The worker's workflow-deps RELOAD hand-off — the callback
+    ``WorkerDeps.reload_drain`` carries into ``reload_credentials``.
+
+    Awaited at the top of every credential reload, before any pool is swapped:
+    each app factory's generation is re-read, the resolutions' live queues are
+    drained (bounded by *drain_timeout*), the superseded instances released
+    exactly once, and the worker's cached runners evicted so the next claim
+    builds a runner whose binding is the current generation. Doing it before
+    the swap is what keeps the ordering contract: a slow body that finishes
+    inside the drain bound still completes against open pools, and a reload of
+    unchanged generations still asks the live claims to settle.
+
+    This drains the deps GENERATIONS; the pools a claim may still be admitted
+    on are the reload gate's (`WorkerDeps.reload_gate`, held by the dispatch
+    path for the claim's lifetime and awaited by each old pool's close).
+
+    Never raises: the rotation reports its own failures (drained late, release
+    timed out, release raised) through the workflow-deps telemetry, and a
+    reload must not abort the credential rotation or the worker's TaskGroup
+    because a factory-created resource misbehaved.
+    """
+    reports = await rotate_worker_deps(worker_id, drain_timeout=drain_timeout)
+    if any(report.rotated for report in reports):
+        _forget_worker_runners(worker_id)
 
 
 async def execute_flow_job(

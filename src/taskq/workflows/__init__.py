@@ -89,6 +89,7 @@ from taskq.workflows.api import (
 )
 from taskq.workflows.api._ctx_timer import TimerWake
 from taskq.workflows.api._ctx_wait import Expired, LoopWaitShapeError
+from taskq.workflows.api._deps_factory import DepsRotation
 from taskq.workflows.api._hitl import DeliveryResult, HitlClient
 from taskq.workflows.api._hitl_listen import (
     Backfilled,
@@ -143,6 +144,7 @@ __all__ = [
     "ChildWorkflowUnknownError",
     "CompiledWorkflow",
     "DeliveryResult",
+    "DepsRotation",
     "Done",
     "DuplicateSubstepError",
     "EmitBackpressure",

@@ -13,6 +13,7 @@ driver here.
 from __future__ import annotations
 
 from collections.abc import Callable
+from contextlib import AbstractAsyncContextManager
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, Literal, Protocol, cast
 
@@ -69,11 +70,15 @@ class _LoopHost(Protocol):
     #: bind it (a zombie driver's write is refused by its own legs).
     _worker_id: JobId
 
-    async def _deps_tail(self, body: Callable[..., object], wired_count: int) -> tuple[object, ...]:
+    def _deps_scope(
+        self, body: Callable[..., object], wired_count: int
+    ) -> AbstractAsyncContextManager[tuple[object, ...]]:
         """The body's deps injection (the runner's one seam): the instance
         the runner bound or lazily resolved, empty when the body does not
         declare the deps shape. A loop body declares it as one param beyond
-        ``(ctx, carry)``."""
+        ``(ctx, carry)``. The instance is leased for the body's lifetime, so a
+        reload's generation rotation drains a running body before releasing
+        its instance."""
         ...
 
     #: The bounded-run gate (the compiled declaration's own fact): True only
@@ -622,8 +627,8 @@ class LoopOps(_LoopHost):
                     # every other body invocation sees (the shape's validator
                     # face is E12's; this read is the signature's positional
                     # truth).
-                    deps_tail = await self._deps_tail(node.loop_body, 1)
-                    outcome = await node.loop_body(loop_ctx, carry, *deps_tail)
+                    async with self._deps_scope(node.loop_body, 1) as deps_tail:
+                        outcome = await node.loop_body(loop_ctx, carry, *deps_tail)
                 except NodeHeldError:
                     # the loop node rests in the held representation (the
                     # budget paused — register_hold's loop case); the resume

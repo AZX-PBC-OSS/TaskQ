@@ -349,7 +349,13 @@ class WorkflowApp:
     the first body execution, and reused by every body (see
     :mod:`taskq.workflows.api._deps_factory` for the supported shapes and
     the single-owner teardown precedence). The two arms are mutually
-    exclusive — a door binds ONE deps instance."""
+    exclusive — a door binds ONE deps instance.
+
+    ``WorkflowApp(deps_factory=…, deps_generation=…)`` makes that instance
+    ROTATABLE: the generation source is read when a reload asks, and an
+    advanced value replaces the instance (the superseded one released once its
+    in-flight bodies finish) so subsequent bodies receive the new
+    generation's instance."""
 
     def __init__(
         self,
@@ -358,6 +364,7 @@ class WorkflowApp:
         deps: object | None = None,
         deps_factory: Callable[..., object] | None = None,
         deps_teardown: Callable[[object], object] | None = None,
+        deps_generation: Callable[[], int | str] | None = None,
         queues_strict: bool = False,
     ) -> None:
         from taskq.workflows.api._deps_factory import deps_factory_declaration
@@ -366,11 +373,15 @@ class WorkflowApp:
         self._deps: object | None = deps
         # the factory arm of the same door: nothing is invoked here — the
         # declaration only records the callable, the optional teardown owner,
-        # and the product type E12 reads (lazy, on the running loop, at the
-        # first body execution; the mutual-exclusion and teardown-shape
-        # refusals are raised HERE, at the declaration site).
+        # the generation source a reload rotates on, and the product type E12
+        # reads (lazy, on the running loop, at the first body execution; the
+        # mutual-exclusion and teardown-shape refusals are raised HERE, at the
+        # declaration site).
         self._deps_factory = deps_factory_declaration(
-            deps=deps, deps_factory=deps_factory, deps_teardown=deps_teardown
+            deps=deps,
+            deps_factory=deps_factory,
+            deps_teardown=deps_teardown,
+            deps_generation=deps_generation,
         )
         # the app's own definition carries the strict contract in code — the
         # fleet that needs this face cannot coordinate a fleet-wide env var

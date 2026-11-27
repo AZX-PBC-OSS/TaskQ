@@ -13,6 +13,7 @@ import socket
 import sys
 from collections.abc import AsyncGenerator, Awaitable, Callable
 from contextlib import AsyncExitStack, asynccontextmanager, suppress
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import TYPE_CHECKING, Final
@@ -56,7 +57,9 @@ if TYPE_CHECKING:
 
 __all__ = [
     "POOL_INFRA_EXCEPTIONS",
+    "ReloadGate",
     "WorkerDeps",
+    "_track_detached_body",
     "apply_keepalive_to_conn",
     "open_dedicated_conn",
     "open_worker_deps",
@@ -279,6 +282,102 @@ class LeaderTerm:
     trusted_until: float
 
 
+_ACTIVE_POOL_CLAIM: ContextVar[tuple[ReloadGate, object] | None] = ContextVar(
+    "taskq_active_pool_claim", default=None
+)
+"""The workflow claim whose deadline enforcement may detach a body task.
+
+Tasks created inside the claim inherit this context, but registration happens
+synchronously at the detachment site, before the enclosing claim can release.
+Vanilla actors and direct runners have no active gate and pay no cost.
+"""
+
+
+class ReloadGate:
+    """Coordinates a worker's credential reload with the claims executing on
+    the role pools it swaps.
+
+    A claim holds the POOL it was admitted with for its whole execution; the
+    reload, before CLOSING an old pool, waits (bounded) for that pool's claims
+    to finish. The hold is on the pool object, so it is independent of the deps
+    generation and of whether anything rotates at all — a claim admitted while
+    a reload is draining keeps its own pool open until it ends (or the bound
+    expires), which is what stops a reload from closing a pool under work it
+    never counted.
+
+    The read-and-hold in :meth:`claim` is one suspension-free step, so a claim
+    can never read a pool the reload has already swapped away.
+    """
+
+    def __init__(self) -> None:
+        self._held: dict[object, int] = {}
+        self._quiet: dict[object, asyncio.Event] = {}
+
+    @asynccontextmanager
+    async def claim(self, pool: object) -> AsyncGenerator[object, None]:
+        """Hold *pool* for one claim's lifetime, answering the held pool.
+
+        Callers read the current pool as this call's argument (see the class
+        docstring); the answer is the exact object held, so the claim cannot
+        mix a later read with an earlier hold.
+
+        ``_quiet`` is left alone on entry: an event lives there only while the
+        pool has holders, and a waiter parked on it must keep waiting for THIS
+        claim too (the release that empties the pool sets it).
+        """
+        self._held[pool] = self._held.get(pool, 0) + 1
+        token = _ACTIVE_POOL_CLAIM.set((self, pool))
+        try:
+            yield pool
+        finally:
+            _ACTIVE_POOL_CLAIM.reset(token)
+            self._release(pool)
+
+    def _release(self, pool: object) -> None:
+        remaining = self._held.get(pool, 0) - 1
+        if remaining > 0:
+            self._held[pool] = remaining
+        else:
+            self._held.pop(pool, None)
+            settled = self._quiet.pop(pool, None)
+            if settled is not None:
+                settled.set()
+
+    def _track(self, pool: object, task: asyncio.Task[object]) -> None:
+        """Keep *pool* held until a detached body task finishes."""
+        self._held[pool] = self._held.get(pool, 0) + 1
+        task.add_done_callback(lambda _done: self._release(pool))
+
+    async def await_quiet(self, pool: object, *, drain_timeout: float) -> bool:
+        """Wait for *pool*'s claims to finish, bounded; ``False`` when the
+        bound expired with claims still running on it."""
+        if pool not in self._held:
+            return True
+        settled = self._quiet.get(pool)
+        if settled is None:
+            settled = asyncio.Event()
+            self._quiet[pool] = settled
+        try:
+            await asyncio.wait_for(settled.wait(), timeout=drain_timeout)
+        except TimeoutError:
+            return False
+        return True
+
+
+def _track_detached_body(task: asyncio.Task[object]) -> None:
+    """Transfer the active claim's pool hold to its detached body task.
+
+    The deadline enforcement calls this synchronously before returning to the
+    dispatch claim. The extra hold is therefore installed before the claim's
+    own release, and its done callback wakes the old pool's close exactly like
+    an inline claim's release. Outside a workflow pool claim this is a no-op.
+    """
+    active = _ACTIVE_POOL_CLAIM.get()
+    if active is not None:
+        gate, pool = active
+        gate._track(pool, task)
+
+
 @dataclass
 class WorkerDeps:
     """Stable named handle for worker pools and connections.
@@ -300,6 +399,22 @@ class WorkerDeps:
     # callback-aware reconnect (re-registers LISTEN + callbacks on the new
     # connection). None before the listener starts or after it stops.
     notify_reconnect_fn: Callable[[], Awaitable[None]] | None = None
+    # Awaited at the TOP of every credential reload, before any pool is
+    # swapped: the ordering hand-off for a resource that must be released
+    # while the old pools (and the loop, and this deps shell) are still open.
+    # The workflow-hosted door registers the workflow deps' generation
+    # rotation here (bootstrap, lazily), so a superseded deps instance is torn
+    # down before ``_drain_old_pool`` starts closing the pool it was built
+    # against. The hook owns its own bound (the reload's ``drain_timeout`` plus
+    # one bounded close per instance) and must not raise out of a reload: a
+    # failure is logged and the rotation continues. None = nothing to drain.
+    reload_drain: Callable[[float], Awaitable[None]] | None = None
+    #: The gate between a reload's pool swap and the claims executing on the
+    #: pools being swapped: a claim holds the pool it was admitted with, and
+    #: ``reload_credentials`` waits (bounded by ``drain_timeout``) for each old
+    #: pool's claims before closing it. One per worker, on this deps shell's
+    #: loop.
+    reload_gate: ReloadGate = field(default_factory=ReloadGate)
     # The incremental AsyncExitStack from open_worker_deps, every
     # teardown registered after the deps shell opens (the dedicated-conn
     # / redis guards, the per-slot pool via _maybe_open_slot_pool, and
@@ -1243,6 +1358,13 @@ async def reload_credentials(
     connection.
 
     For each factory-backed resource:
+    0. Await ``deps.reload_drain`` (when registered) BEFORE anything is
+       swapped: a resource that must be released while the old pools are
+       still open — the workflow deps' generation rotation — gets its bounded
+       drain here, ordered strictly before every old-pool close below. Every
+       old pool's close then waits (bounded by ``drain_timeout``, through
+       ``deps.reload_gate``) for the claims admitted on that pool, so a pool
+       is never closed under a claim it still owes.
     1. Build a new resource by calling the factory (which fetches a fresh
        credential, AAD token, AWS IAM token, Vault dynamic creds), bounded
        by ``factory_timeout`` so a hung token endpoint cannot wedge the
@@ -1300,6 +1422,28 @@ async def reload_credentials(
         reloaded: list[str] = []
         failed: list[str] = []
 
+        # ── pre-swap drains ────────────────────────────────────────
+        # Resources a reload must release BEFORE the old pools close get
+        # their turn here: the workflow deps' generation rotation drains
+        # in-flight bodies (bounded) and releases the superseded instance, so
+        # a slow body can still finish against an open pool and the release
+        # is ordered strictly before ``_drain_old_pool`` below. Fully
+        # independent of the credential factories: a settings reload with no
+        # PG provider configured drains exactly the same way.
+        drain = deps.reload_drain
+        if drain is not None:
+            try:
+                await drain(drain_timeout)
+            except Exception as exc:
+                # A failing drain is reported with its cause and must not
+                # abort the rotation: the pools below are still rebuilt, and
+                # the operator can SIGHUP again for the missed drain.
+                logger.warning(
+                    "credential-reload-drain-failed",
+                    kind="credential_reload_drain_failed",
+                    error=repr(exc),
+                )
+
         # ── Pools ──────────────────────────────────────────────────
         # Each pool is reloaded independently, a factory failure for one
         # (e.g. a transient credential-fetch error) is logged and does not
@@ -1330,7 +1474,7 @@ async def reload_credentials(
                 # unbounded enter_async_context close.
                 stack.push_async_callback(_close_pool)
                 setattr(deps, pool_attr, new_pool)
-                _drain_old_pool(old_pool, label, drain_timeout)
+                _drain_old_pool(old_pool, label, drain_timeout, gate=deps.reload_gate)
                 reloaded.append(label)
             except Exception as exc:
                 logger.warning(
@@ -1463,7 +1607,13 @@ async def reload_credentials(
         return reloaded, failed
 
 
-def _drain_old_pool(pool: asyncpg.Pool, label: str, drain_timeout: float) -> None:
+def _drain_old_pool(
+    pool: asyncpg.Pool,
+    label: str,
+    drain_timeout: float,
+    *,
+    gate: ReloadGate | None = None,
+) -> None:
     """Close an old pool in the background with a bounded drain timeout.
 
     Delegates to :func:`taskq._close.close_pool_bounded` with
@@ -1475,9 +1625,22 @@ def _drain_old_pool(pool: asyncpg.Pool, label: str, drain_timeout: float) -> Non
     ``close()`` waits for checked-out connections to be released, which a
     stuck holder can delay indefinitely, keeping old-credential sessions
     alive past the rotation point; ``terminate()`` kills them immediately.
+
+    ``gate`` is the reload/claim gate: the close is DEFERRED, bounded by
+    ``drain_timeout``, until the claims admitted on this exact pool finish,
+    so a claim that was admitted while the reload drained keeps serving on the
+    pool it was given. The bound expiring force-closes it (the documented
+    escape hatch); the claims' own recovery then owns their failure.
     """
 
     async def _close() -> None:
+        if gate is not None and not await gate.await_quiet(pool, drain_timeout=drain_timeout):
+            logger.warning(
+                "pool-drain-claims-timeout",
+                kind="pool_drain_claims_timeout",
+                pool=label,
+                drain_timeout=drain_timeout,
+            )
         await close_pool_bounded(pool, label, drain_timeout, family="drain")
 
     _t = asyncio.create_task(_close())

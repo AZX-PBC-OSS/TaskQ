@@ -3739,16 +3739,17 @@ def record_sse_rejection(surface: SseSurface, topic: str) -> None:
 # the workflow-deps-resolved / workflow-deps-torn-down log lines.
 
 
-def record_workflow_deps_resolved(workflow: str, generation: int) -> None:
+def record_workflow_deps_resolved(workflow: str, generation: int | str) -> None:
     """Count one workflow deps instance resolved on a worker.
 
     Called once per resolved instance: the first body of the app that
     declares the deps parameter mints it, and every later body (any
     workflow of the app, same worker and loop) reuses it. Attributes:
     workflow (the declared registration name) and generation (the factory
-    generation that minted it). More than one per worker lifecycle is a
-    scope leak; zero while bodies execute is a resolution that never
-    reached the seam.
+    generation that minted it, as the declaration's generation source
+    reports it). Each rotated-in generation adds one resolution; repeated
+    bodies of one generation reuse their instance without another increment.
+    Zero while bodies execute is a resolution that never reached the seam.
     Respects ``_otel_enabled``, no-op when False.
     """
     if not _otel_enabled:
@@ -3769,11 +3770,12 @@ def record_workflow_deps_resolved(workflow: str, generation: int) -> None:
         _log.warning("otel-metric-record-failed", instrument_name="taskq.workflows.deps_resolved")
 
 
-def record_workflow_deps_torn_down(workflow: str, generation: int, *, failed: bool) -> None:
+def record_workflow_deps_torn_down(workflow: str, generation: int | str, *, failed: bool) -> None:
     """Count one workflow deps instance torn down on a worker.
 
-    Called by the worker's shutdown teardown, once per resolved instance
-    (the exactly-once release), before the worker's role pools close.
+    Called by generation rotation and by the worker's shutdown teardown,
+    once per resolved instance (the exactly-once release), before the
+    corresponding old or shutting-down worker pools close.
     Attributes: workflow, generation, and ``outcome`` (the closed enum
     ``ok`` / ``failed``); the failing half joins the
     workflow-deps-teardown-error / -timeout log lines, which carry the
@@ -3786,8 +3788,8 @@ def record_workflow_deps_torn_down(workflow: str, generation: int, *, failed: bo
         _lazy_counter(
             "taskq.workflows.deps_torn_down",
             description=(
-                "Workflow deps instances released by a worker's shutdown "
-                "teardown. Attributes: workflow (the declared registration "
+                "Workflow deps instances released by generation rotation or "
+                "worker shutdown. Attributes: workflow (the declared registration "
                 "name), generation, outcome (ok | failed, the closed enum). "
                 "Exactly one per resolved instance; a gap against "
                 "taskq.workflows.deps_resolved is a leaked instance."

@@ -100,6 +100,14 @@ def _reset_probe_state() -> None:  # pyright: ignore[reportUnusedFunction]  # Wh
     _reset()
 
 
+async def _resolved(resolution: scope.WorkerDepsResolution) -> object:
+    """The instance *resolution* serves, read through the same face the runner
+    drives (the body lease) — the pins never exercise a seam production does
+    not."""
+    async with resolution.body() as instance:
+        return instance
+
+
 class _Probe:
     """The factory-created deps resource: loop-bound, released by ``aclose()``
     (the shape a pool or an HTTP client has)."""
@@ -309,16 +317,16 @@ def test_teardown_evicts_only_its_workers_entries() -> None:
     async def _scenario() -> None:
         mine = scope.prepare_worker_deps(binding, workflow="wf-a", worker_id=worker_id)
         theirs = scope.prepare_worker_deps(binding, workflow="wf-a", worker_id=neighbour)
-        my_instance = await mine.get()
-        their_instance = await theirs.get()
+        my_instance = await _resolved(mine)
+        their_instance = await _resolved(theirs)
         assert _PRODUCED[0] == 2
         assert my_instance is not their_instance
 
         await scope.teardown_worker_deps(worker_id)
         assert _ORDER == ["deps-teardown"], "only the shutting-down worker's instance released"
-        assert await theirs.get() is their_instance, "the neighbour still serves ITS instance"
+        assert await _resolved(theirs) is their_instance, "the neighbour still serves ITS instance"
         with pytest.raises(RuntimeError, match="deps owner is closed"):
-            await mine.get()
+            await _resolved(mine)
         # re-preparing the torn-down worker's key mints a fresh entry.
         replacement = scope.prepare_worker_deps(binding, workflow="wf-a", worker_id=worker_id)
         assert replacement is not mine, "the torn-down worker's entry was evicted"
@@ -362,8 +370,8 @@ def test_concurrent_teardowns_do_not_evict_a_new_live_bucket() -> None:
             workflow="wf-concurrent-second",
             worker_id=second_worker,
         )
-        await first.get()
-        await second.get()
+        await _resolved(first)
+        await _resolved(second)
 
         first_teardown = asyncio.create_task(scope.teardown_worker_deps(first_worker))
         await first_started.wait()
@@ -378,7 +386,7 @@ def test_concurrent_teardowns_do_not_evict_a_new_live_bucket() -> None:
         live = scope.prepare_worker_deps(
             DepsFactory(_make_probe), workflow="wf-still-live", worker_id=live_worker
         )
-        await live.get()
+        await _resolved(live)
         finish_first.set()
         await first_teardown
 
@@ -407,7 +415,7 @@ def test_an_abandoned_loop_bound_resolution_does_not_pin_its_loop() -> None:
         resolution = scope.prepare_worker_deps(
             binding, workflow="wf-abandoned-resolution", worker_id=worker_id
         )
-        await resolution.get()
+        await _resolved(resolution)
         loop_ref = weakref.ref(asyncio.get_running_loop())
 
     asyncio.run(_abandon())
@@ -453,7 +461,7 @@ def test_a_second_teardown_releases_nothing() -> None:
 
     async def _scenario() -> None:
         resolution = scope.prepare_worker_deps(binding, workflow="wf-a", worker_id=worker_id)
-        await resolution.get()
+        await _resolved(resolution)
         await scope.teardown_worker_deps(worker_id)
         await scope.teardown_worker_deps(worker_id)
         assert _ORDER == ["deps-teardown"], _ORDER
@@ -491,8 +499,8 @@ def test_a_failing_release_is_logged_and_the_rest_still_release() -> None:
     worker_id = new_uuid()
 
     async def _scenario() -> None:
-        await scope.prepare_worker_deps(good, workflow="wf-good", worker_id=worker_id).get()
-        await scope.prepare_worker_deps(bad, workflow="wf-bad", worker_id=worker_id).get()
+        await _resolved(scope.prepare_worker_deps(good, workflow="wf-good", worker_id=worker_id))
+        await _resolved(scope.prepare_worker_deps(bad, workflow="wf-bad", worker_id=worker_id))
 
         with structlog.testing.capture_logs() as logs:
             await scope.teardown_worker_deps(worker_id)
@@ -524,7 +532,7 @@ def test_a_hanging_release_is_bounded_and_reported(monkeypatch: pytest.MonkeyPat
     worker_id = new_uuid()
 
     async def _scenario() -> None:
-        await scope.prepare_worker_deps(binding, workflow="wf-hang", worker_id=worker_id).get()
+        await _resolved(scope.prepare_worker_deps(binding, workflow="wf-hang", worker_id=worker_id))
         with structlog.testing.capture_logs() as logs:
             await asyncio.wait_for(scope.teardown_worker_deps(worker_id), timeout=2.0)
         timeout_event = next(e for e in logs if e["event"] == "workflow-deps-teardown-timeout")
@@ -557,7 +565,7 @@ def test_teardown_is_bounded_while_a_body_is_still_inside_the_factory(
         resolution = scope.prepare_worker_deps(
             DepsFactory(_hung_factory), workflow="wf-stuck", worker_id=worker_id
         )
-        claim = asyncio.create_task(resolution.get())
+        claim = asyncio.create_task(_resolved(resolution))
         await entered.wait()
 
         with structlog.testing.capture_logs() as logs:
@@ -601,8 +609,8 @@ def test_a_failing_factory_reports_its_cause_and_is_retried() -> None:
         )
         with structlog.testing.capture_logs() as logs:
             with pytest.raises(RuntimeError, match="deps factory exploded"):
-                await resolution.get()
-            instance = await resolution.get()
+                await _resolved(resolution)
+            instance = await _resolved(resolution)
         failure = next(e for e in logs if e["event"] == "workflow-deps-resolve-failed")
         assert (failure["workflow"], failure["worker_id"]) == ("wf-flaky", str(worker_id))
         assert failure["error_class"] == "RuntimeError"
@@ -637,7 +645,7 @@ def test_factory_failure_logs_scrub_credentials() -> None:
             worker_id=worker_id,
         )
         with structlog.testing.capture_logs() as logs, pytest.raises(RuntimeError):
-            await resolution.get()
+            await _resolved(resolution)
         failure = next(e for e in logs if e["event"] == "workflow-deps-resolve-failed")
         assert "fake-password" not in failure["error"]
         assert "postgresql://factory:***@db.example/flows" in failure["error"]
@@ -666,7 +674,7 @@ def test_a_factory_error_with_broken_str_still_propagates_unchanged() -> None:
             DepsFactory(_hostile_factory), workflow="wf-hostile-resolve", worker_id=worker_id
         )
         with structlog.testing.capture_logs(), pytest.raises(_HostileError):
-            await resolution.get()
+            await _resolved(resolution)
 
     asyncio.run(_scenario())
 
@@ -690,7 +698,7 @@ def test_a_teardown_error_with_broken_str_does_not_escape() -> None:
             workflow="wf-hostile-teardown",
             worker_id=worker_id,
         )
-        await resolution.get()
+        await _resolved(resolution)
         with structlog.testing.capture_logs() as logs:
             await scope.teardown_worker_deps(worker_id)
         failure = next(e for e in logs if e["event"] == "workflow-deps-teardown-error")
@@ -715,8 +723,8 @@ async def test_resolve_and_teardown_emit_workflow_worker_and_generation(
     resolution = scope.prepare_worker_deps(binding, workflow="wf-telemetry", worker_id=worker_id)
 
     with structlog.testing.capture_logs() as logs:
-        await resolution.get()
-        await resolution.get()  # reused: no second resolve event
+        await _resolved(resolution)
+        await _resolved(resolution)  # reused: no second resolve event
         await scope.teardown_worker_deps(worker_id)
 
     resolved = [e for e in logs if e["event"] == "workflow-deps-resolved"]
@@ -787,7 +795,7 @@ def test_telemetry_is_a_noop_with_otel_disabled(monkeypatch: pytest.MonkeyPatch)
     async def _scenario() -> None:
         resolution = scope.prepare_worker_deps(binding, workflow="wf-otel-off", worker_id=worker_id)
         with structlog.testing.capture_logs() as logs:
-            await resolution.get()
+            await _resolved(resolution)
             await scope.teardown_worker_deps(worker_id)
         assert [e["event"] for e in logs if e["event"].startswith("workflow-deps-")] == [
             "workflow-deps-resolved",
@@ -823,10 +831,10 @@ def test_a_runner_drives_an_injected_resolution_without_closing_it() -> None:
             worker_id=JobId(worker_id),
             deps_resolution=resolution,
         )
-        instance = await resolution.get()
+        instance = await _resolved(resolution)
         await runner.aclose()
         assert _ORDER == [], "the runner does not own the worker's resolution"
-        assert await resolution.get() is instance, "the shared instance survives the runner"
+        assert await _resolved(resolution) is instance, "the shared instance survives the runner"
 
         await scope.teardown_worker_deps(worker_id)
         assert _ORDER == ["deps-teardown"], _ORDER
@@ -856,8 +864,8 @@ def test_injected_resolution_labels_the_workflow_that_actually_resolves() -> Non
             deps_resolution=resolution,
         )
         with structlog.testing.capture_logs() as logs:
-            tail = await runner._deps_tail(_deps_body, 1)  # pyright: ignore[reportPrivateUsage]  # Why: the runner-to-resolution seam supplies the resolving workflow's identity.
-        assert isinstance(tail[0], _Probe)
+            async with runner._deps_scope(_deps_body, 1) as tail:  # pyright: ignore[reportPrivateUsage]  # Why: the runner-to-resolution seam supplies the resolving workflow's identity.
+                assert isinstance(tail[0], _Probe)
         resolved = next(e for e in logs if e["event"] == "workflow-deps-resolved")
         assert resolved["workflow"] == "wf-scope-resolving-workflow"
         await scope.teardown_worker_deps(worker_id)
@@ -881,7 +889,7 @@ def test_an_injected_resolution_refuses_a_second_declared_binding() -> None:
             "scope_probe_schema",
             deps=object(),
             deps_resolution=scope.WorkerDepsResolution(
-                resolution, workflow="wf-scope-refuse", worker_id=new_uuid(), generation=0
+                resolution, workflow="wf-scope-refuse", worker_id=new_uuid()
             ),
         )
 
@@ -923,7 +931,7 @@ def test_the_bootstrap_teardown_seam_evicts_the_workers_runner_cache() -> None:
         resolution = scope.prepare_worker_deps(
             binding, workflow="wf-scope-evict", worker_id=worker_id
         )
-        await resolution.get()
+        await _resolved(resolution)
         pool = cast("Any", object())
         before = seam._runner_for(  # pyright: ignore[reportPrivateUsage]  # Why: the door's runner factory is the cache's only public face; the pin reads what it hands a caller.
             "wf-scope-evict",
