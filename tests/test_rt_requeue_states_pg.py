@@ -465,8 +465,9 @@ async def test_state2_claim_intent_fences_the_row_out_of_every_hand_back(
     assert _claimed, "the premise: the claim landed"
 
     # The producer's mark, then the consumer's take: the intent stands.
-    deps.active_jobs.mark_enqueued(job_id)
-    token: ClaimIntent = deps.active_jobs.mark_claimed(job_id)
+    # Both carry the claim's epoch (the first claim on this row).
+    deps.active_jobs.mark_enqueued(job_id, 1)
+    token: ClaimIntent = deps.active_jobs.mark_claimed(job_id, 1)
     assert job_id in deps.active_jobs.held_ids(), (
         "the premise: the take-to-register window is held by the intent map"
     )
@@ -489,13 +490,19 @@ async def test_state2_claim_intent_fences_the_row_out_of_every_hand_back(
     other = await _new_worker(deps, schema)
     assert await backend.dispatch_batch(other, ["default"], 5, _LOCK_LEASE) == []
 
-    # The token is identity-scoped (the issue-461 class): a stale
-    # generation's resolve removes nothing, the live intent survives.
-    stale_token = deps.active_jobs.mark_claimed(job_id)
-    deps.active_jobs.resolve_claim(job_id, token)
-    drained = await drain_local_queue_to_pending(deps, worker_id)
-    assert drained == 0, "a stale token's resolve must not release the live claim's intent"
-    deps.active_jobs.resolve_claim(job_id, stale_token)
+    # The token is identity-scoped (the issue-461 class): the newer
+    # generation's take (epoch 2) replaces the older generation's intent,
+    # so the older generation's delayed resolve (its epoch-1 token)
+    # removes nothing and the live intent survives. This arm is
+    # registry-side (the row's DB claim stays at epoch 1), so it pins the
+    # token identity; the drain-exclusion half above pins the SQL.
+    live_token = deps.active_jobs.mark_claimed(job_id, 2)
+    deps.active_jobs.resolve_claim(job_id, token)  # the stale generation's exit
+    assert deps.active_jobs.held_claims() == [(job_id, 2)], (
+        "the stale generation's resolve erased the live claim's intent; the "
+        "hand-back passes would re-pend a row the live claim is about to run"
+    )
+    deps.active_jobs.resolve_claim(job_id, live_token)
 
     # The window resolved without a run: the next hand-back pass re-pends
     # the row whole - refunded, exactly once.
@@ -565,7 +572,7 @@ async def test_state2_late_registration_torn_down_by_the_shutdown_requeues(
     # folds and the orchestrator read the same instance the consumer
     # registers into (one process, one registry).
     deps.active_jobs = registry
-    token = registry.mark_claimed(job_id)
+    token = registry.mark_claimed(job_id, 1)
     runs: dict[UUID, list[int]] = {}
 
     started = asyncio.Event()

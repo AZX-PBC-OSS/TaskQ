@@ -66,10 +66,16 @@ class _Active:
     def queued_ids(self) -> list[object]:
         return []
 
-    def mark_enqueued(self, job_id: object) -> None:
+    def held_claims(self) -> list[tuple[object, int]]:
+        return []
+
+    def queued_claims(self) -> list[tuple[object, int]]:
+        return []
+
+    def mark_enqueued(self, job_id: object, claim_epoch: int) -> None:
         pass
 
-    def mark_claimed(self, job_id: object) -> None:
+    def mark_claimed(self, job_id: object, claim_epoch: int) -> None:
         return None
 
     def resolve_claim(self, job_id: object, token: object = None) -> None:
@@ -258,7 +264,10 @@ class _RegistrySpy:
     def held_ids(self) -> list[object]:
         return []
 
-    def mark_claimed(self, job_id: object) -> None:
+    def held_claims(self) -> list[tuple[object, int]]:
+        return []
+
+    def mark_claimed(self, job_id: object, claim_epoch: int) -> None:
         self.registered.append(("intent", job_id))
         return None
 

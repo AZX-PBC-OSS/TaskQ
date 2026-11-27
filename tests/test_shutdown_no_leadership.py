@@ -693,7 +693,7 @@ async def test_pin_orchestrator_sets_the_stop_signal_before_the_drain_write(
 
     seen_at_drain: list[bool] = []
 
-    async def spy_drain(deps: WorkerDeps, worker_id: UUID) -> int:
+    async def spy_drain(deps: WorkerDeps, worker_id: UUID, *, call_site: str = "shutdown") -> int:
         seen_at_drain.append(deps.shutdown_start_event.is_set())
         return 0
 
@@ -757,7 +757,7 @@ async def test_pin_row_gone_before_the_drain_write_and_successor_elects_during_i
                 f'SELECT worker_id FROM "{schema}".maintenance_leader WHERE singleton = true'
             )
 
-    async def slow_drain(deps: WorkerDeps, worker_id: UUID) -> int:
+    async def slow_drain(deps: WorkerDeps, worker_id: UUID, *, call_site: str = "shutdown") -> int:
         # Runs inside the draining phase, in place of the drain's own
         # write. The resign must land while the drain is still running:
         # a bounded wait for the row to stop being the stopping pod's.

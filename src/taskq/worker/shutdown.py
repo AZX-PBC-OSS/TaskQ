@@ -45,6 +45,7 @@ from enum import IntEnum
 from typing import TYPE_CHECKING
 from uuid import UUID
 
+import asyncpg
 import structlog
 
 from taskq._close import CLOSE_TIMEOUT_SECS, close_conn_bounded
@@ -78,6 +79,12 @@ __all__ = [
 ]
 
 _log: structlog.stdlib.BoundLogger = get_logger(__name__)
+
+#: The drain's bounded wait for a dispatcher connection. Anything longer
+#: parks the shutdown behind a contended pool; the failure record names this
+#: same value so an operator can tell a pool-acquire timeout from a statement
+#: failure.
+_DRAIN_POOL_ACQUIRE_TIMEOUT_S = 2.0
 
 
 def _orchestration_in_progress(
@@ -124,14 +131,24 @@ class ShutdownPhase(IntEnum):
     RELEASING = 4
 
 
-async def drain_local_queue_to_pending(deps: "WorkerDeps", worker_id: UUID) -> int:
+async def drain_local_queue_to_pending(
+    deps: "WorkerDeps",
+    worker_id: UUID,
+    *,
+    call_site: str = "shutdown",
+) -> int:
     """Re-pend every job this worker claimed but never started.
 
        Issues a single bounded-timeout UPDATE that clears the lock on rows
        where ``locked_by_worker = $worker_id and status = 'running'``,
-       excluding the jobs with live consumers (``deps.active_jobs``):
+       excluding the claims with live consumers (``deps.active_jobs``):
        CANCELLING owns those, and re-pending one would unlock a row
-       another worker can claim while its consumer still executes it. On
+       another worker can claim while its consumer still executes it. The
+       exclusion names the claim, not the row: a ``(job_id, claim_epoch)``
+       pair, because this process can hold an older attempt of a row while
+       a claim round in flight re-claims that same row at a newer epoch,
+       and a row-scoped exclusion would shield the newer unstarted claim
+       and leave it locked to the worker on its way out. On
        pool exhaustion or connection error the helper logs a warning and
        returns 0 so the recovery sweep acts as the backstop rather than a
        deadlocked shutdown.
@@ -187,6 +204,14 @@ async def drain_local_queue_to_pending(deps: "WorkerDeps", worker_id: UUID) -> i
        in ``active_jobs``) is invisible to every shutdown arm, CANCELLING
        iterates the same registry, and stays outside this predicate's
        guarantee.
+
+       Args:
+           deps: The worker's dependency bundle.
+           worker_id: This worker's id; the hand-back is scoped to its rows.
+           call_site: Which of the two passes is calling (``"draining_phase"``
+               or ``"producer_exit"``). It rides the failure record so an
+               operator can tell the orchestrator's pass from the producer's
+               when a rolling deploy leaves one of them unaccounted for.
 
        Returns:
            Number of rows updated, or 0 on timeout / connection error.
@@ -247,8 +272,10 @@ async def drain_local_queue_to_pending(deps: "WorkerDeps", worker_id: UUID) -> i
     # The exclusion clauses are only bound when there is something to
     # exclude: an empty registry (the common drained-worker case) keeps
     # the single-parameter statement shape the helper has always issued.
+    stage = "pool_acquire"
     try:
-        async with deps.dispatcher_pool.acquire(timeout=2.0) as conn:
+        async with deps.dispatcher_pool.acquire(timeout=_DRAIN_POOL_ACQUIRE_TIMEOUT_S) as conn:
+            stage = "execute"
             # The exclusion arrays are captured here, after the pool
             # acquire and immediately before the bind - never before it.
             # The capture is the row's classification ("a consumer of
@@ -273,11 +300,13 @@ async def drain_local_queue_to_pending(deps: "WorkerDeps", worker_id: UUID) -> i
             # Why the explicit list[UUID] annotation: JobId is
             # NewType(UUID), so the bare comprehension infers
             # list[JobId], and list invariance would refuse the uuid[]
-            # bind parameter's declared type below. held_ids() covers
+            # bind parameter's declared type below. held_claims() covers
             # both maps: registered consumers (executing now) and claim
             # intents (taken off local_queue, not yet registered, the
             # window the registry's comment documents).
-            active_ids: list[JobId] = deps.active_jobs.held_ids()
+            held_claims: list[tuple[JobId, int]] = deps.active_jobs.held_claims()
+            active_ids: list[JobId] = [job_id for job_id, _epoch in held_claims]
+            active_epochs: list[int] = [epoch for _job_id, epoch in held_claims]
             # The disowned rows are never this pass's population (the
             # docstring's disowned-exclusion paragraph): their attempts
             # may have started, so the refund is wrong for them, and
@@ -286,28 +315,70 @@ async def drain_local_queue_to_pending(deps: "WorkerDeps", worker_id: UUID) -> i
             # NewType, and list invariance would refuse the uuid[] bind
             # parameter's declared type below.
             disowned_ids: list[JobId] = [JobId(job_id) for job_id in sorted(deps.disowned_jobs)]
-            params: list[UUID | list[JobId]] = [worker_id]
+            params: list[UUID | list[JobId] | list[int]] = [worker_id]
             if active_ids:
-                sql += " AND id <> ALL($2::uuid[])"
+                # The exclusion pairs each held row with the claim epoch
+                # this process holds it at. A bare job_id exclusion lets
+                # a dying attempt still registered under the same id
+                # shield a newer, unstarted claim of that row: the
+                # UPDATE matches nothing, the worker exits rc=0, and the
+                # fresh claim stays running and locked to the process
+                # that just left. Postgres stamps claim_epoch
+                # monotonically on every claim, so the pair names exactly
+                # one attempt and a re-claim never collides with it.
+                sql += (
+                    " AND NOT EXISTS (SELECT 1"
+                    " FROM unnest($2::uuid[], $3::bigint[]) AS h(id, claim_epoch)"
+                    " WHERE h.id = j.id AND h.claim_epoch = j.claim_epoch)"
+                )
                 params.append(active_ids)
+                params.append(active_epochs)
             if disowned_ids:
                 sql += f" AND NOT j.id = ANY(${len(params) + 1}::uuid[])"
                 params.append(disowned_ids)
             tag = await conn.execute(sql, *params)
             rowcount = parse_rowcount(tag)
+            # Both counts, side by side: ``active_jobs_excluded`` is the
+            # distinct rows the hand-back spared, ``active_claims_excluded``
+            # the claim pairs the exclusion bound. One row can legitimately
+            # be held at two epochs while a stale attempt unwinds, so the
+            # pair count can exceed the row count; the row count is what
+            # "how much work did we spare" means.
             _log.info(
                 "drain-local-queue-completed",
                 worker_id=worker_id,
                 rows_re_pended=rowcount,
-                active_jobs_excluded=len(active_ids),
+                active_jobs_excluded=len(set(active_ids)),
+                active_claims_excluded=len(active_ids),
+                call_site=call_site,
             )
             return rowcount
     except TRANSIENT_PG_ERRORS as exc:
-        _log.warning(
-            "drain-local-queue-failed",
-            worker_id=worker_id,
-            error=str(exc),
+        # The failure record names its class, its call site and its stage,
+        # so an operator can tell a connection blip from a permanently
+        # refused statement without reconstructing which pass ran. A
+        # statement/argument-contract ``InterfaceError`` ("the server
+        # expects N arguments for this query") is the shape of the
+        # statement, not the weather: it is escalated to ERROR with an
+        # explicit marker, but still returns 0 so shutdown never deadlocks
+        # on it (the lease-expiry sweep remains the backstop).
+        statement_contract_error = isinstance(exc, asyncpg.InterfaceError) and (
+            "the server expects" in str(exc)
         )
+        failure_fields: dict[str, object] = {
+            "worker_id": worker_id,
+            "error_class": type(exc).__name__,
+            "error": str(exc),
+            "call_site": call_site,
+            "stage": stage,
+        }
+        if stage == "pool_acquire":
+            failure_fields["acquire_timeout_s"] = _DRAIN_POOL_ACQUIRE_TIMEOUT_S
+        if statement_contract_error:
+            failure_fields["statement_contract_error"] = True
+            _log.error("drain-local-queue-failed", **failure_fields)
+        else:
+            _log.warning("drain-local-queue-failed", **failure_fields)
         return 0
 
 
@@ -469,7 +540,7 @@ async def orchestrate_shutdown(
         # the release arm carries), the failure loud and the train
         # continuing.
         try:
-            await drain_local_queue_to_pending(deps, worker_id)
+            await drain_local_queue_to_pending(deps, worker_id, call_site="draining_phase")
         except Exception as exc:
             _log.error(
                 "drain-phase-failed",

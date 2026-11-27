@@ -317,13 +317,7 @@ class TestPollFallback:
         deps.dispatcher_pool = Mock()
         deps.notify_conn = Mock()
         # The producer's availability subtracts active jobs.
-        deps.active_jobs = Mock(
-            count=lambda: 0,
-            intent_count=lambda: 0,
-            held_ids=lambda: [],
-            mark_claimed=lambda jid: None,
-            resolve_claim=lambda jid, tok=None: None,
-        )
+        deps.active_jobs = _noop_active_jobs()
 
         mock_clock = Mock(spec=Clock)
         mock_clock.now.return_value = NotImplemented
@@ -397,13 +391,7 @@ class TestPollFallback:
         deps.dispatcher_pool = Mock()
         deps.notify_conn = Mock()
         # The producer's availability subtracts active jobs.
-        deps.active_jobs = Mock(
-            count=lambda: 0,
-            intent_count=lambda: 0,
-            held_ids=lambda: [],
-            mark_claimed=lambda jid: None,
-            resolve_claim=lambda jid, tok=None: None,
-        )
+        deps.active_jobs = _noop_active_jobs()
 
         mock_clock = Mock(spec=Clock)
         mock_clock.now.return_value = NotImplemented
@@ -479,6 +467,28 @@ class _NoopDrainPool:
         return self._Conn()
 
 
+def _noop_active_jobs() -> Mock:
+    """A Mock registry whose reads the producer and its exit hand-back need.
+
+    The hand-back binds ``held_claims()`` (pairs of job id and claim epoch),
+    the isolate path also reads ``queued_claims()``, availability reads
+    ``count()``/``intent_count()``, and a consumer take marks its claim's
+    epoch. An unconfigured attribute on a bare Mock
+    would hand the drain a non-iterable Mock instead of an empty snapshot.
+    """
+    return Mock(
+        all=list,
+        count=lambda: 0,
+        intent_count=lambda: 0,
+        held_ids=lambda: [],
+        queued_ids=lambda: [],
+        held_claims=lambda: [],
+        queued_claims=lambda: [],
+        mark_claimed=lambda jid, claim_epoch: None,
+        resolve_claim=lambda jid, tok=None: None,
+    )
+
+
 def _drain_capable(deps: Mock) -> None:
     """Give a Mock deps the reads the producer makes: the exit
     hand-back's two (``active_jobs`` / ``dispatcher_pool``), the
@@ -486,14 +496,7 @@ def _drain_capable(deps: Mock) -> None:
     hand-back's disowned exclusion (the production field is a plain
     ``set[UUID]``; a bare Mock is not iterable and the drain's
     ``sorted(deps.disowned_jobs)`` would raise)."""
-    deps.active_jobs = Mock(
-        all=list,
-        count=lambda: 0,
-        intent_count=lambda: 0,
-        held_ids=lambda: [],
-        mark_claimed=lambda jid: None,
-        resolve_claim=lambda jid, tok=None: None,
-    )
+    deps.active_jobs = _noop_active_jobs()
     deps.dispatcher_pool = _NoopDrainPool()
     deps.disowned_jobs = set()
 
@@ -600,13 +603,7 @@ class TestEagerRecheck:
         deps.dispatcher_pool = Mock()
         deps.notify_conn = Mock()
         # The producer's availability subtracts active jobs.
-        deps.active_jobs = Mock(
-            count=lambda: 0,
-            intent_count=lambda: 0,
-            held_ids=lambda: [],
-            mark_claimed=lambda jid: None,
-            resolve_claim=lambda jid, tok=None: None,
-        )
+        deps.active_jobs = _noop_active_jobs()
 
         mock_clock = Mock(spec=Clock)
         mock_clock.now.return_value = NotImplemented
@@ -682,13 +679,7 @@ class TestNotifyDisabled:
         deps.dispatcher_pool = Mock()
         deps.notify_conn = Mock()
         # The producer's availability subtracts active jobs.
-        deps.active_jobs = Mock(
-            count=lambda: 0,
-            intent_count=lambda: 0,
-            held_ids=lambda: [],
-            mark_claimed=lambda jid: None,
-            resolve_claim=lambda jid, tok=None: None,
-        )
+        deps.active_jobs = _noop_active_jobs()
 
         mock_clock = Mock(spec=Clock)
         mock_clock.now.return_value = NotImplemented
@@ -837,13 +828,7 @@ def mock_deps() -> tuple[Mock, PostgresBackend]:
     deps.dispatcher_pool = Mock()
     deps.notify_conn = Mock()
     # The producer's availability subtracts active jobs.
-    deps.active_jobs = Mock(
-        count=lambda: 0,
-        intent_count=lambda: 0,
-        held_ids=lambda: [],
-        mark_claimed=lambda jid: None,
-        resolve_claim=lambda jid, tok=None: None,
-    )
+    deps.active_jobs = _noop_active_jobs()
 
     mock_clock = Mock(spec=Clock)
     mock_clock.now.return_value = NotImplemented

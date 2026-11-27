@@ -234,7 +234,7 @@ async def test_phase_ordering_and_backend_calls(monkeypatch: pytest.MonkeyPatch)
     assert result == 0
     assert shut_event.is_set()
 
-    mock_drain.assert_called_once_with(deps, worker_id)
+    mock_drain.assert_called_once_with(deps, worker_id, call_site="draining_phase")
 
     for job in (job_a, job_b):
         assert job.ctx.cancel_event.is_set()
@@ -1098,7 +1098,9 @@ async def test_draining_failure_does_not_skip_cancelling_forcing_releasing(
     settings = _worker_settings(cancellation_grace=0.1, cleanup_grace=0.1)
     deps = _make_deps(registry=registry, settings=settings)
 
-    async def _non_transient_drain_failure(d: WorkerDeps, w: UUID) -> int:
+    async def _non_transient_drain_failure(
+        d: WorkerDeps, w: UUID, *, call_site: str = "shutdown"
+    ) -> int:
         raise RuntimeError("schema dropped mid-drain")
 
     monkeypatch.setattr(shutdown_mod, "drain_local_queue_to_pending", _non_transient_drain_failure)

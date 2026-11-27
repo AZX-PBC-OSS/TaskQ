@@ -1397,11 +1397,11 @@ async def test_the_ladder_stops_dispatch_before_the_hand_back(
     observed_phase: list[ShutdownPhase] = []
     producer_stopped_at_drain: list[bool] = []
 
-    async def _recording_drain(d: WorkerDeps, w: UUID) -> int:
+    async def _recording_drain(d: WorkerDeps, w: UUID, *, call_site: str = "shutdown") -> int:
         order.append("hand_back")
         observed_phase.append(d.shutdown_phase)
         producer_stopped_at_drain.append(d.producer_stop_event.is_set())
-        return await drain_local_queue_to_pending(d, w)  # the real drain
+        return await drain_local_queue_to_pending(d, w, call_site=call_site)  # the real drain
 
     monkeypatch.setattr(shutdown_mod, "drain_local_queue_to_pending", _recording_drain)
 

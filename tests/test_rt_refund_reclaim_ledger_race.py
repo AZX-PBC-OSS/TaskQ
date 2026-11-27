@@ -579,6 +579,7 @@ async def test_isolate_self_fences_the_refund_commit_inside_the_select_update_wi
                 _SELECT_RUNNING_JOBS_SQL_TEMPLATE.format(schema=schema),
                 worker_id,
                 [],
+                [],
             )
             assert [r["id"] for r in snapshot] == [job_id]
             assert snapshot[0]["attempt"] == 1

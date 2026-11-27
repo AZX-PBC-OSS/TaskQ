@@ -19,17 +19,25 @@ known.
 
 ### 1.1 `ActiveJobRegistry` mutation keys (`worker/cancel.py`)
 
-Shared by: `_consumer.py` (register, the unconditional-finally deregister),
-`worker/run.py` (stub consumer register/deregister; producer
-`mark_enqueued`/`mark_claimed`/`resolve_claim`), `heartbeat.py`
-(`held_ids`/`queued_ids` for the reconcile), `shutdown.py`
-(`held_ids` for the hand-back), `cancel.py` (the drain's deregister).
+Shared by: `_consumer.py` (register, the unconditional-finally deregister,
+`get` on the disown path), `worker/run.py` (`producer_loop`:
+`mark_enqueued` plus the `count`/`intent_count` slot arithmetic;
+`consumer_loop_stub`: `mark_claimed`/`resolve_claim` plus its own
+`register`/`deregister`; `di_consumer_loop`: `mark_claimed`/`resolve_claim`;
+`_dispatch_flow_job`: `register`/`deregister`),
+`heartbeat.py` (`held_ids`/`queued_ids` for the reconcile, and
+`held_claims`/`queued_claims` for the isolate re-pend, plus `all`),
+`shutdown.py` (`held_claims` for the hand-back, plus `all`/`count` across the
+phases), `cancel.py` (`_CancelController`'s `held_ids`/`queued_ids`/`get`/`all`
+reads, and the drain's deregister).
 
 | seam / caller | interleaving | invariant | pin |
 |---|---|---|---|
 | `deregister(job_id)` on bare id, stale attempt exiting after a same-worker re-claim | attempt A's finally runs after attempt B overwrote the key | the popped entry must be the CALLER's; a live attempt's registration survives a stale exit; `held_ids()` still names the row | `test_cancel_registry.py::test_stale_attempt_exit_evicts_live_attempt` |
-| `resolve_claim(job_id)` / `mark_claimed(job_id)` on bare id, same re-claim overlap | A's `resolve_claim` lands inside B's take-to-register window; the intent map (the only fence over that window) loses the id before B's `register` covers it | every window of the claim-to-register chain is fenced by exactly one map; a stale attempt's exit cannot unfence a live attempt's row against the hand-back and reconcile passes | no pin (the intent hand-back stays bare-id; the fix shape is the same identity-scoping the deregister row has) |
-| `register` absorbing the intent, the queued-to-intent transition | take lands between the drain's snapshot and its UPDATE | `mark_claimed` moves coverage queued to intents with no gap; `queued_ids()` and `held_ids()` partition the two windows | `test_cancel_registry.py::test_mark_enqueued_parks_the_id_until_the_take`, `::test_mark_enqueued_is_idempotent_per_take_cycle` |
+| `resolve_claim(job_id)` / `mark_claimed(job_id)` on bare id, same re-claim overlap | A's `resolve_claim` lands inside B's take-to-register window, or A's delayed stale take is marked after B's newer take | every window of the claim-to-register chain is fenced by exactly one map; a stale attempt's exit or take cannot unfence a live attempt's row against the hand-back and reconcile passes | `test_attack_bare_key_lookups.py` (the identity-scoped resolve), `test_rt_shutdown_reclaim_handback_race.py::test_stale_take_cannot_displace_newer_claim_intent`, `test_cancel_registry.py::test_stale_take_preserves_a_newer_queued_claim` |
+| the hand-back and isolate exclusion arrays, stale attempt of a row the same worker re-claimed | A (`claim_epoch = E_N`) is still registered when the same worker claims the row again at `E_{N+1}`; a row-scoped exclusion spares the newer claim too | the exclusion names the claim, not the row: `held_claims()`/`queued_claims()` pair every holder with its epoch, so only an exactly-held `(job_id, claim_epoch)` is spared and the newer unstarted claim is re-pended | `test_rt_shutdown_reclaim_handback_race.py`, `test_rt_isolate_join_window_claim.py::test_stale_attempt_registration_does_not_shield_a_newer_claim_epoch`, `test_cancel_registry.py::test_held_claims_pairs_each_holder_with_its_own_claim_epoch` |
+| a claim round committing after the draining stop | the round's rows reach the producer after `producer_stop_event` is set, with no consumer left to take them | the claim is kept (it is the only pass left that can release it), skipped into the exit hand-back rather than parked in `local_queue`/the queued map, and re-pended there; a bare `shutdown_event` exit still enqueues | `test_rt_shutdown_reclaim_handback_race.py::test_claim_committing_at_the_draining_stop_is_handed_back_not_queued`, `::test_claim_committing_at_a_bare_shutdown_stop_is_still_queued` |
+| `register` absorbing the intent, the queued-to-intent transition | a take lands between the drain's snapshot and its UPDATE, or a stale registration lands after a newer take/registration | `mark_claimed` moves each claim's coverage queued to intents with no gap; `register` absorbs only an intent at its own epoch and never overwrites a newer registered epoch | `test_cancel_registry.py::test_mark_enqueued_parks_the_id_until_the_take`, `::test_mark_enqueued_is_idempotent_per_take_cycle`, `test_rt_shutdown_reclaim_handback_race.py::test_stale_registration_cannot_displace_newer_claim_coverage` |
 | snapshot atomicity of `all()` | register/deregister concurrent with an iterate | `all()` returns an independent copy; no await inside; concurrent register/deregister leaves the map consistent | `test_cancel_registry.py::test_all_returns_snapshot`, `::test_concurrent_register_deregister_atomicity` |
 
 ### 1.2 `WorkerDeps.disowned_jobs`
@@ -91,7 +99,7 @@ separate phases).
 
 | seam / caller | interleaving | invariant | pin |
 |---|---|---|---|
-| shutdown hand-back exclusion core (`drain_local_queue_to_pending`), callers: the DRAINING pass, the producer's exit pass | a claim round commits after the DRAINING pass | held ids excluded; the producer's exit pass is the last write; idempotent across the two passes | `test_shutdown_drain.py::test_drain_excludes_jobs_a_consumer_is_already_executing`, `::test_drain_hands_back_at_most_once_across_repeated_calls`, `test_rt_execloop_ignores_producer_stop.py` |
+| shutdown hand-back exclusion core (`drain_local_queue_to_pending`), callers: the DRAINING pass, the producer's exit pass | a claim round commits after the DRAINING pass | exact held `(job_id, claim_epoch)` pairs excluded; the producer's exit pass is the last write; idempotent across the two passes | `test_shutdown_drain.py::test_drain_excludes_jobs_a_consumer_is_already_executing`, `::test_drain_hands_back_at_most_once_across_repeated_calls`, `test_rt_execloop_ignores_producer_stop.py` |
 | the hand-back's cancel fence | an operator cancel lands between the operator's write and the drain | a row with `cancel_phase != 0` is NEVER re-pended by the deploy path; it stays with the ladder | `test_seam_audit_pins.py::test_drain_handback_keeps_the_cancel_fence_in_both_statement_shapes` |
 | the hand-back's attempt refund | a claim that never reached an actor | the refund (floored, exactly-once across the two passes); a never-ran job cannot reach a terminal state | `test_shutdown_handback_retry_budget.py::test_a_job_handed_back_by_shutdown_keeps_its_full_retry_budget`, `::test_a_job_that_never_ran_cannot_reach_a_terminal_state` |
 | the DRAINING both-done turn | the consumer's get TAKES a row as the drain begins | the stale local copy is not executed; the hand-back owns the row | `test_rt_execloop_ignores_producer_stop.py`, `test_rt_execloop_consumer_both_done_drop.py` |
@@ -205,8 +213,7 @@ execution there are never two live claims on one key.
 
 ## What remains open
 
-Four rows read "no pin": the `resolve_claim`/`mark_claimed` bare-id intent
-mutation (section 1.1), the cancel ladder's detach-delivery shape
+Three rows read "no pin": the cancel ladder's detach-delivery shape
 (section 4), the reconcile's claim-time attempt refund (section 6.1),
 and the tx-path SystemExit task boundary (section 6.1).
 Each row states the invariant and the pin's shape; a PR touching those

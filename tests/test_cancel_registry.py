@@ -35,8 +35,12 @@ class _FakePayload(BaseModel):
     """Minimal payload model for registry tests."""
 
 
-def _make_ctx(job_id: UUID) -> JobContext[BaseModel]:
-    """Create a minimal JobContext for registry test purposes."""
+def _make_ctx(job_id: UUID, claim_epoch: int = 1) -> JobContext[BaseModel]:
+    """Create a minimal JobContext for registry test purposes.
+
+    Defaults to the epoch a row's first claim stamps: epoch 0 is the one value
+    no claim can produce, so it would make every entry read as unclaimed.
+    """
     from datetime import UTC, datetime
 
     from taskq.testing.clock import FakeClock
@@ -49,7 +53,7 @@ def _make_ctx(job_id: UUID) -> JobContext[BaseModel]:
         actor="test",
         queue="default",
         attempt=1,
-        claim_epoch=0,
+        claim_epoch=claim_epoch,
         worker_id=new_uuid(),
         payload=_FakePayload(),
         jobs=SubJobEnqueuer(
@@ -352,14 +356,15 @@ async def test_mark_enqueued_parks_the_id_until_the_take() -> None:
     registry = ActiveJobRegistry()
     job_id = new_job_id()
 
-    registry.mark_enqueued(job_id)
+    registry.mark_enqueued(job_id, 1)
     assert registry.queued_ids() == [job_id]
     assert job_id not in registry.held_ids()
 
     # The consumer's take: queued coverage becomes intent coverage.
-    registry.mark_claimed(job_id)
+    registry.mark_claimed(job_id, 1)
     assert registry.queued_ids() == []
     assert job_id in registry.held_ids()
+    assert registry.held_claims() == [(job_id, 1)]
 
 
 async def test_mark_enqueued_is_idempotent_per_take_cycle() -> None:
@@ -369,8 +374,8 @@ async def test_mark_enqueued_is_idempotent_per_take_cycle() -> None:
     registry = ActiveJobRegistry()
     job_id = new_job_id()
 
-    registry.mark_enqueued(job_id)
-    registry.mark_claimed(job_id)
+    registry.mark_enqueued(job_id, 1)
+    registry.mark_claimed(job_id, 1)
     task = _make_task()
     ctx = _make_ctx(job_id)
     entry = await registry.register(job_id, task, ctx)
@@ -420,7 +425,7 @@ async def test_stale_attempt_exit_evicts_live_attempt() -> None:
         entry_a = await registry.register(job_id, task_a, _make_ctx(job_id))
 
         # Lease lapse + same-worker re-claim: attempt B overwrites the key.
-        await registry.register(job_id, task_b, _make_ctx(job_id))
+        await registry.register(job_id, task_b, _make_ctx(job_id, claim_epoch=2))
         assert registry.get(job_id) is not entry_a  # B holds the key now
 
         # Attempt A's exit path: the consumer's finally deregisters with
@@ -441,3 +446,83 @@ async def test_stale_attempt_exit_evicts_live_attempt() -> None:
             t.cancel()
             with pytest.raises((asyncio.CancelledError, Exception)):
                 await t
+
+
+# ── Claim identity: the hand-back exclusion names (row, epoch) ────────────
+
+
+async def test_held_claims_pairs_each_holder_with_its_own_claim_epoch() -> None:
+    """A stale attempt and a live claim of the same row are different claims.
+
+    The exits unwind in either order, so at one instant the registry can
+    hold ``J`` at two claim epochs at once: attempt A registered (epoch 1)
+    while a sibling claim of ``J`` at epoch 2 stands as an intent. The
+    hand-back scopes its SQL exclusion to the pair, so the snapshot must
+    carry both - a snapshot that reported one epoch per row would either
+    let the stale attempt shield the live claim (the row strands running
+    and locked to a worker that exits cleanly) or re-pend a row a live
+    consumer holds (double execution).
+    """
+    registry = ActiveJobRegistry()
+    job_id = new_job_id()
+    other_id = new_job_id()
+    task = _make_task()
+    try:
+        await registry.register(job_id, task, _make_ctx(job_id, claim_epoch=1))
+        registry.mark_enqueued(other_id, 3)
+        registry.mark_claimed(other_id, 3)
+        # The same row claimed again at a newer epoch while the older
+        # attempt is still registered: both pairs must survive.
+        registry.mark_claimed(job_id, 2)
+
+        assert sorted(registry.held_claims(), key=lambda pair: (str(pair[0]), pair[1])) == sorted(
+            [(job_id, 1), (job_id, 2), (other_id, 3)],
+            key=lambda pair: (str(pair[0]), pair[1]),
+        )
+        assert registry.queued_claims() == []
+    finally:
+        task.cancel()
+        with pytest.raises((asyncio.CancelledError, Exception)):
+            await task
+
+
+async def test_queued_claims_carry_the_epoch_the_producer_stamped() -> None:
+    """The parked row's claim identity follows it into the take.
+
+    ``isolate_self`` excludes queued rows too, and it needs the epoch the
+    producer stamped: a parked re-claim of a row an older attempt still
+    holds must not be spared by that older attempt's epoch.
+    """
+    registry = ActiveJobRegistry()
+    job_id = new_job_id()
+
+    registry.mark_enqueued(job_id, 2)
+    assert registry.queued_claims() == [(job_id, 2)]
+
+    token = registry.mark_claimed(job_id, 2)
+    assert registry.queued_claims() == [], "the take moves coverage to the intent map"
+    assert registry.held_claims() == [(job_id, 2)]
+
+    registry.resolve_claim(job_id, token)
+    assert registry.held_claims() == []
+
+
+def test_stale_take_preserves_a_newer_queued_claim() -> None:
+    """A stale local copy's take must not unpark the newer re-claim's fence.
+
+    The older consumer can resume its post-get cleanup after the producer has
+    queued epoch 2. Its epoch-1 take is not the epoch-2 row's take, so it must
+    leave that newer queued coverage intact; otherwise the lost-claim reconcile
+    can eventually disown a row still waiting in the local queue.
+    """
+    registry = ActiveJobRegistry()
+    job_id = new_job_id()
+    registry.mark_enqueued(job_id, 2)
+
+    stale_token = registry.mark_claimed(job_id, 1)
+
+    assert registry.queued_claims() == [(job_id, 2)], (
+        "the stale take removed the newer queued claim's only coverage"
+    )
+    registry.resolve_claim(job_id, stale_token)
+    assert registry.queued_claims() == [(job_id, 2)]
