@@ -396,6 +396,15 @@ class _Generation:
         produced = self.binding.invoke()
         if inspect.isawaitable(produced):
             produced = await produced
+        if inspect.isasyncgen(produced):
+            # A decorator can hide an async-generator function from
+            # ``inspect.isasyncgenfunction`` while preserving its annotations.
+            # The actual generator still has the context-manager lifecycle:
+            # enter it for its yielded product instead of injecting the
+            # generator itself. An @asynccontextmanager product is already a
+            # context manager and does not take this arm.
+            generator = cast("AsyncGenerator[object, None]", produced)
+            produced = contextlib.asynccontextmanager(lambda: generator)()
         enter = getattr(produced, "__aenter__", None)
         exit_ = getattr(produced, "__aexit__", None)
         if callable(enter) and callable(exit_):
@@ -453,15 +462,22 @@ class DepsResolver:
         return self._entry.generation
 
     @contextlib.asynccontextmanager
-    async def body(self, *, workflow: str | None = None) -> AsyncGenerator[object, None]:
+    async def body(
+        self,
+        *,
+        workflow: str | None = None,
+        on_acquire: Callable[[Generation], None] | None = None,
+    ) -> AsyncGenerator[object, None]:
         """The current generation's instance, held for one body invocation.
 
         The hold is taken in the same suspension-free step as the resolution,
         so a rotation either sees this body (and drains it) or answers it with
-        the new generation — never a closed instance in between.
+        the new generation — never a closed instance in between. The optional
+        acquisition observer names the entry actually attempted, including a
+        retry after rotation, for a telemetry-owning caller.
         """
         del workflow
-        entry, instance = await self._acquire()
+        entry, instance = await self._acquire(on_acquire=on_acquire)
         entry.lease()
         try:
             yield instance
@@ -534,10 +550,10 @@ class DepsResolver:
             )
         self._entry = _Generation(self._binding, target)
         self._draining.append(current)
-        had_instance = current.resolved
         try:
             drained = await current.drain(drain_timeout)
-            error = (await current.aclose(release_timeout)).error
+            release = await current.aclose(release_timeout)
+            error = release.error
         finally:
             # A cancelled rotation (a shutdown arriving mid-drain) leaves the
             # superseded generation listed so the owner's aclose() releases it.
@@ -547,7 +563,7 @@ class DepsResolver:
             rotated=True,
             generation=target,
             previous_generation=current.generation,
-            had_instance=had_instance,
+            had_instance=release.had_instance,
             drained=drained,
             error=error,
         )
@@ -592,13 +608,17 @@ class DepsResolver:
             releases.append(await entry.aclose(release_timeout))
         return releases
 
-    async def _acquire(self) -> tuple[_Generation, object]:
+    async def _acquire(
+        self, *, on_acquire: Callable[[Generation], None] | None = None
+    ) -> tuple[_Generation, object]:
         """The current generation and its instance, retrying on the new
         generation when a rotation supersedes this claim's resolution."""
         while True:
             if self._closed:
                 raise _closed_error()
             entry = self._entry
+            if on_acquire is not None:
+                on_acquire(entry.generation)
             try:
                 return entry, await entry.get()
             except _DepsOwnerClosedError:

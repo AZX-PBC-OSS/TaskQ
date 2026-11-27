@@ -747,6 +747,172 @@ def test_a_claim_mid_resolution_across_a_rotation_gets_the_new_generation() -> N
     asyncio.run(_scenario())
 
 
+def test_a_first_resolution_finishing_inside_the_drain_keeps_its_generation_identity() -> None:
+    """A first claim can be inside its factory when reload swaps the entry.
+    If that factory finishes inside the drain bound, its body uses generation
+    0 and that now-resolved instance is the one rotation releases. Both
+    lifecycle events must name generation 0, and the later generation-1 body
+    must still get its own resolution event."""
+    entered = asyncio.Event()
+    permit_first = asyncio.Event()
+
+    async def _gated_probe() -> _Probe:
+        generation = _GENERATION[0]
+        _PRODUCED[0] += 1
+        entered.set()
+        await permit_first.wait()
+        return _Probe(asyncio.get_running_loop(), generation)
+
+    binding = DepsFactory(_gated_probe, generation=_declared_generation)
+    worker_id = new_uuid()
+
+    async def _scenario() -> None:
+        resolution = scope.prepare_worker_deps(
+            binding, workflow="wf-first-resolution-drain", worker_id=worker_id
+        )
+
+        async def _claim() -> int:
+            async with (
+                resolution.hold(),
+                resolution.body(workflow="wf-first-resolution-drain") as instance,
+            ):
+                return cast("_Probe", instance).generation
+
+        claim = asyncio.create_task(_claim())
+        await asyncio.wait_for(entered.wait(), timeout=5.0)
+        _GENERATION[0] = 1
+        with structlog.testing.capture_logs() as logs:
+            rotation = asyncio.create_task(resolution.rotate(drain_timeout=30.0))
+            await asyncio.wait_for(_SIGNALS[0].generation_read.wait(), timeout=5.0)
+            permit_first.set()
+            assert await asyncio.wait_for(claim, timeout=5.0) == 0
+            report = await asyncio.wait_for(rotation, timeout=5.0)
+
+            assert report.rotated and report.drained and report.had_instance
+            assert _RELEASES == [0]
+            resolved = [e for e in logs if e["event"] == "workflow-deps-resolved"]
+            assert [e["generation"] for e in resolved] == [0], resolved
+            torn = [e for e in logs if e["event"] == "workflow-deps-torn-down"]
+            assert [e["generation"] for e in torn] == [0], torn
+
+            await _resolved(resolution)
+            resolved = [e for e in logs if e["event"] == "workflow-deps-resolved"]
+            assert [e["generation"] for e in resolved] == [0, 1], resolved
+
+        await scope.teardown_worker_deps(worker_id)
+        assert _RELEASES == [0, 1]
+
+    asyncio.run(_scenario())
+
+
+def test_overlapping_old_and_new_first_resolutions_each_report_once() -> None:
+    """The new generation can finish resolving before an older factory call.
+    Reporting must be tracked per live generation, not by one last-reported
+    scalar: both instances report once, and reusing the new one adds nothing."""
+    entered = asyncio.Event()
+    permit_first = asyncio.Event()
+
+    async def _gated_probe() -> _Probe:
+        generation = _GENERATION[0]
+        _PRODUCED[0] += 1
+        if _PRODUCED[0] == 1:
+            entered.set()
+            await permit_first.wait()
+        return _Probe(asyncio.get_running_loop(), generation)
+
+    binding = DepsFactory(_gated_probe, generation=_declared_generation)
+    worker_id = new_uuid()
+
+    async def _scenario() -> None:
+        resolution = scope.prepare_worker_deps(
+            binding, workflow="wf-out-of-order-resolution", worker_id=worker_id
+        )
+
+        async def _old_claim() -> int:
+            async with (
+                resolution.hold(),
+                resolution.body(workflow="wf-out-of-order-resolution") as instance,
+            ):
+                return cast("_Probe", instance).generation
+
+        old_claim = asyncio.create_task(_old_claim())
+        await asyncio.wait_for(entered.wait(), timeout=5.0)
+        _GENERATION[0] = 1
+        with structlog.testing.capture_logs() as logs:
+            rotation = asyncio.create_task(resolution.rotate(drain_timeout=30.0))
+            await asyncio.wait_for(_SIGNALS[0].generation_read.wait(), timeout=5.0)
+            assert cast("_Probe", await _resolved(resolution)).generation == 1
+            permit_first.set()
+            assert await asyncio.wait_for(old_claim, timeout=5.0) == 0
+            report = await asyncio.wait_for(rotation, timeout=5.0)
+            assert report.had_instance
+            await _resolved(resolution)
+
+        resolved = [e for e in logs if e["event"] == "workflow-deps-resolved"]
+        assert [e["generation"] for e in resolved] == [1, 0], resolved
+        assert _RELEASES == [0]
+        await scope.teardown_worker_deps(worker_id)
+        assert _RELEASES == [0, 1]
+
+    asyncio.run(_scenario())
+
+
+def test_a_failed_old_generation_acquisition_reports_the_attempted_generation() -> None:
+    """A factory failure racing reload belongs to the entry that attempted
+    it, not to the generation that happens to be current when the error is
+    logged. The next claim still resolves and reports the new generation."""
+    entered = asyncio.Event()
+    permit_first = asyncio.Event()
+
+    async def _gated_probe() -> _Probe:
+        generation = _GENERATION[0]
+        _PRODUCED[0] += 1
+        if _PRODUCED[0] == 1:
+            entered.set()
+            await permit_first.wait()
+            raise RuntimeError("old generation factory exploded")
+        return _Probe(asyncio.get_running_loop(), generation)
+
+    binding = DepsFactory(_gated_probe, generation=_declared_generation)
+    worker_id = new_uuid()
+
+    async def _scenario() -> None:
+        resolution = scope.prepare_worker_deps(
+            binding, workflow="wf-failed-old-resolution", worker_id=worker_id
+        )
+
+        async def _claim() -> None:
+            async with (
+                resolution.hold(),
+                resolution.body(workflow="wf-failed-old-resolution"),
+            ):
+                pass
+
+        claim = asyncio.create_task(_claim())
+        await asyncio.wait_for(entered.wait(), timeout=5.0)
+        _GENERATION[0] = 1
+        with structlog.testing.capture_logs() as logs:
+            rotation = asyncio.create_task(resolution.rotate(drain_timeout=30.0))
+            await asyncio.wait_for(_SIGNALS[0].generation_read.wait(), timeout=5.0)
+            permit_first.set()
+            with pytest.raises(RuntimeError, match="old generation factory exploded"):
+                await asyncio.wait_for(claim, timeout=5.0)
+            report = await asyncio.wait_for(rotation, timeout=5.0)
+            assert report.rotated and report.drained and not report.had_instance
+
+            failure = next(e for e in logs if e["event"] == "workflow-deps-resolve-failed")
+            assert failure["generation"] == 0, failure
+            assert cast("_Probe", await _resolved(resolution)).generation == 1
+
+        resolved = [e for e in logs if e["event"] == "workflow-deps-resolved"]
+        assert [e["generation"] for e in resolved] == [1], resolved
+        assert _RELEASES == []
+        await scope.teardown_worker_deps(worker_id)
+        assert _RELEASES == [1]
+
+    asyncio.run(_scenario())
+
+
 def test_a_failing_replacement_factory_is_reported_and_recovers() -> None:
     """The new generation's factory raising surfaces with its cause (the
     attempt's verdict is the body's), caches nothing, and the next claim
@@ -1165,8 +1331,9 @@ async def test_a_static_parent_reload_rotates_its_factory_bound_child(
 
 async def test_the_direct_door_tolerates_a_child_created_during_reload() -> None:
     """A concurrent drive may add a child runner while reload is draining an
-    earlier child. The ownership walk must iterate a stable snapshot rather
-    than fail with ``dictionary changed size during iteration``."""
+    earlier child. The ownership walk must neither fail with ``dictionary
+    changed size during iteration`` nor return while that late child's live
+    generation remains unrotated and undrained."""
     reads = 0
     child_rotation_started = asyncio.Event()
 
@@ -1187,17 +1354,38 @@ async def test_the_direct_door_tolerates_a_child_created_during_reload() -> None
     _GENERATION[0] = 1
     reload_task = asyncio.create_task(root.reload_deps(drain_timeout=30.0))
     lease_open = True
+    second_lease: Any = None
+    second_lease_open = False
     try:
         await asyncio.wait_for(child_rotation_started.wait(), timeout=5.0)
         second_child = FlowRunner(compiled, cast("Any", object()), "unused_schema")
         root._child_runners["second"] = second_child  # pyright: ignore[reportPrivateUsage]
+        second_lease = second_child._deps_scope(_deps_body, 1)  # pyright: ignore[reportPrivateUsage]
+        await second_lease.__aenter__()
+        second_lease_open = True
+
         await lease.__aexit__(None, None, None)
         lease_open = False
+        await wait_for_condition(
+            lambda: reload_task.done() or reads >= 3,
+            description="the reload either reached the late child or returned without it",
+            timeout=5.0,
+        )
+        assert not reload_task.done(), (
+            "reload returned while the child created during its walk still held an unrotated lease"
+        )
+        await second_lease.__aexit__(None, None, None)
+        second_lease_open = False
         report = await asyncio.wait_for(reload_task, timeout=5.0)
-        assert report.rotated
+        assert report.rotated and report.drained
+        assert _RELEASES == [0, 1], (
+            f"both the original and late-created child's instances released once: {_RELEASES}"
+        )
     finally:
         if lease_open:
             await lease.__aexit__(None, None, None)
+        if second_lease_open:
+            await second_lease.__aexit__(None, None, None)
         await asyncio.gather(reload_task, return_exceptions=True)
         await root.aclose()
 

@@ -110,10 +110,12 @@ class WorkerDepsResolution:
         #: instance serves every workflow, so that trigger labels both halves.
         self._workflow = workflow
         self._worker_id = worker_id
-        #: the generation whose resolution this entry has already reported
-        #: (``None`` before the first). A rotation of a reported generation
-        #: clears it, so the rotated-in instance reports its own first use.
-        self._reported: Generation | None = None
+        #: generations whose current instances have reported resolution. Old
+        #: and new first resolutions can overlap during a rotation, so one
+        #: scalar "last reported" value would suppress or duplicate events.
+        #: Rotation discards the superseded generation, allowing a later
+        #: generation cycle back to that value to report its new instance.
+        self._reported: set[Generation] = set()
         self._closed = False
 
     @property
@@ -143,13 +145,21 @@ class WorkerDepsResolution:
         body or answers the claim from the new generation.
         """
         resolving_workflow = self._workflow if workflow is None else workflow
+        acquired_generation = self.generation
+
+        def _note_acquisition(generation: Generation) -> None:
+            nonlocal acquired_generation
+            acquired_generation = generation
+
         async with contextlib.AsyncExitStack() as lease:
             try:
-                instance = await lease.enter_async_context(self._resolver.body())
+                instance = await lease.enter_async_context(
+                    self._resolver.body(on_acquire=_note_acquisition)
+                )
             except Exception as exc:
-                self._log_resolve_failed(resolving_workflow, exc)
+                self._log_resolve_failed(resolving_workflow, exc, acquired_generation)
                 raise
-            self._report_resolved(resolving_workflow)
+            self._report_resolved(resolving_workflow, acquired_generation)
             yield instance
 
     @contextlib.asynccontextmanager
@@ -185,7 +195,7 @@ class WorkerDepsResolution:
                 rotated=False,
                 generation=self.generation,
                 previous_generation=self.generation,
-                had_instance=self._reported == self.generation,
+                had_instance=self.generation in self._reported,
                 drained=True,
                 error=exc,
             )
@@ -220,12 +230,7 @@ class WorkerDepsResolution:
                     drain_timeout=drain_timeout,
                 )
             return report
-        if self._reported == report.previous_generation:
-            # The rotated-out generation was the one reported; the new one
-            # reports its own first resolution. (A body that already resolved
-            # the new generation during the drain has set ``_reported`` to it,
-            # and keeps that one report.)
-            self._reported = None
+        self._reported.discard(report.previous_generation)
         if not report.drained:
             logger.warning(
                 "workflow-deps-drain-timeout",
@@ -302,14 +307,13 @@ class WorkerDepsResolution:
         )
         record_workflow_deps_torn_down(self._workflow, generation, failed=False)
 
-    def _report_resolved(self, workflow: str) -> None:
-        """Report a generation's first resolution (and adopt its workflow
-        label). One event per generation: a rotated-in instance reports itself
-        on its own first use."""
-        generation = self._resolver.generation
-        if self._reported == generation:
+    def _report_resolved(self, workflow: str, generation: Generation) -> None:
+        """Report the acquired generation's first resolution (and adopt its
+        workflow label). Overlapping old/new acquisitions each report once;
+        a rotated-in generation reports itself on its own first use."""
+        if generation in self._reported:
             return
-        self._reported = generation
+        self._reported.add(generation)
         self._workflow = workflow
         logger.info(
             "workflow-deps-resolved",
@@ -319,12 +323,14 @@ class WorkerDepsResolution:
         )
         record_workflow_deps_resolved(workflow, generation)
 
-    def _log_resolve_failed(self, workflow: str, exc: BaseException) -> None:
+    def _log_resolve_failed(
+        self, workflow: str, exc: BaseException, generation: Generation
+    ) -> None:
         logger.error(
             "workflow-deps-resolve-failed",
             workflow=workflow,
             worker_id=str(self._worker_id),
-            generation=self.generation,
+            generation=generation,
             error_class=safe_type_name(exc),
             error=safe_exception_message(exc),
             exc_info=exc,

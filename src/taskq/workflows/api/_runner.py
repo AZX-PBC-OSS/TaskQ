@@ -1390,14 +1390,24 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
 
         The ownership walk mirrors :meth:`aclose`: a parent is the only public
         handle reaching child runners its drive created, regardless of which
-        app declared each child's factory.
+        app declared each child's factory. Children registered while an
+        earlier child's rotation is awaiting must also rotate before this
+        reload returns; a one-time snapshot would leave them stale.
         """
         reports: list[DepsRotation] = []
         resolver = self._deps_resolver
         if self._owns_deps_resolution and resolver is not None:
             reports.append(await resolver.rotate(drain_timeout=drain_timeout))
-        for child in list(self._child_runners.values()):
-            reports.extend(await child._rotate_owned_deps(drain_timeout))
+        visited: set[str] = set()
+        while True:
+            children = [
+                (key, child) for key, child in self._child_runners.items() if key not in visited
+            ]
+            if not children:
+                break
+            for key, child in children:
+                visited.add(key)
+                reports.extend(await child._rotate_owned_deps(drain_timeout))
         return reports
 
     def _body_deadline_seconds(self, row: dict[str, Any]) -> float | None:

@@ -31,6 +31,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import enum
+import functools
 from collections.abc import AsyncGenerator, Awaitable, Callable
 from contextlib import AbstractAsyncContextManager
 from dataclasses import dataclass
@@ -579,6 +580,30 @@ async def test_each_shape_sets_up_before_the_body_and_tears_down_once(
     # idempotent: a repeated close attempts nothing further.
     await runner.aclose()
     assert _expected_events(shape) == _EVENTS, _EVENTS
+
+
+async def test_a_decorated_async_generator_factory_enters_and_finalizes(
+    wf_schema: str, wf_pool: asyncpg.Pool
+) -> None:
+    """A decorator using ``functools.wraps`` preserves the async-generator
+    declaration E12 reads. Resolution must still enter that generator and
+    inject its yielded resource rather than injecting the generator itself."""
+    _reset()
+
+    @functools.wraps(_make_probe_agen)
+    def decorated_factory() -> AsyncGenerator[_Probe, None]:
+        return _make_probe_agen()
+
+    app = WorkflowApp(deps_factory=decorated_factory)
+    runner = FlowRunner(app.get(_shape_workflow(app, "async-generator")), wf_pool, wf_schema)
+
+    async with runner:
+        flow_id = (await runner.create_flow()).flow_id
+        assert await runner.drive(flow_id) == "terminal"
+        assert await runner.result(flow_id) == {"ref": "d1:probe"}
+
+    assert _EVENTS == ["setup", "body", "exit"]
+    assert len(_INSTANCES) == 1 and isinstance(_INSTANCES[0], _Probe)
 
 
 async def test_aclose_disposes_without_the_context_manager(
@@ -1214,7 +1239,7 @@ def test_e10_still_owns_the_true_arity_mismatch_beside_a_factory() -> None:
 
 async def test_static_deps_arm_is_unchanged() -> None:
     """The static binding keeps its build-time check: a mismatched instance is
-    still refused, and a matching one still compiles and reaches the body."""
+    still refused, and a matching one compiles with that same instance bound."""
     orphan = WorkflowApp()
 
     @orphan.workflow("deps_factory_static_orphan")
