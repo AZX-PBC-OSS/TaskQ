@@ -42,6 +42,8 @@ import signal
 import types
 from collections.abc import AsyncIterator, Iterator
 from dataclasses import dataclass
+from pathlib import Path
+from urllib.parse import urlsplit, urlunsplit
 
 import asyncpg
 import pytest
@@ -49,7 +51,9 @@ import pytest_asyncio
 
 from taskq.settings import OIDCSettings, SAMLSettings, TaskQSettings
 from taskq.testing._shared_containers import (
+    claim_container_holders,
     invocation_state_dir,
+    release_container_holders,
     shared_service_pair,
     skip_test_without_docker,
 )
@@ -87,7 +91,6 @@ from taskq.testing.fixtures import (
     memory_jobs,
     module_jobs_app,
     module_pg_pool,
-    module_pg_schema,
     module_redis_url,
     private_redis_url,
     redis_container,
@@ -1207,7 +1210,19 @@ def pg_container(
     # (CI, the plain dev run), the shared per-invocation pair boots below.
     external_dsn = os.environ.get("TASKQ_TEST_PG_DSN")
     if external_dsn:
-        yield _PgContainerShim(dsn=external_dsn)
+        from filelock import FileLock
+
+        state_dir = invocation_state_dir(tmp_path_factory)
+        holder_key = f"pg-template:{_template_db_name(state_dir)}"
+        lock = FileLock(str(state_dir / _PG_TEMPLATE_LOCK_FILENAME))
+        with lock:
+            claim_container_holders((holder_key,), state_dir=state_dir)
+        try:
+            yield _PgContainerShim(dsn=external_dsn)
+        finally:
+            with lock:
+                if release_container_holders((holder_key,), state_dir=state_dir):
+                    _cleanup_template_db_locked(external_dsn, state_dir)
         return
     skip_test_without_docker()
     with shared_service_pair(invocation_state_dir(tmp_path_factory)) as services:
@@ -1329,8 +1344,228 @@ def _pg_clock_delta(base_dsn: str) -> float:
     return result[0]
 
 
+#: Fixed schema name pre-migrated inside the per-invocation Postgres template
+#: database. Every module gets its own isolated database via ``pg_dsn``, so
+#: cloning the template database gives ``module_pg_schema`` an already-migrated
+#: and seeded schema in ~20ms instead of replaying all SQL migrations per
+#: module. Deliberately not ``"taskq"`` (migration tests manually target
+#: ``schema="taskq"`` on ``pg_dsn``), starts with ``"tq_"``, matches
+#: ``_IDENT_RE``, and leaves ``schema_name[:-2] + "_b"`` (``"tq_m_b"``)
+#: distinct and valid for two-schema isolation tests.
+_PG_TEMPLATE_SCHEMA = "tq_mod"
+_PG_TEMPLATE_LOCK_FILENAME = "pg_template.lock"
+_PG_TEMPLATE_READY_FILENAME = "pg_template.ready"
+_PG_TEMPLATE_TOUCHED_FILENAME = "pg_template.touched"
+
+#: Set on the module node's stash by ``pg_dsn`` as ``(module_dsn, schema_name)``
+#: when the module's database was cloned from the pre-migrated template DB.
+_PG_TEMPLATE_SCHEMA_KEY: pytest.StashKey[tuple[str, str]] = pytest.StashKey()
+
+
+def _replace_dsn_database(dsn: str, db_name: str) -> str:
+    """Return *dsn* with its database path segment replaced by *db_name*.
+
+    Preserves scheme, credentials, host, port, query parameters (such as
+    ``?sslmode=require``), and fragment.
+    """
+    parts = urlsplit(dsn)
+    return urlunsplit(parts._replace(path=f"/{db_name}"))
+
+
+def _atomic_write_text(path: Path, text: str) -> None:
+    """Write *text* via a PID-unique sibling temp file and ``os.replace``."""
+    tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
+    try:
+        tmp.write_text(text, encoding="utf-8")
+        os.replace(tmp, path)
+    except BaseException:
+        with contextlib.suppress(OSError):
+            tmp.unlink()
+        raise
+
+
+def _template_db_name(state_dir: Path) -> str:
+    """Derive a per-invocation Postgres template database name.
+
+    Hashed from the per-invocation state directory (shared across all xdist
+    workers of one invocation, distinct across overlapping invocations and
+    subprocess pytest runs), bounded well under PostgreSQL's 63-char limit.
+    """
+    import hashlib
+
+    return "tq_tpl_" + hashlib.md5(str(state_dir).encode()).hexdigest()[:12]  # noqa: S324  # Why: non-cryptographic hash for test template database naming; collisions across concurrent invocations are negligible.
+
+
+def _module_uses_pg_schema(request: pytest.FixtureRequest) -> bool:
+    """Whether any collected test in *request.module* depends on ``module_pg_schema``.
+
+    ``item.fixturenames`` is pytest's transitive fixture closure, so tests
+    taking ``clean_pg_conn``, ``clean_jobs_app``, ``module_pg_pool``,
+    ``wf_conn``, ``wf_pool``, ``wf_schema``, ``wf_sql``, ``settings``, etc.
+    all include ``"module_pg_schema"``. Modules taking only raw ``pg_dsn``
+    (e.g. migration tests expecting a blank database) return ``False``.
+    """
+    mod: object = request.module
+    return any(
+        getattr(item, "module", None) is mod
+        and "module_pg_schema" in getattr(item, "fixturenames", ())
+        for item in request.session.items
+    )
+
+
+def _create_module_db_from_template(
+    base_dsn: str,
+    db_name: str,
+    state_dir: Path,
+) -> None:
+    """Ensure the invocation's pre-migrated template DB exists, then clone it.
+
+    Both one-time template initialization and ``CREATE DATABASE ... TEMPLATE``
+    cloning are serialized under a per-invocation ``FileLock`` so parallel
+    xdist workers never hit PostgreSQL's ``ObjectInUseError (55006)`` from
+    concurrent template reads or an in-flight migration connection.
+    """
+    import threading
+    import time
+
+    from filelock import FileLock
+
+    from taskq.migrate import apply_pending
+
+    tpl_db = _template_db_name(state_dir)
+    tpl_dsn = _replace_dsn_database(base_dsn, tpl_db)
+    ready_path = state_dir / _PG_TEMPLATE_READY_FILENAME
+    touched_path = state_dir / _PG_TEMPLATE_TOUCHED_FILENAME
+    expected_marker = f"{base_dsn}\n{tpl_db}\n{_PG_TEMPLATE_SCHEMA}"
+
+    def _run_in_thread() -> None:
+        error: list[BaseException] = []
+
+        def _target() -> None:
+            async def _wait_no_template_backends(admin_conn: asyncpg.Connection) -> None:
+                deadline = time.monotonic() + 10.0
+                while True:
+                    active = await admin_conn.fetchval(
+                        "SELECT count(*) FROM pg_stat_activity "
+                        "WHERE datname = $1 AND datname <> current_database() "
+                        "AND pid <> pg_backend_pid()",
+                        tpl_db,
+                    )
+                    if not active:
+                        return
+                    if time.monotonic() >= deadline:
+                        with contextlib.suppress(asyncpg.InsufficientPrivilegeError):
+                            await admin_conn.execute(
+                                "SELECT pg_terminate_backend(pid) FROM pg_stat_activity "
+                                "WHERE datname = $1 AND datname <> current_database() "
+                                "AND pid <> pg_backend_pid()",
+                                tpl_db,
+                            )
+                        await asyncio.sleep(0.05)
+                        return
+                    await asyncio.sleep(0.01)
+
+            async def _go() -> None:
+                admin_conn = await asyncpg.connect(base_dsn)
+                try:
+                    marker_ok = False
+                    with contextlib.suppress(OSError):
+                        marker_ok = ready_path.read_text(encoding="utf-8") == expected_marker
+
+                    tpl_exists = bool(
+                        await admin_conn.fetchval(
+                            "SELECT 1 FROM pg_database WHERE datname = $1",
+                            tpl_db,
+                        )
+                    )
+
+                    if not (marker_ok and tpl_exists):
+                        # Record touch before creating so external-DSN session
+                        # teardown always cleans up even after an interrupted build.
+                        _atomic_write_text(touched_path, tpl_db)
+                        with contextlib.suppress(OSError):
+                            ready_path.unlink()
+
+                        await admin_conn.execute(f'DROP DATABASE IF EXISTS "{tpl_db}" WITH (FORCE)')
+                        await admin_conn.execute(f'CREATE DATABASE "{tpl_db}"')
+
+                        tpl_conn = await asyncpg.connect(tpl_dsn)
+                        try:
+                            await apply_pending(tpl_conn, schema=_PG_TEMPLATE_SCHEMA)
+                            await seed_actors(tpl_conn, _PG_TEMPLATE_SCHEMA)
+                        finally:
+                            await tpl_conn.close()
+
+                        await _wait_no_template_backends(admin_conn)
+                        _atomic_write_text(ready_path, expected_marker)
+
+                    await admin_conn.execute(f'DROP DATABASE IF EXISTS "{db_name}" WITH (FORCE)')
+                    # Bounded retry on ObjectInUseError in case a background
+                    # server worker (e.g. autovacuum) transiently attaches to
+                    # the template database.
+                    for attempt in range(40):
+                        try:
+                            await admin_conn.execute(
+                                f'CREATE DATABASE "{db_name}" TEMPLATE "{tpl_db}"'
+                            )
+                            break
+                        except asyncpg.ObjectInUseError:
+                            if attempt == 39:
+                                raise
+                            if attempt >= 2:
+                                with contextlib.suppress(asyncpg.InsufficientPrivilegeError):
+                                    await admin_conn.execute(
+                                        "SELECT pg_terminate_backend(pid) FROM pg_stat_activity "
+                                        "WHERE datname = $1 AND datname <> current_database() "
+                                        "AND pid <> pg_backend_pid()",
+                                        tpl_db,
+                                    )
+                            await asyncio.sleep(min(0.02 * (attempt + 1), 0.2))
+                finally:
+                    await admin_conn.close()
+
+            try:
+                asyncio.run(_go())
+            except BaseException as exc:  # Why: re-raised in the calling thread below.
+                error.append(exc)
+
+        t = threading.Thread(target=_target, daemon=True)
+        t.start()
+        t.join(timeout=120)
+        if t.is_alive():
+            raise TimeoutError(f"template database setup/clone timed out for {db_name!r}")
+        if error:
+            raise error[0]
+
+    with FileLock(str(state_dir / _PG_TEMPLATE_LOCK_FILENAME)):
+        _run_in_thread()
+
+
+def _cleanup_template_db_locked(base_dsn: str, state_dir: Path) -> None:
+    """Drop the invocation's template DB when the last external-DSN holder exits.
+
+    Caller must hold ``FileLock(str(state_dir / _PG_TEMPLATE_LOCK_FILENAME))``.
+    """
+    tpl_db = _template_db_name(state_dir)
+    ready_path = state_dir / _PG_TEMPLATE_READY_FILENAME
+    touched_path = state_dir / _PG_TEMPLATE_TOUCHED_FILENAME
+    if not touched_path.exists() and not ready_path.exists():
+        return
+    try:
+        _pg_admin(base_dsn, f'DROP DATABASE IF EXISTS "{tpl_db}" WITH (FORCE)')
+    finally:
+        with contextlib.suppress(OSError):
+            ready_path.unlink()
+        with contextlib.suppress(OSError):
+            touched_path.unlink()
+
+
 @pytest.fixture(scope="module")
-def pg_dsn(pg_container: _PgContainerShim, request: pytest.FixtureRequest) -> Iterator[str]:
+def pg_dsn(
+    pg_container: _PgContainerShim,
+    request: pytest.FixtureRequest,
+    tmp_path_factory: pytest.TempPathFactory,
+) -> Iterator[str]:
     """Module-scoped database on the shared container; DSN pointing at it.
 
     Every test module gets its own database on the invocation's one shared
@@ -1339,25 +1574,81 @@ def pg_dsn(pg_container: _PgContainerShim, request: pytest.FixtureRequest) -> It
     pressure), which let modules clobber each other. The database name is
     hashed with the run isolation token (see ``_publish_run_isolation_token``),
     so the same module gets distinct databases on parallel xdist workers of
-    one invocation. The database is dropped (FORCE) on module teardown (cheap
+    one invocation. Modules that consume ``module_pg_schema`` clone the
+    invocation's pre-migrated template database (~20ms) instead of replaying
+    all migrations per module; modules taking raw ``pg_dsn`` alone get a
+    blank database. The database is dropped (FORCE) on module teardown (cheap
     on the tuned shared cluster - see ``taskq.testing._shared_containers``);
     a drop-if-exists at setup clears stale state from crashed runs.
     """
     base_dsn = pg_container.get_connection_url()
     db_name = _module_db_name(request)
+    use_template = _module_uses_pg_schema(request)
 
-    _pg_admin(
-        base_dsn,
-        f'DROP DATABASE IF EXISTS "{db_name}" WITH (FORCE)',
-        f'CREATE DATABASE "{db_name}"',
-    )
+    if use_template:
+        _create_module_db_from_template(base_dsn, db_name, invocation_state_dir(tmp_path_factory))
+    else:
+        _pg_admin(
+            base_dsn,
+            f'DROP DATABASE IF EXISTS "{db_name}" WITH (FORCE)',
+            f'CREATE DATABASE "{db_name}"',
+        )
 
-    prefix, _, _db = base_dsn.rpartition("/")
-    module_dsn = f"{prefix}/{db_name}"
+    module_dsn = _replace_dsn_database(base_dsn, db_name)
+    if use_template:
+        request.node.stash[_PG_TEMPLATE_SCHEMA_KEY] = (module_dsn, _PG_TEMPLATE_SCHEMA)
     try:
         yield module_dsn
     finally:
+        if use_template:
+            with contextlib.suppress(KeyError):
+                del request.node.stash[_PG_TEMPLATE_SCHEMA_KEY]
         _pg_admin(base_dsn, f'DROP DATABASE IF EXISTS "{db_name}" WITH (FORCE)')
+
+
+@pytest_asyncio.fixture(scope="module")
+async def module_pg_schema(
+    request: pytest.FixtureRequest,
+    pg_dsn: str,
+) -> AsyncIterator[ModulePgSchema]:
+    """Module-scoped PG schema backed by the pre-migrated template database.
+
+    Shadows :func:`taskq.testing.fixtures.module_pg_schema` for this repo's
+    test suite: when ``pg_dsn`` cloned the invocation's pre-migrated template
+    database, the ``tq_mod`` schema is already migrated and seeded, so setup
+    skips replaying migrations and teardown skips ``DROP SCHEMA`` (``pg_dsn``
+    drops the module database ``WITH (FORCE)``). Falls back to migrating a
+    fresh per-module schema when ``pg_dsn`` was not template-cloned.
+    """
+    pre_migrated = request.node.stash.get(_PG_TEMPLATE_SCHEMA_KEY, None)
+    if pre_migrated is not None and pre_migrated[0] == pg_dsn:
+        yield ModulePgSchema(schema_name=pre_migrated[1], pg_dsn=pg_dsn)
+        return
+
+    from taskq.migrate import apply_pending
+    from taskq.testing.fixtures import (
+        _schema_name_from_module,  # pyright: ignore[reportPrivateUsage]  # Why: fallback mirrors published module_pg_schema naming when pg_dsn was not template-cloned.
+    )
+
+    schema_name = _schema_name_from_module(request)
+    conn = await asyncpg.connect(pg_dsn)
+    try:
+        await conn.execute(f'DROP SCHEMA IF EXISTS "{schema_name}" CASCADE')
+        await apply_pending(conn, schema=schema_name)
+        await seed_actors(conn, schema_name)
+    finally:
+        await conn.close()
+
+    yield ModulePgSchema(schema_name=schema_name, pg_dsn=pg_dsn)
+
+    try:
+        conn = await asyncpg.connect(pg_dsn)
+    except asyncpg.InvalidCatalogNameError:
+        return
+    try:
+        await conn.execute(f'DROP SCHEMA IF EXISTS "{schema_name}" CASCADE')
+    finally:
+        await conn.close()
 
 
 @pytest.fixture
@@ -1466,18 +1757,20 @@ def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
             group = f"e2e-{item.path.stem}" if is_e2e else item.path.stem
         item.add_marker(pytest.mark.xdist_group(name=group))
 
-    # G7's always-on registration (the typed node view : every async test in the workflow
-    # pin files ends with the reported==reconstructed check (the fixture
-    # in tests/_wf_fixtures.py). the wiring: a ``usefixtures`` marker
-    # added here is inert — the items' fixture closures are computed
-    # before this hook runs, so the marker never reached the fixture set
-    # (the demonstration: two pins ended root-contradicts-rows and
-    # passed their teardowns). Appending to ``fixturenames`` is the
-    # effective registration: the closure list is read at setup time.
-    # The scope is the wf pin files' own prefix, and
-    # only the async items: the check's fixtures need the PG connection,
-    # and a sync item would drag PG into a unit lane (the sync pins
-    # assert the derivation table directly, in memory).
+    # G7's always-on registration (the typed node view): every async workflow
+    # test that uses the workflow/module PG schema ends with the
+    # reported==reconstructed check (the fixture in tests/_wf_fixtures.py).
+    # The wiring: a ``usefixtures`` marker added here is inert — the items'
+    # fixture closures are computed before this hook runs, so the marker never
+    # reached the fixture set (the demonstration: two pins ended
+    # root-contradicts-rows and passed their teardowns). Appending to
+    # ``fixturenames`` is the effective registration: the closure list is read
+    # at setup time.
+    # The scope is async items in the wf pin files whose transitive fixture
+    # closure already requests the workflow/module PG schema — pure async unit
+    # tests and raw ``pg_dsn``-only throwaway-schema tests are skipped so they
+    # do not boot PG, clone/migrate, truncate, and query an empty schema.
+    _wf_pg_fixtures = ("module_pg_schema", "wf_schema", "wf_conn", "wf_pool", "wf_sql")
     for item in items:
         if not item.path.name.startswith(("test_wf_", "test_workflows_")):
             continue
@@ -1486,6 +1779,8 @@ def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
         if not isinstance(item, pytest.Function):
             continue
         if not inspect.iscoroutinefunction(item.function):
+            continue
+        if not any(f in item.fixturenames for f in _wf_pg_fixtures):
             continue
         if "wf_g7_status_truth" not in item.fixturenames:
             item.fixturenames.append("wf_g7_status_truth")

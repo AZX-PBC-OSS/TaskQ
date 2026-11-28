@@ -523,6 +523,8 @@ async def test_iteration_bound_exhaustion_reaches_the_bounded_release(
         module_pg_pool, wf_schema, str(job.id), fleet_worker, job.attempt
     )
 
+    from tests.conftest import interpreter_is_traced
+
     captured, deps = await _drive_through_consumer_loop(
         module_pg_pool,
         module_pg_schema.pg_dsn,
@@ -530,10 +532,9 @@ async def test_iteration_bound_exhaustion_reaches_the_bounded_release(
         job,
         fleet_worker,
         # the drive's own measured cost is the 10,000 real iterations
-        # (~9 s solo); the guard is a hang detector with an order of
-        # magnitude of headroom, never a threshold the outcome depends
-        # on.
-        hang_guard_s=120,
+        # (~9 s solo; >120 s under --cov-branch + xdist); the guard is a hang
+        # detector with headroom, never a threshold the outcome depends on.
+        hang_guard_s=270 if interpreter_is_traced() else 120,
     )
 
     await _assert_bounded_landing(

@@ -29,6 +29,10 @@ from typing import Any
 import asyncpg
 import pytest_asyncio
 
+from taskq.connections import (
+    DEFAULT_MAX_CACHED_STATEMENT_LIFETIME,
+    DEFAULT_STATEMENT_CACHE_SIZE,
+)
 from tests.system_e2e._harness import (
     SWEEP_INTERVAL_S,
     TIER_LOAD_STRETCH,
@@ -260,9 +264,21 @@ async def row_lock_waiters(conn: asyncpg.Connection, schema: str, node_id: str) 
     return {int(record["pid"]) for record in records}
 
 
-@pytest_asyncio.fixture
+@pytest_asyncio.fixture(scope="module")
 async def wf_pool(pg_dsn: str, module_pg_schema: Any) -> AsyncIterator[asyncpg.Pool]:
-    """A plain pool on the module's DSN: the march process's own client."""
-    pool = await asyncpg.create_pool(pg_dsn, min_size=1, max_size=4)
-    yield pool
-    await pool.close()
+    """Module-scoped asyncpg pool on the module's DSN: the march process's own client."""
+    del module_pg_schema  # Ensures module schema setup runs before pool creation.
+    pool = await asyncpg.create_pool(
+        pg_dsn,
+        min_size=1,
+        max_size=10,
+        statement_cache_size=DEFAULT_STATEMENT_CACHE_SIZE,
+        max_cached_statement_lifetime=DEFAULT_MAX_CACHED_STATEMENT_LIFETIME,
+    )
+    try:
+        yield pool
+    finally:
+        try:
+            await asyncio.wait_for(pool.close(), timeout=5.0)
+        except TimeoutError:
+            pool.terminate()

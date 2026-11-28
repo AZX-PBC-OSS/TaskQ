@@ -17,8 +17,6 @@ column) live here:
 
 from __future__ import annotations
 
-from typing import Any
-
 import asyncpg
 import pytest
 from pydantic import BaseModel
@@ -85,15 +83,6 @@ async def _per_item(ctx: StepContext, item: Item) -> dict[str, int]:
 
 async def _map_tail(ctx: StepContext, items: list[dict[str, int]]) -> dict[str, object]:
     return {"sum": sum(i["n"] for i in items)}
-
-
-@pytest.fixture
-async def wf_pool(module_pg_schema: Any) -> Any:
-    """The runner acquires from a POOL (its claims + finalizes); the
-    module's DSN builds it — one pool per test, closed at teardown."""
-    pool = await asyncpg.create_pool(module_pg_schema.pg_dsn)
-    yield pool
-    await pool.close()
 
 
 async def test_create_flow_carries_input_and_drives(
