@@ -626,9 +626,9 @@ def test_shutdown_overlapping_an_active_rotation_releases_once_without_a_false_f
 
 
 def test_shutdown_preserves_a_pending_generation_report_when_rotation_wins_its_close() -> None:
-    """Shutdown closes the current generation first. If the overlapping
-    rotation releases the pending generation meanwhile, shutdown's later
-    idempotent close must not erase that generation's lifecycle report."""
+    """Shutdown closes pending generations before the current one. If the
+    overlapping rotation releases the pending generation meanwhile, shutdown's
+    later idempotent close must not erase that generation's lifecycle report."""
     current_close_started = asyncio.Event()
     finish_current_close = asyncio.Event()
 
@@ -2250,7 +2250,11 @@ async def test_a_claim_admitted_during_rotation_keeps_its_pool_until_it_finishes
             _assert_no_loop_or_pool_errors(logs)
             exit_code = await asyncio.wait_for(worker, timeout=120.0)
 
-        assert exit_code == 0, exit_code
+        assert exit_code == 0, {
+            "exit_code": exit_code,
+            "body_errors": [f"{type(exc).__name__}: {exc}" for exc in body_errors],
+            "logs": logs,
+        }
         assert _PRODUCED[0] == 2
         assert [cast("_Probe", instance).generation for instance in _INSTANCES] == [0, 1]
     finally:
@@ -2322,7 +2326,21 @@ async def test_the_reload_pool_gate_covers_a_detached_deadline_unwind(
     real_reload = worker_deps_mod.reload_credentials
 
     async def _tight_reload(deps: Any, **kwargs: Any) -> Any:
-        return await real_reload(deps, drain_timeout=0.05, **kwargs)
+        # Bound only the pre-swap deps drain tightly so the reload reaches pool
+        # draining quickly despite the detached body; give the pool drain gate
+        # real headroom so old_dispatcher_pool never times out before
+        # old_worker_closed fires under coverage tracing.
+        real_drain = deps.reload_drain
+        if real_drain is not None:
+
+            async def _short_deps_drain(_timeout: float) -> None:
+                await real_drain(0.05)
+
+            deps.reload_drain = _short_deps_drain
+        try:
+            return await real_reload(deps, drain_timeout=10.0, **kwargs)
+        finally:
+            deps.reload_drain = real_drain
 
     monkeypatch.setattr(worker_deps_mod, "reload_credentials", _tight_reload)
     real_close = worker_deps_mod.close_pool_bounded  # pyright: ignore[reportPrivateImportUsage]  # Why: the production close site reads this module global at call time.

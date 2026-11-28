@@ -200,6 +200,10 @@ class DepsRotation:
     had_instance: bool
     drained: bool
     error: BaseException | None = None
+    #: The physical generation entry, for a telemetry owner deduplicating an
+    #: overlapping rotation/shutdown. Private, keyword-only, and excluded from
+    #: repr/equality so the public result's positional contract is unchanged.
+    _entry: object | None = dataclasses.field(default=None, repr=False, compare=False, kw_only=True)
 
 
 @dataclasses.dataclass(frozen=True)
@@ -216,6 +220,10 @@ class DepsRelease:
     generation: Generation
     had_instance: bool
     error: BaseException | None = None
+    #: The physical generation entry; labels alone are not unique when a
+    #: declaration cycles back to an earlier generation value. Private,
+    #: keyword-only, and excluded from repr/equality.
+    _entry: object | None = dataclasses.field(default=None, repr=False, compare=False, kw_only=True)
 
 
 class DepsResolution(Protocol):
@@ -333,7 +341,14 @@ class _Generation:
                 # here rather than handing a live dependency to a body whose
                 # worker has already unwound its teardown stack.
                 if release is not None:
-                    await release()
+                    # The owner already spent its bounded close waiting for
+                    # this acquisition. A late resource must not re-open an
+                    # unbounded wait on the claim; keep the closed verdict
+                    # primary if its one late release exceeds the same bound.
+                    try:
+                        await asyncio.wait_for(release(), timeout=CLOSE_TIMEOUT_SECS)
+                    except TimeoutError as exc:
+                        raise _closed_error() from exc
                 raise _closed_error()
             # Assign only after a fully successful acquisition: a factory that
             # raised leaves no half-state behind, and ``__aexit__`` is never
@@ -380,10 +395,10 @@ class _Generation:
         try:
             await asyncio.wait_for(self._release_once(), timeout=release_timeout)
         except TimeoutError as exc:
-            return DepsRelease(self.generation, had_instance, exc)
+            return DepsRelease(self.generation, had_instance, exc, _entry=self)
         except Exception as exc:
-            return DepsRelease(self.generation, had_instance, exc)
-        return DepsRelease(self.generation, had_instance)
+            return DepsRelease(self.generation, had_instance, exc, _entry=self)
+        return DepsRelease(self.generation, had_instance, _entry=self)
 
     async def _release_once(self) -> None:
         async with self._lock:
@@ -566,6 +581,7 @@ class DepsResolver:
             had_instance=release.had_instance,
             drained=drained,
             error=error,
+            _entry=current,
         )
 
     async def aclose(self) -> None:
@@ -602,10 +618,14 @@ class DepsResolver:
         projecting one aggregate verdict over all of them.
         """
         self._closed = True
-        pending, self._draining = self._draining, []
         releases: list[DepsRelease] = []
-        for entry in (*pending, self._entry):
+        for entry in (*list(self._draining), self._entry):
             releases.append(await entry.aclose(release_timeout))
+            if entry in self._draining:
+                # Remove only a completed close. Cancellation must leave every
+                # unattempted sibling owned for a later close; an overlapping
+                # rotation may already have removed this entry itself.
+                self._draining.remove(entry)
         return releases
 
     async def _acquire(

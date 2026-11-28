@@ -1457,13 +1457,13 @@ async def async_factory() -> Deps:  # shape 3, awaited on the running loop
 
 @asynccontextmanager
 async def managed_deps():  # shape 1: the exit below IS the teardown —
-    resource = Deps()      # pairing this shape with deps_teardown= is REFUSED
+    resource = Deps()  # pairing this shape with deps_teardown= is REFUSED
     yield resource
     await resource.aclose()
 
 
 async def generator_deps():  # a bare async generator function: the same
-    resource = Deps()        # shape — its finalisation is the sole owner
+    resource = Deps()  # shape — its finalisation is the sole owner
     yield resource
 
 
@@ -1546,9 +1546,10 @@ bounded release to the tail before the pools close; when the modelled tail
 exceeds `TASKQ_TERMINATION_GRACE_PERIOD`, startup warns
 `workflow-deps-shutdown-budget-exceeds-termination-grace` naming the binding
 count and the required grace (the configuration guide's termination-grace
-row carries the arithmetic). A cancelled rotation can leave a superseded
-generation pending beside the current one, adding another bounded release
-per affected binding beyond that startup model. A HARD-KILLED worker
+row carries the arithmetic). One or more cancelled rotations can leave
+superseded generations pending beside the current one, adding one bounded
+release per pending generation per affected binding beyond that startup
+model. A HARD-KILLED worker
 (SIGKILL, OOM) runs no teardown — its loop is never unwound and the process
 exit is the release, the same bound every other worker-scoped resource has.
 

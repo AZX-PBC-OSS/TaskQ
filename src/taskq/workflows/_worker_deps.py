@@ -116,6 +116,13 @@ class WorkerDepsResolution:
         #: Rotation discards the superseded generation, allowing a later
         #: generation cycle back to that value to report its new instance.
         self._reported: set[Generation] = set()
+        #: Physical generation entries whose release already has a lifecycle
+        #: report. A rotation and shutdown can overlap the same bounded close;
+        #: whichever owner observes the completed attempt reports it, never both.
+        #: Entries, not generation labels, are the key because a declaration may
+        #: legally cycle back to an earlier label. Weak membership does not keep
+        #: completed entries (and their bindings) alive after the owner drops them.
+        self._teardown_reported: weakref.WeakSet[object] = weakref.WeakSet()
         self._closed = False
 
     @property
@@ -200,9 +207,13 @@ class WorkerDepsResolution:
                 error=exc,
             )
         if self._closed:
-            # Shutdown owns the lifecycle report for every entry it is
-            # releasing. The rotation still returns what it committed, but
-            # must not report that same physical release a second time.
+            # Shutdown owns the ordinary report for entries it is releasing,
+            # but it may have arrived after this rotation already entered the
+            # release. In that interleaving the shutdown's idempotent close sees
+            # no instance and would otherwise suppress the only report. The
+            # report ledger deduplicates the opposite ordering.
+            if report.rotated and report.had_instance:
+                self._report_teardown(report)
             return report
         if not report.rotated:
             if report.error is not None:
@@ -275,6 +286,10 @@ class WorkerDepsResolution:
         """One generation's teardown attempt: clean, timed out, or failed —
         named by the generation that minted the instance."""
         generation = release.generation
+        if release.had_instance and not self._claim_teardown_report(
+            getattr(release, "_entry", None)
+        ):
+            return
         if release.error is not None:
             if isinstance(release.error, TimeoutError):
                 logger.warning(
@@ -336,9 +351,22 @@ class WorkerDepsResolution:
             exc_info=exc,
         )
 
+    def _claim_teardown_report(self, entry: object | None) -> bool:
+        """Claim one physical entry's lifecycle report, if it is still
+        unreported. A missing internal identity is never a reason to suppress
+        an outcome."""
+        if entry is None:
+            return True
+        if entry in self._teardown_reported:
+            return False
+        self._teardown_reported.add(entry)
+        return True
+
     def _report_teardown(self, report: DepsRotation) -> None:
         """Report the superseded generation's release: clean, timed out, or
         failed with its cause."""
+        if not self._claim_teardown_report(getattr(report, "_entry", None)):
+            return
         error = report.error
         if error is None:
             logger.info(

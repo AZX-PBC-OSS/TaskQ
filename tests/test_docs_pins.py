@@ -834,12 +834,28 @@ def test_deps_reload_docs_state_the_bounded_drain_escape_hatch() -> None:
         "the guide promises zero pool-closed errors even after the documented drain "
         "bound can force-release a live body's resource"
     )
-    assert "cancelled rotation" in guide and "another bounded release" in guide, (
-        "the shutdown-budget model omits the pending generation a cancelled rotation "
+    assert "cancelled rotations" in guide and "per pending generation" in guide, (
+        "the shutdown-budget model omits the pending generations cancelled rotations "
         "can add to the close tail"
     )
     assert "on a generation-changing reload" in guide, (
         "the choice table implies an unchanged-generation reload releases the live instance"
+    )
+
+
+def test_deps_shutdown_budget_config_row_discloses_the_pending_generation() -> None:
+    """The configuration guide's termination-grace row carries the same
+    pending-generation clause the workflows guide's shutdown-budget model
+    discloses: ``close_generations`` releases the pending AND the current
+    entry, while the startup warning adds only ``binding_count`` closes — an
+    operator who sizes the grace from this row alone under-counts every
+    pending generation in exactly the window the budget protects."""
+    config_path = _REPO / "docs" / "guides" / "configuration.md"
+    config = " ".join(config_path.read_text(encoding="utf-8").split())
+    assert "one or more cancelled rotations can leave superseded generations pending" in config
+    assert "one bounded release per pending generation per affected binding" in config, (
+        f"{config_path.relative_to(_REPO)} omits the per-pending-generation release "
+        "that cancelled rotations add beyond the binding-count model"
     )
 
 

@@ -27,13 +27,14 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import enum
 import importlib
 import json
 import os
 import signal
 import sys
 from collections.abc import Callable, Iterator, Mapping, Sequence
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import ModuleType
 from typing import Any, cast
@@ -47,22 +48,35 @@ from pydantic import BaseModel
 import taskq.worker._bootstrap as bootstrap_mod
 import taskq.worker.deps as worker_deps_mod
 from taskq._ids import new_uuid
+from taskq.backend._dispatch_sql import DISPATCH_STRICT_FIFO_SQL, dispatch_batch
 from taskq.backend._protocol import JobId, JobRow
+from taskq.backend._sweeps import sweep_scheduled_to_pending
+from taskq.retry import RetryPolicy
 from taskq.settings import WorkerSettings
 from taskq.testing.assertions import wait_for_condition
 from taskq.testing.fixtures import ModulePgSchema
 from taskq.testing.health import unique_health_sock_path
+from taskq.worker.run import register_worker
 from taskq.worker.workgroup import WorkerSpec, _ChildState, _spawn_child
 from taskq.workflows import (
+    Chain,
+    ExecutionPolicy,
+    ExhaustionEvent,
     FlowRunner,
     Promise,
+    RetrySpec,
+    Step,
     StepContext,
+    TerminalEffect,
     WorkflowApp,
     build,
+    chain_source,
+    chain_start,
     step,
 )
 from taskq.workflows import _worker_deps as scope
 from taskq.workflows import _worker_execution as seam
+from taskq.workflows._sweep import drain_outbox
 from taskq.workflows.api._validate import WorkflowValidationError
 
 pytestmark = pytest.mark.integration
@@ -86,6 +100,9 @@ _BARRIER: list[asyncio.Event] = []
 """The concurrency gate: the first body parks until the second arrives, so a
 serial dispatch fails the test instead of passing it silently."""
 
+_EFFECT_EVENTS: list[ExhaustionEvent] = []
+"""The ExhaustionEvent each terminal-effect handler ran with."""
+
 
 def _reset() -> None:
     _PRODUCED[0] = 0
@@ -93,6 +110,7 @@ def _reset() -> None:
     _EXECUTED.clear()
     _ORDER.clear()
     _BARRIER.clear()
+    _EFFECT_EVENTS.clear()
 
 
 @pytest.fixture(autouse=True)
@@ -133,6 +151,14 @@ async def _deps_body(ctx: StepContext, doc: _Doc, deps: _Probe) -> None:
         await asyncio.wait_for(_BARRIER[0].wait(), timeout=20.0)
     elif _BARRIER:
         _BARRIER[0].set()
+
+
+async def _effect_body(ctx: StepContext, event: ExhaustionEvent, deps: _Probe) -> None:
+    assert deps.loop is asyncio.get_running_loop(), (
+        "the terminal-effect handler's deps left the claim's loop"
+    )
+    _EFFECT_EVENTS.append(event)
+    _INSTANCES.append(deps)
 
 
 _FAMILIES = ("wf-fleet-alpha", "wf-fleet-beta")
@@ -387,6 +413,137 @@ async def test_the_direct_door_binds_the_factory_to_the_running_loop(
     assert len(_INSTANCES) == 1
     assert cast("_Probe", _INSTANCES[0]).loop is asyncio.get_running_loop()
     assert _ORDER.count("deps-teardown") == 1, f"one release on exit; got {_ORDER}"
+
+
+# ── the terminal-effect row: the ExhaustionEvent arm's deps tail ──────
+
+
+async def _dispatch_claim(
+    pool: asyncpg.Pool, schema: str, worker_id: JobId, *, timeout_s: float = 10.0
+) -> dict[str, Any]:
+    """One workflow row through the production dispatch SQL — the claim the
+    fleet's queue-routed dispatch performs, not a hand-flipped row."""
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout_s
+    while loop.time() < deadline:
+        async with pool.acquire() as conn:
+            await sweep_scheduled_to_pending(conn, schema=schema)
+        rows = await dispatch_batch(
+            pool,
+            sql=DISPATCH_STRICT_FIFO_SQL.format(schema=schema),
+            queues=["default"],
+            limit_n=1,
+            worker_id=JobId(worker_id),
+            lock_lease=timedelta(seconds=30),
+        )
+        if rows:
+            return dict(rows[0])
+        await asyncio.sleep(0.005)
+    raise TimeoutError(f"worker {worker_id} found no due workflow row within {timeout_s}s")
+
+
+async def test_a_terminal_effect_handler_receives_the_worker_resolved_deps(
+    wf_schema: str, wf_pool: asyncpg.Pool, pg_dsn: str
+) -> None:
+    """The effect row reaches its body through ``run_fleet_claimed_step`` and
+    the ``ExhaustionEvent`` arm of ``_resolve_args`` — exactly one wired
+    source the deps tail must ride behind. A step that exhausts under a
+    ``deps_factory`` app enqueues its terminal effect; the handler the fleet
+    claim runs declares ``(ctx, ExhaustionEvent, deps)`` and receives the
+    worker-resolved instance on the claim's loop, then the runner's exit
+    releases it exactly once."""
+    suffix = new_uuid().hex
+
+    class _Outcome(enum.Enum):
+        DONE = "done"
+
+    async def _work(ctx: StepContext, item: object) -> _Outcome:
+        raise RuntimeError("synthetic permanent record failure")
+
+    effect = TerminalEffect(
+        body=_effect_body,
+        policy=ExecutionPolicy(
+            actor=f"effect-{suffix}",
+            queue="default",
+            start_to_close=timedelta(seconds=5),
+            retry=RetrySpec(policy=RetryPolicy(max_attempts=1, jitter=0)),
+        ),
+    )
+    chain = Chain(
+        name=f"effect-deps-chain-{suffix}",
+        start="work",
+        steps={
+            "work": Step(
+                body=_work,
+                outcomes=_Outcome,
+                policy=ExecutionPolicy(
+                    actor="wf",
+                    retry=RetrySpec(
+                        policy=RetryPolicy(max_attempts=1, jitter=0),
+                        on_exhaustion=effect,
+                    ),
+                ),
+            )
+        },
+    )
+    app = WorkflowApp(deps_factory=_make_probe)
+    name = f"fleet_effect_deps_{suffix}"
+
+    async def source(ctx: StepContext) -> None:
+        await ctx.emit_batch(
+            [chain_start(chain, {"record": 17}, map_index=17, trace_id="r17")],
+            cursor={"page": 0},
+        )
+
+    @app.workflow(name)
+    def flow() -> Promise[object]:
+        return build(chain_source(chain, source, key="source"))
+
+    compiled = app.get(name)
+    worker_id = JobId(
+        await register_worker(
+            wf_pool, _worker_settings(pg_dsn, wf_schema, tag="effect"), workflow_execution=True
+        )
+    )
+    runner = FlowRunner(compiled, wf_pool, wf_schema, worker_id=worker_id)
+    try:
+        async with FlowRunner(compiled, wf_pool, wf_schema) as creator:
+            flow_id = (await creator.create_flow()).flow_id
+            wsql = creator.wsql
+        for actor_name in ("wf", f"effect-{suffix}"):
+            await wf_pool.execute(
+                f'INSERT INTO "{wf_schema}".actor_config (actor, queue) VALUES ($1,$2) '  # noqa: S608  # Why: the schema identifier is the fixture's own; asyncpg cannot bind identifiers.
+                "ON CONFLICT (actor) DO NOTHING",
+                actor_name,
+                "default",
+            )
+
+        async def _execute(expected_step: str) -> str:
+            claimed = await _dispatch_claim(wf_pool, wf_schema, worker_id)
+            assert claimed["step_key"] == expected_step, (
+                f"expected {expected_step!r}, claimed {claimed['step_key']!r}"
+            )
+            return await runner.run_fleet_claimed_step(
+                flow_id,
+                claimed,
+                attempt=int(claimed["attempt"]),
+                claim_epoch=int(claimed["claim_epoch"]),
+            )
+
+        assert await _execute("source") == "succeeded"
+        assert await _execute("work") == "laddered"
+        assert await drain_outbox(wf_pool, wsql) == 1
+        assert await _execute("work.__on_exhaustion") == "succeeded"
+    finally:
+        await runner.aclose()
+
+    assert _PRODUCED[0] == 1, f"the factory resolved once for the handler; got {_PRODUCED[0]}"
+    assert len(_INSTANCES) == 1, f"the handler got exactly one instance; got {_INSTANCES}"
+    assert _ORDER.count("deps-teardown") == 1, f"one release on the runner's exit; got {_ORDER}"
+    assert len(_EFFECT_EVENTS) == 1, _EFFECT_EVENTS
+    event = _EFFECT_EVENTS[0]
+    assert event.reason == "retry_exhausted"
+    assert event.error.error_class == "RuntimeError"
 
 
 # ── the workgroup children (real processes) ───────────────────────────────
