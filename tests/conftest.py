@@ -39,6 +39,7 @@ import glob
 import inspect
 import os
 import signal
+import sys
 import types
 from collections.abc import AsyncIterator, Iterator
 from dataclasses import dataclass
@@ -1466,63 +1467,70 @@ def _create_module_db_from_template(
                     await asyncio.sleep(0.01)
 
             async def _go() -> None:
-                admin_conn = await asyncpg.connect(base_dsn)
-                try:
-                    marker_ok = False
-                    with contextlib.suppress(OSError):
-                        marker_ok = ready_path.read_text(encoding="utf-8") == expected_marker
-
-                    tpl_exists = bool(
-                        await admin_conn.fetchval(
-                            "SELECT 1 FROM pg_database WHERE datname = $1",
-                            tpl_db,
-                        )
-                    )
-
-                    if not (marker_ok and tpl_exists):
-                        # Record touch before creating so external-DSN session
-                        # teardown always cleans up even after an interrupted build.
-                        _atomic_write_text(touched_path, tpl_db)
+                async with asyncio.timeout(120):
+                    admin_conn = await asyncpg.connect(base_dsn)
+                    try:
+                        marker_ok = False
                         with contextlib.suppress(OSError):
-                            ready_path.unlink()
+                            marker_ok = ready_path.read_text(encoding="utf-8") == expected_marker
 
-                        await admin_conn.execute(f'DROP DATABASE IF EXISTS "{tpl_db}" WITH (FORCE)')
-                        await admin_conn.execute(f'CREATE DATABASE "{tpl_db}"')
-
-                        tpl_conn = await asyncpg.connect(tpl_dsn)
-                        try:
-                            await apply_pending(tpl_conn, schema=_PG_TEMPLATE_SCHEMA)
-                            await seed_actors(tpl_conn, _PG_TEMPLATE_SCHEMA)
-                        finally:
-                            await tpl_conn.close()
-
-                        await _wait_no_template_backends(admin_conn)
-                        _atomic_write_text(ready_path, expected_marker)
-
-                    await admin_conn.execute(f'DROP DATABASE IF EXISTS "{db_name}" WITH (FORCE)')
-                    # Bounded retry on ObjectInUseError in case a background
-                    # server worker (e.g. autovacuum) transiently attaches to
-                    # the template database.
-                    for attempt in range(40):
-                        try:
-                            await admin_conn.execute(
-                                f'CREATE DATABASE "{db_name}" TEMPLATE "{tpl_db}"'
+                        tpl_exists = bool(
+                            await admin_conn.fetchval(
+                                "SELECT 1 FROM pg_database WHERE datname = $1",
+                                tpl_db,
                             )
-                            break
-                        except asyncpg.ObjectInUseError:
-                            if attempt == 39:
-                                raise
-                            if attempt >= 2:
-                                with contextlib.suppress(asyncpg.InsufficientPrivilegeError):
-                                    await admin_conn.execute(
-                                        "SELECT pg_terminate_backend(pid) FROM pg_stat_activity "
-                                        "WHERE datname = $1 AND datname <> current_database() "
-                                        "AND pid <> pg_backend_pid()",
-                                        tpl_db,
-                                    )
-                            await asyncio.sleep(min(0.02 * (attempt + 1), 0.2))
-                finally:
-                    await admin_conn.close()
+                        )
+
+                        if not (marker_ok and tpl_exists):
+                            # Record touch before creating so external-DSN session
+                            # teardown always cleans up even after an interrupted build.
+                            _atomic_write_text(touched_path, tpl_db)
+                            with contextlib.suppress(OSError):
+                                ready_path.unlink()
+
+                            await admin_conn.execute(
+                                f'DROP DATABASE IF EXISTS "{tpl_db}" WITH (FORCE)'
+                            )
+                            await admin_conn.execute(f'CREATE DATABASE "{tpl_db}"')
+
+                            tpl_conn = await asyncpg.connect(tpl_dsn)
+                            try:
+                                await apply_pending(tpl_conn, schema=_PG_TEMPLATE_SCHEMA)
+                                await seed_actors(tpl_conn, _PG_TEMPLATE_SCHEMA)
+                            finally:
+                                await tpl_conn.close()
+
+                            await _wait_no_template_backends(admin_conn)
+                            _atomic_write_text(ready_path, expected_marker)
+
+                        await admin_conn.execute(
+                            f'DROP DATABASE IF EXISTS "{db_name}" WITH (FORCE)'
+                        )
+                        # Bounded retry on ObjectInUseError in case a background
+                        # server worker (e.g. autovacuum) transiently attaches to
+                        # the template database.
+                        for attempt in range(40):
+                            try:
+                                await admin_conn.execute(
+                                    f'CREATE DATABASE "{db_name}" TEMPLATE "{tpl_db}"'
+                                )
+                                break
+                            except asyncpg.ObjectInUseError:
+                                if attempt == 39:
+                                    raise
+                                if attempt >= 2:
+                                    with contextlib.suppress(asyncpg.InsufficientPrivilegeError):
+                                        await admin_conn.execute(
+                                            "SELECT pg_terminate_backend(pid) "
+                                            "FROM pg_stat_activity "
+                                            "WHERE datname = $1 "
+                                            "AND datname <> current_database() "
+                                            "AND pid <> pg_backend_pid()",
+                                            tpl_db,
+                                        )
+                                await asyncio.sleep(min(0.02 * (attempt + 1), 0.2))
+                    finally:
+                        await admin_conn.close()
 
             try:
                 asyncio.run(_go())
@@ -1531,7 +1539,7 @@ def _create_module_db_from_template(
 
         t = threading.Thread(target=_target, daemon=True)
         t.start()
-        t.join(timeout=120)
+        t.join(timeout=130)
         if t.is_alive():
             raise TimeoutError(f"template database setup/clone timed out for {db_name!r}")
         if error:
@@ -1606,6 +1614,25 @@ def pg_dsn(
         _pg_admin(base_dsn, f'DROP DATABASE IF EXISTS "{db_name}" WITH (FORCE)')
 
 
+def _clear_workflow_schema_caches(schema: str) -> None:
+    """Clear process-global workflow caches keyed by *schema* if already imported.
+
+    Because template-cloned modules share the schema name ``tq_mod`` within a
+    single xdist worker, schema-keyed caches such as emit sweep cursors and
+    emit capability verdicts must be cleared across module boundaries.
+    """
+    emit_mod = sys.modules.get("taskq.workflows._emit")
+    if emit_mod is not None:
+        cursors = getattr(emit_mod, "_SWEEP_CURSORS", None)
+        if isinstance(cursors, dict):
+            cursors.pop(schema, None)
+    cap_mod = sys.modules.get("taskq.workflows._capability")
+    if cap_mod is not None:
+        reset_fn = getattr(cap_mod, "reset_emit_capability_cache", None)
+        if callable(reset_fn):
+            reset_fn(schema)
+
+
 @pytest_asyncio.fixture(scope="module")
 async def module_pg_schema(
     request: pytest.FixtureRequest,
@@ -1622,7 +1649,12 @@ async def module_pg_schema(
     """
     pre_migrated = request.node.stash.get(_PG_TEMPLATE_SCHEMA_KEY, None)
     if pre_migrated is not None and pre_migrated[0] == pg_dsn:
-        yield ModulePgSchema(schema_name=pre_migrated[1], pg_dsn=pg_dsn)
+        schema_name = pre_migrated[1]
+        _clear_workflow_schema_caches(schema_name)
+        try:
+            yield ModulePgSchema(schema_name=schema_name, pg_dsn=pg_dsn)
+        finally:
+            _clear_workflow_schema_caches(schema_name)
         return
 
     from taskq.migrate import apply_pending

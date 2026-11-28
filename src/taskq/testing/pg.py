@@ -165,16 +165,16 @@ _TRUNCATE_TABLES: tuple[str, ...] = (
 
 
 _migrated_triggers: dict[
-    tuple[str, str],
-    tuple[tuple[int, int, datetime], frozenset[tuple[str, str]]],
+    tuple[str, str, datetime],
+    tuple[tuple[int, int], frozenset[tuple[str, str]]],
 ] = {}
-"""Per-(database, schema) trigger set as the migrations left it, captured on first reset.
+"""Per-(database, schema, server_start) trigger set as the migrations left it.
 
-Keyed by ``(current_database(), schema)`` and stamped with
-``(db_oid, schema_oid, pg_postmaster_start_time())`` so separate databases
-sharing a schema name, a dropped-and-recreated database/schema reusing the
-same name, or separate disposable containers with identical OIDs never share
-or poison each other's snapshot.
+Keyed by ``(current_database(), schema, pg_postmaster_start_time())`` and
+stamped with ``(db_oid, schema_oid)`` so separate databases sharing a schema
+name, a dropped-and-recreated database/schema reusing the same name, or
+concurrent disposable containers with identical names and OIDs never share,
+thrash, or poison each other's snapshot.
 
 A test that installs a trigger, a commit-time constraint trigger to make
 a COMMIT fail, say, changes the schema's DDL, which no TRUNCATE undoes.
@@ -218,13 +218,13 @@ async def _reset_triggers(conn: _Conn, schema: str) -> None:
     )
     if not rows:
         return
-    key = (str(rows[0]["db_name"]), schema)
     server_start = rows[0]["server_start"]
     if not isinstance(server_start, datetime):
         raise TypeError(
             f"expected datetime for pg_postmaster_start_time(), got {type(server_start)!r}"
         )
-    instance_stamp = (int(rows[0]["db_oid"]), int(rows[0]["schema_oid"]), server_start)
+    key = (str(rows[0]["db_name"]), schema, server_start)
+    instance_stamp = (int(rows[0]["db_oid"]), int(rows[0]["schema_oid"]))
     present = {
         (str(row["table_name"]), str(row["trigger_name"]))
         for row in rows

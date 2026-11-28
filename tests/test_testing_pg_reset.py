@@ -431,3 +431,63 @@ async def test_reset_triggers_recreated_schema_same_name_pg(
         assert await _list_user_triggers(clean_pg_conn, scratch) == ["mig_b"]
     finally:
         await clean_pg_conn.execute(f'DROP SCHEMA IF EXISTS "{scratch}" CASCADE')
+
+
+async def test_reset_triggers_isolates_concurrent_servers_with_identical_names_and_oids() -> None:
+    """Two concurrent servers sharing (db_name, schema, db_oid, schema_oid) keep distinct
+    trigger baselines and never adopt leaked triggers from interleaving resets."""
+    from datetime import UTC, datetime
+
+    from taskq.testing.pg import (
+        _reset_triggers,  # pyright: ignore[reportPrivateUsage]  # Why: unit pin for concurrent server_start isolation in the trigger cache.
+    )
+
+    class _FakeServerConn:
+        def __init__(self, server_start: datetime, triggers: set[tuple[str, str]]) -> None:
+            self.server_start = server_start
+            self.triggers = set(triggers)
+            self.dropped: list[str] = []
+
+        async def fetch(self, _query: str, *_args: object, **_kwargs: Any) -> list[dict[str, Any]]:
+            if not self.triggers:
+                return [
+                    {
+                        "db_name": "taskq",
+                        "db_oid": 16384,
+                        "schema_oid": 2200,
+                        "server_start": self.server_start,
+                        "table_name": None,
+                        "trigger_name": None,
+                    }
+                ]
+            return [
+                {
+                    "db_name": "taskq",
+                    "db_oid": 16384,
+                    "schema_oid": 2200,
+                    "server_start": self.server_start,
+                    "table_name": tbl,
+                    "trigger_name": trg,
+                }
+                for tbl, trg in sorted(self.triggers)
+            ]
+
+        async def execute(self, query: str, *_args: object, **_kwargs: Any) -> str:
+            self.dropped.append(query)
+            return "DROP TRIGGER"
+
+    schema = f"tq_conc_{new_base62()}".lower()
+    server_a = _FakeServerConn(datetime(2026, 11, 27, 1, 0, tzinfo=UTC), {("jobs", "mig_a")})
+    server_b = _FakeServerConn(datetime(2026, 11, 27, 2, 0, tzinfo=UTC), {("jobs", "mig_b")})
+
+    # Snapshot both concurrent servers under identical (db_name, schema, oids).
+    await _reset_triggers(server_a, schema)
+    await _reset_triggers(server_b, schema)
+
+    # Test adds an extra trigger on server A; server B resets in between.
+    server_a.triggers.add(("jobs", "leaked_a"))
+    await _reset_triggers(server_b, schema)
+    await _reset_triggers(server_a, schema)
+
+    assert server_b.dropped == []
+    assert server_a.dropped == [f'DROP TRIGGER "leaked_a" ON "{schema}"."jobs"']
