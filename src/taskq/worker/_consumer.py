@@ -120,7 +120,11 @@ from taskq.worker._watchdog import (  # pyright: ignore[reportPrivateUsage]  # W
     register_tracked_actor_handle,
 )
 from taskq.worker.cancel import ActiveJobRegistry, _ActiveJob
-from taskq.worker.deps import POOL_INFRA_EXCEPTIONS, WorkerDeps
+from taskq.worker.deps import (
+    POOL_INFRA_EXCEPTIONS,
+    WorkerDeps,
+    _track_detached_body,  # pyright: ignore[reportPrivateImportUsage]  # Why: the deadline detachment is the workflow pool gate's designated task-lifetime writer; the gate itself lives beside WorkerDeps.
+)
 from taskq.worker.shutdown import (  # pyright: ignore[reportPrivateUsage]  # Why: the consumer's release arm and the releasing phase are the two writers of the same interruption release; they must share the one hold computation rather than drift (see _interrupted_actor_hold).
     ShutdownPhase,
     _release_hold,
@@ -2249,6 +2253,7 @@ async def _enforce_start_to_close(
             # owns.
             body_task.add_done_callback(_retrieve_body_task_outcome)
             register_tracked_actor_handle(body_task)
+            _track_detached_body(body_task)
 
     if expired:
         # The body task's done-callback is queued, so the wait's wakeup

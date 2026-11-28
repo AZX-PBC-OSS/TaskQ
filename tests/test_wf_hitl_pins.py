@@ -1244,6 +1244,7 @@ async def test_the_sweep_winning_the_abandon_race_is_the_refused_loser(
     # the deadline past (the injected clock) — the sweep CAN win.
     await expire_holds(wf_conn, wf_schema, flow_id, timer_only=False)
     park = await asyncpg.connect(module_pg_schema.pg_dsn)
+    abandon_task: asyncio.Task[Any] | None = None
     try:
         async with park.transaction():
             # THE PARK: the abandon's node pre-lock blocks here — AFTER
@@ -1251,15 +1252,22 @@ async def test_the_sweep_winning_the_abandon_race_is_the_refused_loser(
             await park.fetchval(
                 f'SELECT id FROM "{wf_schema}".jobs WHERE id = $1 FOR UPDATE', node_id
             )
+            park_pid = park.get_server_pid()
             abandon_task = asyncio.create_task(
                 client.abandon(str(hold_uuid), reason="a late stop", principal="op-7")
             )
             deadline = time.monotonic() + 10.0
             while time.monotonic() < deadline:
-                waits = await park.fetchval(
+                # Poll on wf_conn (outside park's open transaction): Postgres
+                # caches pg_stat_activity's per-backend datname snapshot on the
+                # first read inside a transaction, which would freeze a lazily
+                # opened pool backend at state='starting'/datname=NULL.
+                waits = await wf_conn.fetchval(
                     "SELECT count(*) FROM pg_stat_activity "
-                    "WHERE wait_event_type = 'Lock' AND pid <> pg_backend_pid() "
-                    "AND datname = current_database()"
+                    "WHERE wait_event_type = 'Lock' "
+                    "AND pid NOT IN (pg_backend_pid(), $1) "
+                    "AND datname = current_database()",
+                    park_pid,
                 )
                 if waits:
                     break
@@ -1273,6 +1281,9 @@ async def test_the_sweep_winning_the_abandon_race_is_the_refused_loser(
         # which matches nothing (the row is 'abandoned').
         result = await abandon_task
     finally:
+        if abandon_task is not None and not abandon_task.done():
+            abandon_task.cancel()
+            await asyncio.gather(abandon_task, return_exceptions=True)
         await park.close()
     assert result.status == "refused", (
         f"the sweep won the race; the abandon must answer the REFUSED "
@@ -2077,6 +2088,8 @@ async def test_deliver_and_abandon_take_one_lock_order_no_deadlock(
     (hold,) = await client.list(run=flow_id)
     hold_uuid = uuid_module.UUID(hold.hold_id)
     park = await asyncpg.connect(module_pg_schema.pg_dsn)
+    deliver_task: asyncio.Task[Any] | None = None
+    abandon_task: asyncio.Task[Any] | None = None
     try:
         async with park.transaction():
             # THE PARK: the hold's own signal row — the deliver's CAS
@@ -2084,6 +2097,7 @@ async def test_deliver_and_abandon_take_one_lock_order_no_deadlock(
             await park.execute(
                 f'SELECT id FROM "{wf_schema}".wf_signals WHERE id = $1 FOR UPDATE', hold_uuid
             )
+            park_pid = park.get_server_pid()
             deliver_task = asyncio.create_task(
                 deliver_payload(
                     wf_pool,
@@ -2099,10 +2113,15 @@ async def test_deliver_and_abandon_take_one_lock_order_no_deadlock(
             )
             deadline = time.monotonic() + 10.0
             while time.monotonic() < deadline:
-                waits = await park.fetchval(
+                # Poll on wf_conn (outside park's open transaction) so a lazily
+                # opened pool backend is never frozen at state='starting'/datname=NULL
+                # in park's transaction-local pg_stat_activity snapshot.
+                waits = await wf_conn.fetchval(
                     "SELECT count(*) FROM pg_stat_activity "
-                    "WHERE wait_event_type = 'Lock' AND pid <> pg_backend_pid() "
-                    "AND datname = current_database()"
+                    "WHERE wait_event_type = 'Lock' "
+                    "AND pid NOT IN (pg_backend_pid(), $1) "
+                    "AND datname = current_database()",
+                    park_pid,
                 )
                 if waits and int(waits) >= 2:
                     break
@@ -2114,6 +2133,11 @@ async def test_deliver_and_abandon_take_one_lock_order_no_deadlock(
             deliver_task, abandon_task, return_exceptions=True
         )
     finally:
+        pending = [t for t in (deliver_task, abandon_task) if t is not None and not t.done()]
+        for task in pending:
+            task.cancel()
+        if pending:
+            await asyncio.gather(*pending, return_exceptions=True)
         await park.close()
     for name, outcome in (("deliver", deliver_result), ("abandon", abandon_result)):
         assert not isinstance(outcome, asyncpg.DeadlockDetectedError), (

@@ -1197,16 +1197,22 @@ async def _dispatch_flow_job(
     )
 
     async def _run() -> "FlowExecution":
-        return await flow_execute(
-            pool=deps.dispatcher_pool,
-            schema=deps.settings.schema_name,
-            worker_id=JobId(worker_id),
-            job=job,
-            # the settings' value threaded to the door; the row's own stamp
-            # outranks it (the vanilla _effective_start_to_close chain's own
-            # order).
-            default_start_to_close=deps.settings.default_start_to_close,
-        )
+        # The pool this claim executes on is held for the claim's whole life,
+        # read and held in one suspension-free step (see ``ReloadGate``): a
+        # credential reload that swaps pools drains the claims admitted on the
+        # old one before closing it, so this claim keeps a live pool even when
+        # it was admitted while the reload was draining.
+        async with deps.reload_gate.claim(deps.dispatcher_pool) as claim_pool:
+            return await flow_execute(
+                pool=claim_pool,
+                schema=deps.settings.schema_name,
+                worker_id=JobId(worker_id),
+                job=job,
+                # the settings' value threaded to the door; the row's own stamp
+                # outranks it (the vanilla _effective_start_to_close chain's own
+                # order).
+                default_start_to_close=deps.settings.default_start_to_close,
+            )
 
     task = asyncio.create_task(_run(), name=f"flow-attempt:{job.id}")
     entry = await deps.active_jobs.register(job.id, task, ctx)

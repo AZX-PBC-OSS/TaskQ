@@ -1349,6 +1349,42 @@ async def _warn_on_cron_drift(backend: Backend, spec: CronScheduleSpec) -> None:
     )
 
 
+def _emit_workflow_deps_shutdown_budget_warning(
+    settings: WorkerSettings, binding_count: int
+) -> None:
+    """Add the declared workflow deps releases to the shutdown budget.
+
+    The base settings model cannot see app declarations. Each distinct app
+    factory can resolve one resource whose bounded release unwinds before the
+    role pools, so its close timeout is additive just like the base stack's.
+    This is a warning, not a validation refusal, for the same operator-choice
+    reason as the base budget warning.
+    """
+    if binding_count == 0:
+        return
+    deps_tail = binding_count * CLOSE_TIMEOUT_SECS
+    worst_case = settings.worst_case_shutdown_seconds + deps_tail
+    if worst_case <= settings.termination_grace_period:
+        return
+    _startup_log.warning(
+        "workflow-deps-shutdown-budget-exceeds-termination-grace",
+        workflow_deps_bindings=binding_count,
+        workflow_deps_close_tail_seconds=deps_tail,
+        worst_case_seconds=worst_case,
+        termination_grace_period=settings.termination_grace_period,
+        cancellation_grace_period=settings.cancellation_grace_period,
+        cleanup_grace_period=settings.cleanup_grace_period,
+        remedy=(
+            f"Set the worker termination grace to at least {worst_case:g}s "
+            "(including the declared workflow deps releases), or lower "
+            "TASKQ_CANCELLATION_GRACE_PERIOD / TASKQ_CLEANUP_GRACE_PERIOD. "
+            "Each distinct WorkflowApp(deps_factory=...) binding adds one "
+            f"sequential {CLOSE_TIMEOUT_SECS:g}s bounded release before the "
+            "worker PG pools close."
+        ),
+    )
+
+
 def _emit_startup_warnings(settings: WorkerSettings) -> None:
     """Emit the once-at-startup operator warnings for a worker's settings.
 
@@ -2158,6 +2194,9 @@ async def _main(
             wf_execution_capable = _wf_execution.workflow_execution_capable()
             if wf_execution_capable:
                 _wf_cohort_configs = _wf_execution.project_workflow_actor_configs()
+                _emit_workflow_deps_shutdown_budget_warning(
+                    settings, _wf_execution.workflow_deps_factory_count()
+                )
                 # the authoring face's bucket instances register into the same
                 # resolved registry the vanilla actors' collection pass fills
                 # (one registry, one acquire path); a str name nothing
@@ -2547,6 +2586,34 @@ async def _main(
             stack.push_async_callback(process_scope.shutdown)
             stack.push_async_callback(thread_scope.shutdown)
             stack.push_async_callback(loop_scope.shutdown)
+            if wf_execution_capable and _wf_execution is not None:
+                # the workflow deps lifecycle's ONE teardown owner: this stack
+                # unwinds after the TaskGroup below has drained (a graceful
+                # shutdown) or aborted (a sibling crash), and before
+                # ``open_worker_deps`` closes the role pools — so a
+                # factory-created resource releases exactly once while its
+                # loop, its pools and the app-registered loop-scope connection
+                # are all still open. Pushed after ``loop_scope.shutdown``: the
+                # stack is LIFO, so the deps release runs before the scopes
+                # (and everything a scope owns) tear down. A worker whose boot
+                # never resolved one pays a single no-op call.
+                stack.push_async_callback(_wf_execution.teardown_worker_workflow_state, worker_id)
+
+                # The reload counterpart: registering on the deps shell makes
+                # every SIGHUP / request_reload() / scheduled reload rotate the
+                # workflow deps' generation BEFORE the reload swaps the role
+                # pools, so a superseded instance is released while the pool it
+                # was built against is still open. The module reference is
+                # captured here (the lazy import boundary is unchanged) so the
+                # hook itself imports nothing at reload time.
+                wf_execution_mod = _wf_execution
+
+                async def _reload_workflow_deps(drain_timeout: float) -> None:
+                    await wf_execution_mod.reload_worker_workflow_state(
+                        worker_id, drain_timeout=drain_timeout
+                    )
+
+                deps.reload_drain = _reload_workflow_deps
 
             if deps.settings.health_enabled:
                 health_server = HealthServer()
@@ -3186,6 +3253,10 @@ async def _reload_coordinator_loop(
       (``deps.shutdown_phase`` is not NONE): churning pools on a draining
       worker is wasteful, and the leader watchdog could re-acquire
       leadership mid-shutdown.
+    * A registered ``deps.reload_drain`` (the workflow deps' generation
+      rotation) runs inside ``reload_credentials`` before any pool is swapped,
+      so a superseded factory-created instance is released while the old pools
+      are still open.
     * When the reload swapped the worker pool and the worker (not the
       user) registered ``asyncpg.Pool`` in DI, the LOOP-scope cache is
       refreshed so actors injected with ``db: asyncpg.Pool`` resolve the

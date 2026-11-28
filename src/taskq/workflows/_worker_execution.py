@@ -46,6 +46,7 @@ workflows package, and a worker that never opens this seam pays nothing.
 
 from __future__ import annotations
 
+import asyncio
 import weakref
 from collections.abc import Iterator
 from datetime import timedelta
@@ -60,7 +61,14 @@ from taskq.ratelimit.refs import KeyedRateLimitRef, KeyedReservationRef
 from taskq.ratelimit.registry import RateLimitRegistry
 from taskq.ratelimit.reservation import ConcurrencyReservation
 from taskq.workflows._policy import FiniteReservationCohort
+from taskq.workflows._worker_deps import (
+    prepare_worker_deps,
+    reset_worker_deps_for_tests,
+    rotate_worker_deps,
+    teardown_worker_deps,
+)
 from taskq.workflows.api._app import CompiledWorkflow
+from taskq.workflows.api._deps_factory import DepsResolution
 from taskq.workflows.api._runner_errors import WorkflowRootMissingError, WorkflowRunError
 from taskq.workflows.api._sql_runner import render_sql
 from taskq.workflows.definitions import DuplicateWorkflowError
@@ -93,7 +101,10 @@ __all__ = [
     "project_workflow_actor_configs",
     "record_compiled",
     "register_app",
+    "reload_worker_workflow_state",
     "reset_app_registry_for_tests",
+    "teardown_worker_workflow_state",
+    "workflow_deps_factory_count",
     "workflow_execution_capable",
 ]
 
@@ -297,6 +308,13 @@ def reset_app_registry_for_tests() -> None:
     _projection_cache = None
     _apps.clear()
     _compiled.clear()
+    # the runner cache and the worker-and-loop deps resolutions are the same
+    # kind of process-global: a test's compile, worker id and loop are its own,
+    # and a resolution minted against a binding whose app is gone must not
+    # answer (or release) in a later test.
+    _reset_runner_cache_for_tests()
+    _unbound_runners.clear()
+    reset_worker_deps_for_tests()
 
 
 def iter_imported_apps() -> list[object]:
@@ -795,6 +813,22 @@ def _iter_live_recorded_workflows() -> Iterator[tuple[str, str, CompiledWorkflow
             yield app_face, name, compiled if isinstance(compiled, CompiledWorkflow) else None
 
 
+def workflow_deps_factory_count() -> int:
+    """The distinct live app factory bindings the shutdown budget models.
+
+    Called after the boot projection has recorded the live compiles. Several
+    workflows of one app share its binding and therefore one potential
+    sequential release; a second app's binding adds its own close timeout.
+    """
+    return len(
+        {
+            id(compiled.deps_factory)
+            for _app, _name, compiled in _iter_live_recorded_workflows()
+            if compiled is not None and compiled.deps_factory is not None
+        }
+    )
+
+
 def collect_workflow_rate_limits(registry: RateLimitRegistry) -> tuple[list[str], list[str]]:
     """the BOOT'S COLLECT (the vanilla actors' collection pass's sibling
     — the admission-terms surface): every imported app's compiled
@@ -1059,15 +1093,65 @@ def collect_workflow_reservations(
 
 # ── the execution door ───────────────────────────────────────────────────
 
-_runners: dict[tuple[str, str, str, str], tuple[Any, Any]] = {}
-"""The worker-hosted runners, keyed (schema, workflow name, worker id,
-worker default) — the worker's pool + identity are process-stable, so
-the cache holds ONE runner per workflow per process (the construction
-validates the graph once). The pool rides the value so a swapped pool
-rebuilds the runner; the worker default rides the KEY — two callers
-naming different defaults (a test's 300s, another's ``None``, a fleet's
-per-tenant settings) must never share a runner (the second would
-inherit the first's deadline)."""
+type _RunnerKey = tuple[str, str, str, str]
+"""``(schema, workflow name, worker id, worker default)``."""
+
+_RunnerEntry = tuple[Any, DepsResolution | None, Any]
+"""``(pool, deps resolution, runner)`` — the pool and the resolution ride the
+value because their identity decides whether the cached runner still serves:
+a swapped pool or a rotation's fresh resolution rebuilds it."""
+
+type _RunnerBucket = dict[_RunnerKey, _RunnerEntry]
+_RUNNER_BUCKET_ATTR: Final[str] = "_taskq_workflow_runners"
+_runner_loops: weakref.WeakSet[asyncio.AbstractEventLoop] = weakref.WeakSet()
+"""Loops with a worker-hosted runner bucket, weakly tracked for test reset.
+
+The worker's pool and identity are process-stable, so the cache holds ONE
+runner per workflow per loop (the construction validates the graph once);
+the loop is the scope because a runner's pool and deps resolution are bound
+to the loop that made them — two loops never share one. The bucket belongs to
+the loop itself: a cached runner retains its pool, and asyncpg pools retain
+their loop, so a module-level weak-key map with a strong bucket value would
+pin its own key. Loop ownership leaves only a collectable cycle when the host
+abandons the loop. The worker default is part of the KEY — two callers naming
+different defaults (a test's 300s, another's ``None``, a fleet's per-tenant
+settings) must never share a runner (the second would inherit the first's
+deadline)."""
+
+
+def _cached_runner_bucket(loop: asyncio.AbstractEventLoop) -> _RunnerBucket | None:
+    bucket = getattr(loop, _RUNNER_BUCKET_ATTR, None)
+    return cast("_RunnerBucket", bucket) if isinstance(bucket, dict) else None
+
+
+def _reset_runner_cache_for_tests() -> None:
+    for loop in list(_runner_loops):
+        bucket = _cached_runner_bucket(loop)
+        if bucket is not None:
+            bucket.clear()
+            delattr(loop, _RUNNER_BUCKET_ATTR)
+    _runner_loops.clear()
+
+
+_unbound_runners: dict[_RunnerKey, _RunnerEntry] = {}
+"""The runners a caller built with NO running loop — the dev/test seam
+``_runner_for`` keeps for callers that own the runner's lifetime themselves
+(``execute_flow_job`` always runs on a loop and lands in the loop's bucket)."""
+
+
+def _runner_bucket() -> dict[_RunnerKey, _RunnerEntry]:
+    """The cache bucket for the RUNNING loop (the unbound one when no loop is
+    running)."""
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:  # no running loop: the caller owns the runner's lifetime
+        return _unbound_runners
+    bucket = _cached_runner_bucket(loop)
+    if bucket is None:
+        bucket = {}
+        setattr(loop, _RUNNER_BUCKET_ATTR, bucket)
+        _runner_loops.add(loop)
+    return bucket
 
 
 def _runner_for(
@@ -1076,33 +1160,108 @@ def _runner_for(
     schema: str,
     worker_id: JobId,
     default_start_to_close: timedelta | None = None,
+    *,
+    deps_resolution: DepsResolution | None = None,
 ) -> Any:
     from taskq.workflows.api._runner import FlowRunner
 
     default_key = "" if default_start_to_close is None else repr(default_start_to_close)
-    key = (schema, name, str(worker_id), default_key)
-    cached = _runners.get(key)
-    if cached is not None and cached[0] is pool:
-        return cached[1]
+    key: _RunnerKey = (schema, name, str(worker_id), default_key)
+    bucket = _runner_bucket()
+    cached = bucket.get(key)
+    if cached is not None and cached[0] is pool and cached[1] is deps_resolution:
+        return cached[2]
     compiled = get_compiled_workflow(name)
-    # the compiled carries the app's bound instance (bound once at
-    # WorkflowApp(deps=…)) — the worker-hosted runner hands the same instance
-    # to every body invocation the vanilla door does (the E12 contract checked
-    # the bodies' declarations against this binding at the projection's
-    # compile).
+    # the compiled carries the app's deps binding — the static instance bound at
+    # ``WorkflowApp(deps=…)``, or the factory declared at
+    # ``WorkflowApp(deps_factory=…)``. A factory-bound app reaching this door
+    # arrives with the WORKER-AND-LOOP-SCOPED resolution the door prepared
+    # (``_worker_deps.prepare_worker_deps``): every runner of the app on this
+    # worker and loop then drives that ONE resolution, so the factory runs once
+    # and every body receives the same instance. The explicit ``deps=`` keeps
+    # the static arm's long-standing call shape; ``None`` lets the runner fall
+    # back to the compile's binding (the dev/test callers that own a runner's
+    # lifetime themselves).
     runner = FlowRunner(
         compiled,
         pool,
         schema,
         worker_id=worker_id,
-        deps=compiled.deps if isinstance(compiled, CompiledWorkflow) else None,
+        deps=(
+            compiled.deps
+            if isinstance(compiled, CompiledWorkflow) and deps_resolution is None
+            else None
+        ),
+        deps_resolution=deps_resolution,
         # the worker settings' value, threaded from the dispatch loop's deps.
         # Process-stable (the settings load once at boot), and part of the
         # cache key — a changed default builds its own runner, never inherits.
         default_start_to_close=default_start_to_close,
     )
-    _runners[key] = (pool, runner)
+    bucket[key] = (pool, deps_resolution, runner)
     return runner
+
+
+async def teardown_worker_workflow_state(worker_id: UUID) -> None:
+    """The worker's ONE workflow-runtime teardown — the exit-stack callback
+    ``_bootstrap._main`` pushes after the TaskGroup drained and before
+    ``open_worker_deps`` closes the role pools.
+
+    Releases the worker's factory-created deps on the RUNNING loop (bounded,
+    error-isolated: see ``_worker_deps.teardown_worker_deps``) and evicts the
+    runners cached for it — a runner left behind would hold a resolution that
+    was just released, and a later worker lifecycle in this process (a
+    re-boot, a test) would reuse it and fail ``the deps owner is closed`` on
+    its first deps-declaring body.
+
+    Only this worker's entries and runners go: a co-resident worker's live
+    state on the same loop is untouched.
+    """
+    await teardown_worker_deps(worker_id)
+    _forget_worker_runners(worker_id)
+
+
+def _forget_worker_runners(worker_id: UUID) -> None:
+    """Evict this worker's runner cache entries on the RUNNING loop (the
+    unbound bucket is the dev/test seam's own and dies with the registry's
+    test reset)."""
+    loop = asyncio.get_running_loop()
+    bucket = _cached_runner_bucket(loop)
+    if bucket is None:
+        return
+    identity = str(worker_id)
+    for key in [key for key in bucket if key[2] == identity]:
+        bucket.pop(key, None)
+    if not bucket:
+        delattr(loop, _RUNNER_BUCKET_ATTR)
+        _runner_loops.discard(loop)
+
+
+async def reload_worker_workflow_state(worker_id: UUID, *, drain_timeout: float) -> None:
+    """The worker's workflow-deps RELOAD hand-off — the callback
+    ``WorkerDeps.reload_drain`` carries into ``reload_credentials``.
+
+    Awaited at the top of every credential reload, before any pool is swapped:
+    each app factory's generation is re-read, the resolutions' live queues are
+    drained (bounded by *drain_timeout*), the superseded instances released
+    exactly once, and the worker's cached runners evicted so the next claim
+    builds a runner whose binding is the current generation. Doing it before
+    the swap is what keeps the ordering contract: a slow body that finishes
+    inside the drain bound still completes against open pools, and a reload of
+    unchanged generations still asks the live claims to settle.
+
+    This drains the deps GENERATIONS; the pools a claim may still be admitted
+    on are the reload gate's (`WorkerDeps.reload_gate`, held by the dispatch
+    path for the claim's lifetime and awaited by each old pool's close).
+
+    Never raises: the rotation reports its own failures (drained late, release
+    timed out, release raised) through the workflow-deps telemetry, and a
+    reload must not abort the credential rotation or the worker's TaskGroup
+    because a factory-created resource misbehaved.
+    """
+    reports = await rotate_worker_deps(worker_id, drain_timeout=drain_timeout)
+    if any(report.rotated for report in reports):
+        _forget_worker_runners(worker_id)
 
 
 async def execute_flow_job(
@@ -1176,7 +1335,7 @@ async def execute_flow_job(
             "the stamp is the resolution's durable leg"
         )
     try:
-        get_compiled_workflow(workflow_name)
+        compiled = get_compiled_workflow(workflow_name)
     except KeyError:
         raise WorkflowBodyUnresolvableError(
             f"workflow {workflow_name!r} is not compiled in this process "
@@ -1184,6 +1343,19 @@ async def execute_flow_job(
             "pass (D1); a row stamped with an unimported workflow names "
             "a deployment defect"
         ) from None
+    # The app's factory binding (``WorkflowApp(deps_factory=…)``) resolves
+    # through the WORKER-AND-LOOP scope: every workflow of this app on this
+    # worker mints ONE instance on this loop's first deps-declaring body, and
+    # the worker's shutdown teardown releases it before the role pools close
+    # (``teardown_worker_workflow_state`` ← ``_bootstrap._main``'s exit stack).
+    # A static ``deps=`` app has nothing to prepare: the instance rides the
+    # compile into the runner.
+    binding = compiled.deps_factory if isinstance(compiled, CompiledWorkflow) else None
+    deps_resolution = (
+        prepare_worker_deps(binding, workflow=workflow_name, worker_id=worker_id)
+        if binding is not None
+        else None
+    )
 
     # the root's stamped override through the shared parse → domain-clamp →
     # degrade cascade (``resolve_priority_stamp`` — a stamp a hand-crafted row
@@ -1215,7 +1387,12 @@ async def execute_flow_job(
     from taskq.workflows.api._runner_errors import WorkflowRunError
 
     runner = _runner_for(
-        workflow_name, pool, schema, worker_id, default_start_to_close=default_start_to_close
+        workflow_name,
+        pool,
+        schema,
+        worker_id,
+        default_start_to_close=default_start_to_close,
+        deps_resolution=deps_resolution,
     )
     try:
         outcome = await runner.run_fleet_claimed_step(

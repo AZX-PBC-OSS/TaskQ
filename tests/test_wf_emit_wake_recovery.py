@@ -418,8 +418,12 @@ async def test_uncommitted_terminal_cannot_hide_from_both_commit_acknowledged_re
         # terminal statement and COMMIT.
         delayed_pool = _DelayedCommitPool(wf_pool, wf_sql, JobId(child_rows[1]["id"]))
         delayed_runner = FlowRunner(compiled, cast("asyncpg.Pool", delayed_pool), wf_schema)
-        child_tasks.append(asyncio.create_task(runner.tick(flow_id)))
+        peer_delayed_runner = FlowRunner(compiled, cast("asyncpg.Pool", delayed_pool), wf_schema)
+        # Either claimant may win child 1. Both must carry the delaying proxy:
+        # otherwise one tick can claim both children and child 1's terminal
+        # write bypasses the hook this interleaving is waiting for.
         child_tasks.append(asyncio.create_task(delayed_runner.tick(flow_id)))
+        child_tasks.append(asyncio.create_task(peer_delayed_runner.tick(flow_id)))
         await asyncio.wait_for(child_one_started.wait(), _WAIT_S)
         child_gate.set()
         await asyncio.wait_for(delayed_pool.terminal_ready.wait(), _WAIT_S)

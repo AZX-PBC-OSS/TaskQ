@@ -16,6 +16,7 @@ engine's own statements read back.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import tempfile
@@ -31,9 +32,14 @@ from uuid import (
 
 import asyncpg
 import pytest
+import pytest_asyncio
 
 from taskq._ids import new_uuid
 from taskq.backend._protocol import JobId
+from taskq.connections import (
+    DEFAULT_MAX_CACHED_STATEMENT_LIFETIME,
+    DEFAULT_STATEMENT_CACHE_SIZE,
+)
 from taskq.testing._claims import load_claims, record_claim
 from taskq.workflows import Promise
 from taskq.workflows._sql import WorkflowSql
@@ -904,16 +910,32 @@ def wf_schema(module_pg_schema: Any) -> str:
     return module_pg_schema.schema_name
 
 
-@pytest.fixture
+@pytest_asyncio.fixture(scope="module")
 async def wf_pool(module_pg_schema: Any) -> AsyncIterator[asyncpg.Pool]:
-    """The RUNNER's pool (the typed API : the flow runner acquires from a pool (its
-    claims + finalizes); the module's DSN builds it — one pool per test,
-    closed at teardown. The loop pins share it (a fixture
-    duplicated across two files is a seam owed now — this is the
-    seam's home, beside the other wf fixtures)."""
-    pool = await asyncpg.create_pool(module_pg_schema.pg_dsn)
-    yield pool
-    await pool.close()
+    """Module-scoped asyncpg pool for workflow runners and clients.
+
+    Shared across tests in the module; per-test table isolation is handled by
+    ``wf_conn`` / ``clean_pg_conn``. Callers outside ``test_wf_*`` /
+    ``test_workflows_*`` (where ``wf_g7_status_truth`` does not auto-attach
+    ``wf_conn``) must also request ``wf_conn`` or ``clean_pg_conn`` if they
+    require per-test table truncation. ``min_size=1, max_size=10`` avoids
+    opening 10 idle connections per test while preserving concurrency headroom
+    for fan-out and worker tests.
+    """
+    pool = await asyncpg.create_pool(
+        module_pg_schema.pg_dsn,
+        min_size=1,
+        max_size=10,
+        statement_cache_size=DEFAULT_STATEMENT_CACHE_SIZE,
+        max_cached_statement_lifetime=DEFAULT_MAX_CACHED_STATEMENT_LIFETIME,
+    )
+    try:
+        yield pool
+    finally:
+        try:
+            await asyncio.wait_for(pool.close(), timeout=5.0)
+        except TimeoutError:
+            pool.terminate()
 
 
 @pytest.fixture

@@ -78,6 +78,10 @@ from pydantic import BaseModel
 
 from taskq._ids import new_uuid
 from taskq.backend._protocol import JobId
+from taskq.connections import (
+    DEFAULT_MAX_CACHED_STATEMENT_LIFETIME,
+    DEFAULT_STATEMENT_CACHE_SIZE,
+)
 from taskq.migrate import apply_pending
 from taskq.testing.pg import reset_schema
 from taskq.workflows import (
@@ -151,14 +155,22 @@ async def wf_schema(chp_schema: str, pg_dsn: str) -> AsyncIterator[str]:
     yield chp_schema
 
 
-@pytest_asyncio.fixture
-async def wf_pool(wf_schema: str, pg_dsn: str) -> AsyncIterator[asyncpg.Pool]:
-    """The runner's pool on the pack's DSN (one per test — the house
-    ``wf_pool`` pattern). Teardown TERMINATES, never graceful-closes:
-    the recursion-bomb red's RecursionError destroys a holder-release task
-    mid-flight, and ``close()`` waits on that never-released holder
-    forever (the pack's own seam — a red must never wedge the suite)."""
-    pool = await asyncpg.create_pool(pg_dsn)
+@pytest_asyncio.fixture(scope="module")
+async def wf_pool(chp_schema: str, pg_dsn: str) -> AsyncIterator[asyncpg.Pool]:
+    """Module-scoped runner pool on the pack's DSN (per-test table isolation is
+    handled by function-scoped ``wf_schema``). Teardown TERMINATES, never
+    graceful-closes: the recursion-bomb red's RecursionError destroys a
+    holder-release task mid-flight, and ``close()`` waits on that never-released
+    holder forever (the pack's own seam — a red must never wedge the suite)."""
+    # Ensure the module schema exists before pool creation and drops after teardown.
+    del chp_schema
+    pool = await asyncpg.create_pool(
+        pg_dsn,
+        min_size=1,
+        max_size=10,
+        statement_cache_size=DEFAULT_STATEMENT_CACHE_SIZE,
+        max_cached_statement_lifetime=DEFAULT_MAX_CACHED_STATEMENT_LIFETIME,
+    )
     try:
         yield pool
     finally:

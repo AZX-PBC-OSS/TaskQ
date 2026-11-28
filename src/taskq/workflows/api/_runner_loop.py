@@ -12,6 +12,8 @@ driver here.
 
 from __future__ import annotations
 
+from collections.abc import Callable
+from contextlib import AbstractAsyncContextManager
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, Literal, Protocol, cast
 
@@ -29,7 +31,6 @@ from taskq.workflows._types import FinalizeResult
 from taskq.workflows.api._attempt import AttemptClaim, repend_attempt
 from taskq.workflows.api._ctx import build_step_context
 from taskq.workflows.api._ctx_wait import HoldMintFencedError, NodeHeldError
-from taskq.workflows.api._deps import deps_param_declared
 from taskq.workflows.api._runner_codec import encode_result, jsonable
 from taskq.workflows.api._runner_errors import WorkflowRunError
 from taskq.workflows.api._runner_ladder import (
@@ -65,13 +66,21 @@ class _LoopHost(Protocol):
     wsql: WorkflowSql
     schema: str
     compiled: Any
-    #: the app's one instance (the runner's door binds it) — the loop driver's
-    #: bodies that declare the deps shape receive it, the same instance every
-    #: other body invocation sees.
-    _deps: object | None
     #: the id the node claim stamped on the row — the loop's advance/exhaust
     #: bind it (a zombie driver's write is refused by its own legs).
     _worker_id: JobId
+
+    def _deps_scope(
+        self, body: Callable[..., object], wired_count: int
+    ) -> AbstractAsyncContextManager[tuple[object, ...]]:
+        """The body's deps injection (the runner's one seam): the instance
+        the runner bound or lazily resolved, empty when the body does not
+        declare the deps shape. A loop body declares it as one param beyond
+        ``(ctx, carry)``. The instance is leased for the body's lifetime, so a
+        reload's generation rotation drains a running body before releasing
+        its instance."""
+        ...
+
     #: The bounded-run gate (the compiled declaration's own fact): True only
     #: when the run declares ``max_in_flight`` and carries chain sources —
     #: the §4.1 event rule's host-side gate. Unbounded runs pay nothing.
@@ -614,16 +623,12 @@ class LoopOps(_LoopHost):
                 carry = rehydrate_carry(spec.carry_type, carry, committed=carry_committed)
                 try:
                     # a loop body declaring one param beyond (ctx, carry)
-                    # receives the runner's bound instance — the same instance
+                    # receives the runner's deps instance — the same instance
                     # every other body invocation sees (the shape's validator
                     # face is E12's; this read is the signature's positional
                     # truth).
-                    deps_tail = (
-                        (self._deps,)
-                        if self._deps is not None and deps_param_declared(node.loop_body, 1)
-                        else ()
-                    )
-                    outcome = await node.loop_body(loop_ctx, carry, *deps_tail)
+                    async with self._deps_scope(node.loop_body, 1) as deps_tail:
+                        outcome = await node.loop_body(loop_ctx, carry, *deps_tail)
                 except NodeHeldError:
                     # the loop node rests in the held representation (the
                     # budget paused — register_hold's loop case); the resume

@@ -28,6 +28,7 @@ from taskq.context import JobContext
 from taskq.settings import WorkerSettings
 from taskq.testing.fixtures import ModulePgSchema
 from taskq.worker.cancel import ActiveJobRegistry
+from taskq.worker.deps import ReloadGate
 from taskq.worker.shutdown import ShutdownPhase
 from taskq.workflows._sql import WorkflowSql
 from tests.conftest import unique_health_sock_path
@@ -576,6 +577,7 @@ async def test_worker_release_arm_attempts_the_bounded_noop_release(
         drain_failures=0,
         redis_client=None,
         progress_buffers={},
+        reload_gate=ReloadGate(),
     )
 
     # THE SEEDED CLAIM IDENTITY (round-5 F-3): the fabricated row must
@@ -877,6 +879,7 @@ def _loop_deps(settings: Any, pool: asyncpg.Pool) -> Any:
         drain_failures=0,
         redis_client=None,
         progress_buffers={},
+        reload_gate=ReloadGate(),
     )
 
 

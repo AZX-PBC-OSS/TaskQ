@@ -42,6 +42,7 @@ from uuid import UUID
 
 import pytest
 
+from taskq._json import dumps_str
 from taskq.backend._protocol import ErrorInfo, JobFilter, JobId
 from taskq.constants import (
     CANCEL_ORIGIN_COOPERATIVE,
@@ -427,7 +428,7 @@ async def _seed_pg_cell(
     deps = app.deps
     schema = deps.settings.schema_name
     async with deps.worker_pool.acquire() as conn:
-        return await setup_running_job(
+        worker_id, job_id = await setup_running_job(
             conn,
             schema,
             attempt=1,
@@ -438,7 +439,21 @@ async def _seed_pg_cell(
                 if deadline == "future"
                 else (datetime.now(UTC) - timedelta(seconds=10) if deadline == "past" else None)
             ),
+            with_events=False,
         )
+        # Keep the seed and the production write in one clock domain. The
+        # helper's default seed uses the application clock, while terminal
+        # events use clock_timestamp(); under DB/application skew the read's
+        # (occurred_at, event_id) order can otherwise reverse the two events.
+        await conn.execute(
+            f'INSERT INTO "{schema}".job_events (job_id, occurred_at, kind, detail) '
+            "VALUES ($1, clock_timestamp(), 'state_change', $2::jsonb)",
+            job_id,
+            dumps_str(
+                {"from_state": "pending", "to_state": "running", "worker_id": str(worker_id)}
+            ),
+        )
+        return worker_id, job_id
 
 
 async def _run_statement(backend: Any, stmt: str, job_id: JobId, wid: Any) -> Any:

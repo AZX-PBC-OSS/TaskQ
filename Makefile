@@ -97,12 +97,16 @@ test-cov: env
 # — the scoped run EXECUTES the pin files — lives on as the measured
 # assert in tests/test_wf_coverage_gate.py. The four explicit tests/
 # paths below are the deliberate NON-wf-named additions.)
+# Exclude `slow` scale soaks (`slow-suite`) and `load_sensitive` wall-clock
+# timing guards (`load-sensitive` serial lane), matching CI's `coverage-shard`
+# filter: neither belongs under parallel `-n 4 --cov-branch` tracing.
 test-wf-cov: env
 	$(UVRUN) pytest \
 		$(shell ls tests/test_wf_*.py 2>/dev/null) \
 		tests/test_fv_redlog_guard.py \
 		tests/test_worker_execution_seam.py tests/probes_validator_rules.py \
 		tests/probes_coverage_closers.py \
+		-m "not slow and not load_sensitive" \
 		-n 4 --cov=src/taskq/workflows --cov-branch --cov-report=term
 	$(UVRUN) python scripts/check_wf_coverage.py
 

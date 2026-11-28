@@ -164,8 +164,17 @@ _TRUNCATE_TABLES: tuple[str, ...] = (
 )
 
 
-_migrated_triggers: dict[str, frozenset[tuple[str, str]]] = {}
-"""Per-schema trigger set as the migrations left it, captured on first reset.
+_migrated_triggers: dict[
+    tuple[str, str, datetime],
+    tuple[tuple[int, int], frozenset[tuple[str, str]]],
+] = {}
+"""Per-(database, schema, server_start) trigger set as the migrations left it.
+
+Keyed by ``(current_database(), schema, pg_postmaster_start_time())`` and
+stamped with ``(db_oid, schema_oid)`` so separate databases sharing a schema
+name, a dropped-and-recreated database/schema reusing the same name, or
+concurrent disposable containers with identical names and OIDs never share,
+thrash, or poison each other's snapshot.
 
 A test that installs a trigger, a commit-time constraint trigger to make
 a COMMIT fail, say, changes the schema's DDL, which no TRUNCATE undoes.
@@ -179,8 +188,9 @@ async def _reset_triggers(conn: _Conn, schema: str) -> None:
     """Drop triggers on the dynamic tables that the migrations did not
     install, restoring the schema's DDL to its migrated state.
 
-    The first call for a schema records the migrated set instead, it runs
-    in per-test setup, before any test body can add one.
+    The first call for a ``(database, schema)`` instance records the
+    migrated set instead, it runs in per-test setup, before any test body
+    can add one.
 
     The trigger and table names come from the catalog and are interpolated
     into the DROP, so they pass the project's identifier validation first
@@ -189,19 +199,42 @@ async def _reset_triggers(conn: _Conn, schema: str) -> None:
     a quote inside it would break out of the quoted identifier.
     """
     rows = await conn.fetch(
-        "SELECT c.relname AS table_name, t.tgname AS trigger_name "
-        "FROM pg_trigger t "
-        "JOIN pg_class c ON c.oid = t.tgrelid "
-        "JOIN pg_namespace n ON n.oid = c.relnamespace "
-        "WHERE n.nspname = $1 AND NOT t.tgisinternal AND c.relname = ANY($2::text[])",
+        "SELECT d.datname AS db_name, d.oid AS db_oid, n.oid AS schema_oid, "
+        "pg_postmaster_start_time() AS server_start, "
+        "trg.table_name, trg.trigger_name "
+        "FROM pg_database d "
+        "JOIN pg_namespace n ON n.nspname = $1 "
+        "LEFT JOIN LATERAL ("
+        "  SELECT c.relname AS table_name, t.tgname AS trigger_name "
+        "  FROM pg_class c "
+        "  JOIN pg_trigger t ON t.tgrelid = c.oid "
+        "  WHERE c.relnamespace = n.oid "
+        "    AND NOT t.tgisinternal "
+        "    AND c.relname = ANY($2::text[])"
+        ") trg ON true "
+        "WHERE d.datname = current_database()",
         schema,
         list(_TRUNCATE_TABLES),
     )
-    present = {(str(row["table_name"]), str(row["trigger_name"])) for row in rows}
-    migrated = _migrated_triggers.get(schema)
-    if migrated is None:
-        _migrated_triggers[schema] = frozenset(present)
+    if not rows:
         return
+    server_start = rows[0]["server_start"]
+    if not isinstance(server_start, datetime):
+        raise TypeError(
+            f"expected datetime for pg_postmaster_start_time(), got {type(server_start)!r}"
+        )
+    key = (str(rows[0]["db_name"]), schema, server_start)
+    instance_stamp = (int(rows[0]["db_oid"]), int(rows[0]["schema_oid"]))
+    present = {
+        (str(row["table_name"]), str(row["trigger_name"]))
+        for row in rows
+        if row["table_name"] is not None and row["trigger_name"] is not None
+    }
+    cached = _migrated_triggers.get(key)
+    if cached is None or cached[0] != instance_stamp:
+        _migrated_triggers[key] = (instance_stamp, frozenset(present))
+        return
+    migrated = cached[1]
     extra = sorted(present - migrated)
     # Validate the whole drop list before issuing any drop: a reset that
     # fails halfway leaves the schema in neither state.
@@ -220,8 +253,28 @@ async def truncate_schema(conn: _Conn, schema: str) -> None:
     """
     if not _IDENT_RE.match(schema):
         raise ValueError(f"invalid schema name {schema!r}")
-    for table in _TRUNCATE_TABLES:
-        await conn.execute(f'TRUNCATE TABLE "{schema}"."{table}" CASCADE')
+    from asyncpg.exceptions import UndefinedTableError
+
+    targets = ", ".join(f'"{schema}"."{table}"' for table in _TRUNCATE_TABLES)
+    try:
+        await conn.execute(f"TRUNCATE TABLE {targets} CASCADE")
+    except UndefinedTableError:
+        if conn.is_in_transaction():
+            raise
+        existing_rows = await conn.fetch(
+            "SELECT c.relname AS table_name "
+            "FROM pg_class c "
+            "JOIN pg_namespace n ON n.oid = c.relnamespace "
+            "WHERE n.nspname = $1 AND c.relkind IN ('r', 'p') AND c.relname = ANY($2::text[])",
+            schema,
+            list(_TRUNCATE_TABLES),
+        )
+        existing_set = {str(row["table_name"]) for row in existing_rows}
+        existing_tables = [table for table in _TRUNCATE_TABLES if table in existing_set]
+        if not existing_tables:
+            raise
+        partial_targets = ", ".join(f'"{schema}"."{table}"' for table in existing_tables)
+        await conn.execute(f"TRUNCATE TABLE {partial_targets} CASCADE")
     await _reset_triggers(conn, schema)
     # The 42_01 rotation singleton is migration-seeded state (its
     # truncation is this reset's own completeness — the capacity records
@@ -229,16 +282,17 @@ async def truncate_schema(conn: _Conn, schema: str) -> None:
     # check refuses until the row exists, so the reset restores it here
     # (the rootless cursors' own reset contract: the migration seeds the
     # rows, the truncate drops them, the reset/walk re-seed). Guarded on
-    # the table's existence: a pre-42_01 schema has none.
-    exists = await conn.fetchval(
-        "SELECT to_regclass($1) IS NOT NULL",
-        f'"{schema}".wf_emit_intent_rotation',
+    # the table's existence in a single DO block so a pre-42_01 schema is a
+    # zero-error no-op (safe inside an open transaction) and full schemas
+    # pay one round-trip instead of a regclass probe plus an INSERT.
+    await conn.execute(
+        "DO $$ BEGIN "  # noqa: S608  # Why: validated schema identifier; all values are literals.
+        f"""IF to_regclass('"{schema}".wf_emit_intent_rotation') IS NOT NULL THEN """
+        f"""EXECUTE 'INSERT INTO "{schema}".wf_emit_intent_rotation (id) VALUES (true) """
+        "ON CONFLICT (id) DO NOTHING'; "
+        "END IF; "
+        "END $$"
     )
-    if exists:
-        await conn.execute(
-            f'INSERT INTO "{schema}".wf_emit_intent_rotation (id) VALUES (true) '  # noqa: S608  # Why: the validated test schema identifier; every value is a literal.
-            "ON CONFLICT (id) DO NOTHING"
-        )
 
 
 async def seed_actors(
@@ -255,9 +309,13 @@ async def seed_actors(
     if not _IDENT_RE.match(schema):
         raise ValueError(f"invalid schema name {schema!r}")
     target = actors if actors is not None else DEFAULT_ACTORS
-    await conn.executemany(
-        f'INSERT INTO "{schema}".actor_config (actor, queue) VALUES ($1, $2) ON CONFLICT (actor) DO NOTHING',  # noqa: S608
-        [(actor, "default") for actor in target],
+    if not target:
+        return
+    await conn.execute(
+        f'INSERT INTO "{schema}".actor_config (actor, queue) '  # noqa: S608
+        "SELECT actor, 'default' FROM unnest($1::text[]) AS actor "
+        "ON CONFLICT (actor) DO NOTHING",
+        list(target),
     )
 
 

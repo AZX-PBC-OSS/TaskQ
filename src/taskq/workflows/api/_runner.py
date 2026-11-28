@@ -45,10 +45,11 @@ the same methods, the same rows.
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Callable
+from collections.abc import AsyncGenerator, Callable
+from contextlib import AsyncExitStack, asynccontextmanager
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
-from typing import Any, Literal, cast
+from typing import Any, Literal, Self, cast
 
 import asyncpg
 import structlog
@@ -106,6 +107,7 @@ from taskq.workflows.api._app import CompiledWorkflow
 from taskq.workflows.api._ctx import StepContext, build_step_context
 from taskq.workflows.api._ctx_wait import HoldMintFencedError, NodeHeldError
 from taskq.workflows.api._deps import deps_param_declared
+from taskq.workflows.api._deps_factory import DepsResolution, DepsRotation, Generation
 from taskq.workflows.api._graph import (
     Exit,
     keyed_rate_limit_names,
@@ -319,10 +321,10 @@ def _list_width(value: object) -> int:
 
 class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
     """The API's runner: create, drive, read. One engine, many surfaces —
-    the runner OWNS no state; every fact is a row. The concern modules
-    (the loop driver, the ladder, the exit, the chain finalize, the
-    deferral) compose in as mixins — each seam's machinery lives in its
-    own module (§7b)."""
+    every durable workflow fact is a row; the runner owns its local deps
+    resolution and child-runner lifecycle. The concern modules (the loop
+    driver, the ladder, the exit, the chain finalize, the deferral) compose
+    in as mixins — each seam's machinery lives in its own module (§7b)."""
 
     def __init__(
         self,
@@ -332,21 +334,71 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
         *,
         worker_id: JobId | None = None,
         deps: object | None = None,
+        deps_factory: Callable[..., object] | None = None,
+        deps_teardown: Callable[[object], object] | None = None,
+        deps_generation: Callable[[], Generation] | None = None,
+        deps_resolution: DepsResolution | None = None,
         default_start_to_close: timedelta | None = None,
     ) -> None:
+        from taskq.workflows.api._deps_factory import DepsResolver, deps_factory_declaration
         from taskq.workflows.api._validate import validate_compiled
 
-        # the runner binds one instance — the explicit *deps* overrides, the
-        # compiled's binding (the app's, bound once at WorkflowApp(deps=…)) is
-        # the default. The validation runs against the effective binding (a
-        # frozen-compile copy carries it — the E12 rule reads what the bodies
-        # will actually receive), so a binding the bodies' declarations do not
-        # satisfy is refused here too.
+        # the runner binds ONE deps declaration — an explicit *deps* or
+        # *deps_factory* override supersedes the compiled's binding (the
+        # app's, bound once at ``WorkflowApp(deps=…)`` / ``deps_factory=…``);
+        # passing both is refused at this door. The validation runs against the
+        # EFFECTIVE binding (a frozen-compile copy carries it — the E12 rule
+        # reads what the bodies will actually receive), so a binding the
+        # bodies' declarations do not satisfy is refused here too.
+        declared_factory = deps_factory_declaration(
+            deps=deps,
+            deps_factory=deps_factory,
+            deps_teardown=deps_teardown,
+            deps_generation=deps_generation,
+        )
+        if deps_resolution is not None and (deps is not None or declared_factory is not None):
+            raise ValueError(
+                "deps_resolution= is an already-owned deps resolution (the "
+                "worker-scoped one) and cannot be combined with deps=, "
+                "deps_factory=, deps_teardown= or deps_generation=, which declare "
+                "a binding this runner would own"
+            )
         compiled_deps = compiled.deps if isinstance(compiled, CompiledWorkflow) else None
-        if deps is not None and isinstance(compiled, CompiledWorkflow):
-            compiled_deps = deps
-        self._deps: object | None = deps if deps is not None else compiled_deps
-        validate_compiled(compiled)  # a graph with errors does not run
+        compiled_factory = compiled.deps_factory if isinstance(compiled, CompiledWorkflow) else None
+        if deps_resolution is not None:
+            # the worker-hosted door's shared resolution: its own binding is
+            # what the bodies receive, so E12 validates against that rather
+            # than against whatever the compile happens to carry.
+            effective_deps, effective_factory = None, deps_resolution.binding
+            self._owns_deps_resolution = False
+        elif deps is not None:
+            effective_deps, effective_factory = deps, None
+            self._owns_deps_resolution = False
+        elif declared_factory is not None:
+            effective_deps, effective_factory = None, declared_factory
+            self._owns_deps_resolution = True
+        else:
+            effective_deps, effective_factory = compiled_deps, compiled_factory
+            self._owns_deps_resolution = effective_factory is not None
+        self._deps: object | None = effective_deps
+        #: the lazy arm: one resolution per runner, created on the running
+        #: loop at the first body that declares the deps shape (the resolution
+        #: state — the lock, the instance, the single teardown attempt — lives
+        #: in ``_deps_factory.DepsResolver``). An injected one (the worker's,
+        #: shared across the app's runners) is already that shape.
+        self._deps_resolver: DepsResolution | None = (
+            deps_resolution
+            if deps_resolution is not None
+            else DepsResolver(effective_factory)
+            if effective_factory is not None
+            else None
+        )
+        validation_view = compiled
+        if isinstance(compiled, CompiledWorkflow) and (
+            effective_deps is not compiled_deps or effective_factory is not compiled_factory
+        ):
+            validation_view = replace(compiled, deps=effective_deps, deps_factory=effective_factory)
+        validate_compiled(validation_view)  # a graph with errors does not run
         self.compiled = compiled
         from taskq.workflows._effects import (
             RegisteredTerminalEffect,
@@ -392,6 +444,37 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
         # default). ``None`` = no default — the undeclared row's body runs
         # unbounded.
         self._default_start_to_close = default_start_to_close
+
+    # ── lifecycle ────────────────────────────────────────────────────
+
+    async def __aenter__(self) -> Self:
+        return self
+
+    async def __aexit__(self, *exc_info: object) -> None:
+        await self.aclose()
+
+    async def aclose(self) -> None:
+        """Release what the direct door created: the lazily resolved deps
+        (ONE teardown attempt, a no-op when nothing resolved or when already
+        closed) and every child runner this runner built during a drive (each
+        owns its own resolution, so each closes its own instance).
+
+        A resolution the runner did not mint (the worker-hosted door's shared,
+        worker-scoped one) is NOT closed here: its owner releases it at worker
+        shutdown, and closing it from one runner would tear it down under
+        every body still sharing it.
+
+        Callers dispose deterministically with ``async with FlowRunner(…)``
+        or ``await runner.aclose()``; the packaged ``run(…)`` does it for
+        them. Teardown after the drive — never mid-body. Every owner is
+        attempted even when an earlier child's release fails."""
+        async with AsyncExitStack() as cleanup:
+            if self._deps_resolver is not None and self._owns_deps_resolution:
+                cleanup.push_async_callback(self._deps_resolver.aclose)
+            # The stack unwinds LIFO: children close in creation order, then
+            # the parent, and one failing release cannot skip the others.
+            for child in reversed(list(self._child_runners.values())):
+                cleanup.push_async_callback(child.aclose)
 
     # ── create ───────────────────────────────────────────────────────
 
@@ -1212,20 +1295,120 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
             ledger_claimed_at=ledger_claimed_at,
         )
 
-    def _deps_tail(self, body: Callable[..., object], wired_count: int) -> tuple[object, ...]:
+    @asynccontextmanager
+    async def _deps_scope(
+        self, body: Callable[..., object], wired_count: int
+    ) -> AsyncGenerator[tuple[object, ...], None]:
         """
         the bound instance rides as the last positional argument when the
         body declares the deps shape (one positional param beyond ctx +
         the wired sources — the same shape E12 rejects at build; the
         runtime read is the signature's positional truth, so an
         unresolvable-annotations body still gets the injection it
-        declared). The instance is the app's, bound once — never a copy,
-        never a re-mint; the runner never inspects it."""
-        if self._deps is None:
-            return ()
+        declared). A static instance is the app's, bound once — never a
+        copy, never a re-mint; a factory's instance is resolved on first
+        use, on this loop, and reused from then on. A body that does NOT
+        declare the deps shape never triggers a factory: resolution is
+        lazy per body claim. The runner never inspects the instance.
+
+        The instance is LEASED for the body's lifetime: a reload's
+        generation rotation drains bodies still holding the superseded
+        instance before releasing it, so a slow body finishes against its
+        own resource rather than one closed underneath it."""
         if not deps_param_declared(body, wired_count):
-            return ()
-        return (self._deps,)
+            yield ()
+            return
+        if self._deps is not None:
+            yield (self._deps,)
+            return
+        resolver = self._deps_resolver
+        if resolver is None:
+            yield ()
+            return
+        async with resolver.body(workflow=self.compiled.name) as instance:
+            yield (instance,)
+
+    @asynccontextmanager
+    async def _deps_hold(self) -> AsyncGenerator[None, None]:
+        """Hold the current deps generation for ONE claim — its body and the
+        finalize that follows — without resolving anything.
+
+        A reload's generation rotation drains holds on the superseded entry
+        before releasing that entry's instance. The hold captures one
+        generation; the WORKER POOL a claim executes on is not this hold's to
+        protect — the worker's reload gate holds the admitted pool for the
+        claim's lifetime (``taskq.worker.deps.ReloadGate``). Nothing to hold
+        for a static ``deps=`` binding or a runner with no factory."""
+        resolver = self._deps_resolver
+        if self._deps is not None or resolver is None:
+            yield
+            return
+        async with resolver.hold():
+            yield
+
+    async def reload_deps(self, *, drain_timeout: float) -> DepsRotation:
+        """Rotate this runner's factory-created deps to its binding's current
+        generation — the direct door's explicit reload trigger.
+
+        The same contract the worker-hosted door upholds: bodies already
+        running against the superseded instance get *drain_timeout* to finish
+        (and keep working meanwhile), a body claiming during the rotation gets
+        the new generation's instance, and the superseded instance is released
+        exactly once. A binding whose generation did not change rotates
+        nothing. Every factory-bound child runner this runner created rotates
+        with it, including a child of another app or of a parent with no deps
+        declaration of its own. The first owning runner's generation labels
+        anchor the report; aggregate drain and failure status ensure a child
+        cannot fail silently. Teardown of what the runner minted still happens
+        in :meth:`aclose`.
+        """
+        resolver = self._deps_resolver
+        if resolver is not None and not self._owns_deps_resolution:
+            raise RuntimeError(
+                "reload_deps() cannot rotate a resolution this runner does not "
+                "own — the worker-hosted door owns its resolution and rotates "
+                "it through the worker's reload coordinator"
+            )
+        reports = await self._rotate_owned_deps(drain_timeout)
+        if not reports:
+            raise RuntimeError(
+                "reload_deps() requires a deps_factory= binding — this runner "
+                "and its children resolve no factory-created instance to rotate"
+            )
+        primary = reports[0]
+        return DepsRotation(
+            rotated=any(item.rotated for item in reports),
+            generation=primary.generation,
+            previous_generation=primary.previous_generation,
+            had_instance=any(item.had_instance for item in reports),
+            drained=all(item.drained for item in reports),
+            error=next((item.error for item in reports if item.error is not None), None),
+        )
+
+    async def _rotate_owned_deps(self, drain_timeout: float) -> list[DepsRotation]:
+        """Rotate this runner's owned resolution and every owned descendant's.
+
+        The ownership walk mirrors :meth:`aclose`: a parent is the only public
+        handle reaching child runners its drive created, regardless of which
+        app declared each child's factory. Children registered while an
+        earlier child's rotation is awaiting must also rotate before this
+        reload returns; a one-time snapshot would leave them stale.
+        """
+        reports: list[DepsRotation] = []
+        resolver = self._deps_resolver
+        if self._owns_deps_resolution and resolver is not None:
+            reports.append(await resolver.rotate(drain_timeout=drain_timeout))
+        visited: set[str] = set()
+        while True:
+            children = [
+                (key, child) for key, child in self._child_runners.items() if key not in visited
+            ]
+            if not children:
+                break
+            for key, child in children:
+                visited.add(key)
+                reports.extend(await child._rotate_owned_deps(drain_timeout))
+        return reports
 
     def _body_deadline_seconds(self, row: dict[str, Any]) -> float | None:
         """The deadline resolution at the enforcement (the vanilla
@@ -1404,17 +1587,18 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
             ),
         ) as span:
             try:
-                outcome = await self._execute_claimed_tail(
-                    flow_id,
-                    row,
-                    attempt,
-                    ledger_id,
-                    node,
-                    body,
-                    claim_epoch=claim_epoch,
-                    run_priority=run_priority,
-                    ledger_claimed_at=ledger_claimed_at,
-                )
+                async with self._deps_hold():
+                    outcome = await self._execute_claimed_tail(
+                        flow_id,
+                        row,
+                        attempt,
+                        ledger_id,
+                        node,
+                        body,
+                        claim_epoch=claim_epoch,
+                        run_priority=run_priority,
+                        ledger_claimed_at=ledger_claimed_at,
+                    )
             except Exception:
                 # safe_start_span's fallback recorded the scrubbed error on its
                 # way out; the outcome attribute names the ledger's own
@@ -1704,14 +1888,14 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
                 result = _bounded_collect(parents_values)
                 collected = parents_values
             else:
-                deps_tail = self._deps_tail(body, len(args))
                 deadline_s = self._body_deadline_seconds(row)
                 if deadline_s is None:
                     # The control (the byte-identical law): no declaration
                     # anywhere (the row's column NULL, no worker default)
                     # — the body invoked inline, no task, no machinery, no
                     # deadline.
-                    outcome_value = await body(ctx, *args, *deps_tail)
+                    async with self._deps_scope(body, len(args)) as deps_tail:
+                        outcome_value = await body(ctx, *args, *deps_tail)
                 else:
                     # The deadline (the start_to_close bound — the
                     # vanilla enforcement, imported: the
@@ -1727,14 +1911,31 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
                         _enforce_start_to_close,  # pyright: ignore[reportPrivateUsage]  # Why: the deadline enforcement is the consumer module's shared machinery by design (the wf face imports the same function — the three holes, the unwind budget, the hostile-finally handling inherited); the private name is the honest boundary of that import.
                     )
 
+                    # Resolve before arming the body's deadline, then transfer
+                    # the lease into the body task. The enforcement may return
+                    # with a timed-out body still unwinding; only that task's
+                    # own finally may release the dependency it is still using.
+                    deps_scope = self._deps_scope(body, len(args))
+                    deps_tail = await deps_scope.__aenter__()
+                    body_started = False
+
                     async def _run_wf_body(
                         _job: object, run_ctx: object
                     ) -> object:  # the enforcement's shared face: the row is opaque here
-                        return await body(cast("StepContext", run_ctx), *args, *deps_tail)
+                        nonlocal body_started
+                        body_started = True
+                        try:
+                            return await body(cast("StepContext", run_ctx), *args, *deps_tail)
+                        finally:
+                            await deps_scope.__aexit__(None, None, None)
 
-                    outcome_value = await _enforce_start_to_close(
-                        _run_wf_body, None, ctx, deadline_s
-                    )
+                    try:
+                        outcome_value = await _enforce_start_to_close(
+                            _run_wf_body, None, ctx, deadline_s
+                        )
+                    finally:
+                        if not body_started:
+                            await deps_scope.__aexit__(None, None, None)
                 chain = self._chain_steps.get(row["step_key"])
                 if chain is not None:
                     # Only capture the completed body/value here. Routing and all
